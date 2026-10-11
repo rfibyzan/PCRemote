@@ -427,6 +427,38 @@ function kickAllClients(reason = "lock changed") {
   state.clients.clear();
 }
 
+// Keep the socket queue under about two frames. Anything deeper just shows a
+// stale picture long after the user has moved on. The floor is per link; the
+// ceiling follows the real frame size, because a fixed 40 KB gate with 50 KB
+// frames allowed zero frames in flight and capped the stream at one frame
+// per network round trip.
+function sendBudget(ws) {
+  const floor = ws.link === "remote" ? 40_000 : 80_000;
+  return Math.max(floor, Math.round((Number(ws.lastFrameBytes) || 0) * 1.6));
+}
+
+// Per-socket stream diagnostics, pushed every ~2 s as {t:"streamStats"} so
+// the phone can show WHERE frames go missing: not captured in time (PC),
+// held back by a full socket (network), or skipped because the screen did
+// not change (static, by design). Old phones ignore the unknown message.
+function noteStream(ws, field, n = 1) {
+  if (!ws.st) ws.st = { since: Date.now(), sent: 0, same: 0, busy: 0, capMs: 0, caps: 0 };
+  ws.st[field] += n;
+}
+function flushStreamStats(ws, now) {
+  const st = ws.st;
+  if (!st || now - st.since < 2000) return;
+  const sec = (now - st.since) / 1000;
+  send(ws, {
+    t: "streamStats",
+    sent: Math.round((st.sent / sec) * 10) / 10,
+    same: Math.round((st.same / sec) * 10) / 10,
+    busy: Math.round((st.busy / sec) * 10) / 10,
+    capMs: st.caps ? Math.round(st.capMs / st.caps) : 0,
+  });
+  ws.st = { since: now, sent: 0, same: 0, busy: 0, capMs: 0, caps: 0 };
+}
+
 async function screenLoop() {
   let creditTick = 0;
   while (true) {
@@ -443,17 +475,18 @@ async function screenLoop() {
       const frame = latestCamFrame();
       if (frame?.jpeg) {
         for (const ws of camClients) {
-          if (ws.bufferedAmount > (ws.link === "remote" ? 40_000 : 80_000)) continue;
+          if (ws.bufferedAmount > sendBudget(ws)) continue;
           sendFrame(ws, frame.jpeg, { mon: "cam", w: frame.w, h: frame.h, cx: 0, cy: 0 });
         }
       }
     }
     const groups = new Map();
     for (const ws of screenClients) {
-      // Keep the queue under about two frames. Anything deeper just shows a
-      // stale picture long after the user has moved on.
-      const busy = ws.bufferedAmount > (ws.link === "remote" ? 40_000 : 80_000);
-      if (busy && ws.lastFp) continue;
+      const busy = ws.bufferedAmount > sendBudget(ws);
+      if (busy && ws.lastFp) {
+        noteStream(ws, "busy");
+        continue;
+      }
       const crop = { ...(ws.crop || { x: 0, y: 0, w: 1, h: 1 }) };
       const key = `${ws.view}:${ws.monitorId}:${ws.quality}:${ws.link}:${ws.encWidth || 0}:${ws.encJpeg || 0}:${ws.encViewPx || 0}:${ws.qStep || 0}:${ws.fpsStep || 0}:${crop.x.toFixed(3)}:${crop.y.toFixed(3)}:${crop.w.toFixed(3)}:${crop.h.toFixed(3)}`;
       const group = groups.get(key);
@@ -466,17 +499,24 @@ async function screenLoop() {
       const monitorAtStart = ws.monitorId;
       try {
         const mon = monitorFor(ws);
+        const capStart = Date.now();
         const jpeg = await captureMonitor(mon, group.quality || "lite", viewAtStart === "all", group.link === "remote", group.crop, clientTune(ws));
+        const capMs = Date.now() - capStart;
         for (const client of group.clients) {
           if (client.readyState !== 1 || client.wantsCam) continue;
           if (client.view !== viewAtStart || client.monitorId !== monitorAtStart) continue;
           const cursor = cursorOnMonitor(mon);
           const fp = `${client.quality}:${client.encWidth || 0}:${client.encJpeg || 0}:${client.encFps || 0}:${client.encViewPx || 0}:${client.qStep || 0}:${client.fpsStep || 0}:${client.encTick || 0}:${viewAtStart}:${monitorAtStart}:${group.crop.x.toFixed(3)}:${group.crop.y.toFixed(3)}:${group.crop.w.toFixed(3)}:${group.crop.h.toFixed(3)}:${frameFingerprint(jpeg)}`;
+          noteStream(client, "capMs", capMs);
+          noteStream(client, "caps");
           if (fp === client.lastFp) {
+            noteStream(client, "same");
             send(client, { t: "cur", cx: cursor.cx, cy: cursor.cy });
             continue;
           }
           client.lastFp = fp;
+          client.lastFrameBytes = jpeg.length;
+          noteStream(client, "sent");
           sendFrame(client, jpeg, {
             mon: viewAtStart === "all" ? "all" : mon.id,
             w: mon.w,
@@ -490,6 +530,8 @@ async function screenLoop() {
         console.warn("screenshot failed:", err.message);
       }
     }
+    const statNow = Date.now();
+    for (const ws of screenClients) flushStreamStats(ws, statNow);
     const sample = camClients[0] || screenClients[0];
     const cropped = Boolean(sample?.crop && (sample.crop.w < 0.995 || sample.crop.h < 0.995));
     const q = encodeProfile(sample?.quality || "low", sample?.link === "remote", cropped, clientTune(sample));
