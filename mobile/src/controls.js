@@ -9,6 +9,9 @@ import { COLORS } from "./components";
 import { STORE_QUALITY, msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { useStreamStats } from "./cursor";
+import { diagnoseStream } from "./streamdiag";
+
+export { diagnoseStream };
 
 // Preset mapping onto the EXISTING agent backend:
 // Low = lite (Q18/6fps), Mid = low (Q26/13fps), High = high (Q40/22fps).
@@ -205,19 +208,16 @@ export function useQuality() {
   return s;
 }
 
-function fmtBytes(n) {
-  return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
-}
 function fmtRate(bps) {
   return bps >= 1048576 ? `${(bps / 1048576).toFixed(1)} MB/s` : `${Math.round(bps / 1024)} KB/s`;
 }
 
-/** "12.4 MB · 386 KB/s · Q24 · 22→14fps (9 real)" — target→efektif vs real.
- * Efektif = anggaran agent (remote/cropped). Real rendah saat layar statis
- * adalah hemat-bandwidth by design (fingerprint dedup), bukan bug. */
+/** "Q26 · 19 fps · tampil 6 · PC 18 · 386 KB/s · layar statis"
+ * target = budget the PC aims for (agent ack when available), tampil =
+ * frames actually displayed, PC = frames the PC sent. */
 export function StreamStats() {
-  const { total, rate, fps } = useStreamStats();
-  const { q, qStep, fpsStep } = useQuality();
+  const { rate, fps, recv, pc } = useStreamStats();
+  const { q, fpsStep } = useQuality();
   const ack = useQualityAck();
   const selCrop = useSel().crop;
   const [link, setLink] = React.useState(getStatus().link || "");
@@ -226,17 +226,17 @@ export function StreamStats() {
       if (e.t === "status" || e.t === "progress" || e.t === "hello") setLink(getStatus().link || "");
     });
   }, []);
-  const target = fpsValue(q, fpsStep);
   const remote = isRemoteLink(ack.link || link);
   const cropped = ack.at ? ack.cropped : Boolean(selCrop && (selCrop.w < 0.995 || selCrop.h < 0.995));
   const effFromAgent = ack.effective?.fps;
-  const effLocal = effectiveFpsValue(q, fpsStep, { remote, cropped });
-  const eff = Number.isFinite(Number(effFromAgent)) ? Number(effFromAgent) : effLocal;
-  const staticHint = fps <= 1 && rate < 15000 && total > 0 ? " · statis" : "";
-  const effPart = eff !== target ? `→${eff}` : "";
+  const eff = Number.isFinite(Number(effFromAgent)) ? Number(effFromAgent) : effectiveFpsValue(q, fpsStep, { remote, cropped });
+  const why = diagnoseStream({ target: eff, shown: fps, recv, pc });
+  const pcPart = pc ? ` · PC ${Math.round(pc.sent)}` : "";
   return (
-    <Text style={styles.stats}>
-      {fmtBytes(total)} · {fmtRate(rate)} · Q{qValue(q, qStep)} · {target}{effPart}fps ({fps} real{staticHint})
+    <Text style={styles.stats} numberOfLines={1}>
+      {eff} fps · tampil {fps}
+      {pcPart} · {fmtRate(rate)}
+      {why ? <Text style={styles.statsWarn}> · {why}</Text> : null}
     </Text>
   );
 }
@@ -244,7 +244,6 @@ export function StreamStats() {
 export function StreamControls({ compact }) {
   const { q, qStep, fpsStep } = useQuality();
   const [pickOpen, setPickOpen] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const label = presetLabel(q, qStep, fpsStep);
 
   // Steppers apply only when the COMPUTED value actually changes, so the
@@ -259,50 +258,33 @@ export function StreamControls({ compact }) {
     if (fpsValue(q, n) !== fpsValue(q, fpsStep)) applyQuality(q, qStep, n);
   }
 
-  // Collapsed by default: preset + stats in one line.
-  // Tap the text to expand the full controls.
-  if (!expanded) {
-    return (
-      <View style={[styles.box, compact && styles.boxCompact]}>
-        <Pressable onPress={() => setExpanded(true)} style={styles.summary}>
-          <Text style={styles.summaryText}>{label} ▾</Text>
-          <View style={styles.summaryStats}>
-            <StreamStats />
-          </View>
-        </Pressable>
-      </View>
-    );
-  }
-
+  // Always-visible compact panel: one control row + one stats line.
   return (
     <View style={[styles.box, compact && styles.boxCompact]}>
       <View style={styles.presets}>
-        <Pressable onPress={() => setPickOpen(true)} style={styles.dropBtn}>
+        <Pressable onPress={() => setPickOpen(true)} style={styles.dropBtn} hitSlop={4}>
           <Text style={styles.dropText}>{label} ▾</Text>
         </Pressable>
         <View style={styles.stepper}>
-          <Pressable onPress={() => stepQ(1)} style={styles.stepBtn}>
-            <Text style={styles.stepBtnText}>▲</Text>
+          <Pressable onPress={() => stepQ(-1)} style={styles.stepBtn} hitSlop={4}>
+            <Text style={styles.stepBtnText}>−</Text>
           </Pressable>
-          <Text style={styles.stepValue}>Q {qValue(q, qStep)}</Text>
-          <Pressable onPress={() => stepQ(-1)} style={styles.stepBtn}>
-            <Text style={styles.stepBtnText}>▼</Text>
+          <Text style={styles.stepValue}>Q{qValue(q, qStep)}</Text>
+          <Pressable onPress={() => stepQ(1)} style={styles.stepBtn} hitSlop={4}>
+            <Text style={styles.stepBtnText}>+</Text>
           </Pressable>
         </View>
         <View style={styles.stepper}>
-          <Pressable onPress={() => stepFps(1)} style={styles.stepBtn}>
-            <Text style={styles.stepBtnText}>▲</Text>
+          <Pressable onPress={() => stepFps(-1)} style={styles.stepBtn} hitSlop={4}>
+            <Text style={styles.stepBtnText}>−</Text>
           </Pressable>
-          <Text style={styles.stepValue}>fps {fpsValue(q, fpsStep)}</Text>
-          <Pressable onPress={() => stepFps(-1)} style={styles.stepBtn}>
-            <Text style={styles.stepBtnText}>▼</Text>
+          <Text style={styles.stepValue}>{fpsValue(q, fpsStep)} fps</Text>
+          <Pressable onPress={() => stepFps(1)} style={styles.stepBtn} hitSlop={4}>
+            <Text style={styles.stepBtnText}>+</Text>
           </Pressable>
         </View>
       </View>
-      {/* Tap the stats line to collapse back to the summary. */}
-      <Pressable onPress={() => setExpanded(false)}>
-        <StreamStats />
-      </Pressable>
+      <StreamStats />
       <Modal visible={pickOpen} transparent animationType="fade" onRequestClose={() => setPickOpen(false)}>
         <Pressable style={styles.modalShade} onPress={() => setPickOpen(false)}>
           <View style={styles.modalBox}>
@@ -437,18 +419,16 @@ export function ConnDot() {
 }
 
 const styles = StyleSheet.create({
-  box: { backgroundColor: COLORS.card, borderRadius: 12, padding: 8, gap: 6, marginHorizontal: 8, marginTop: 0, position: "relative" },
-  summary: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 5 },
-  summaryStats: { flex: 1 },
-  summaryText: { color: COLORS.text, fontWeight: "800", fontSize: 13 },
+  box: { backgroundColor: COLORS.card, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 6, gap: 4, marginHorizontal: 8, marginTop: 0, position: "relative" },
   presets: { flexDirection: "row", gap: 6, alignItems: "center" },
-  dropBtn: { backgroundColor: "#0c4a6e", borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12 },
+  dropBtn: { backgroundColor: "#0c4a6e", borderRadius: 8, height: 30, justifyContent: "center", paddingHorizontal: 10 },
   dropText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
-  stepper: { flex: 1, flexDirection: "row", backgroundColor: COLORS.chip, borderRadius: 10, paddingVertical: 4, paddingHorizontal: 4, alignItems: "center", justifyContent: "space-between" },
-  stepBtn: { borderRadius: 8, width: 30, height: 30, alignItems: "center", justifyContent: "center" },
-  stepBtnText: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
+  stepper: { flex: 1, flexDirection: "row", backgroundColor: COLORS.chip, borderRadius: 8, height: 30, paddingHorizontal: 2, alignItems: "center", justifyContent: "space-between" },
+  stepBtn: { borderRadius: 6, width: 28, height: 28, alignItems: "center", justifyContent: "center" },
+  stepBtnText: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
   stepValue: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
   stats: { color: COLORS.muted, fontSize: 11, fontWeight: "700", textAlign: "center" },
+  statsWarn: { color: "#fbbf24" },
   modalShade: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
   modalBox: { backgroundColor: COLORS.card, borderRadius: 14, padding: 8, gap: 4, minWidth: 200 },
   modalItem: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16, alignItems: "center" },
