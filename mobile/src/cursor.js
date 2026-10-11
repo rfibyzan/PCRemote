@@ -56,8 +56,27 @@ export function trackDropped() {
   statDropped += 1;
 }
 
+/** Every frame that reached the active viewer, shown or not. Compared with
+ * displayed fps it tells "phone could not decode fast enough" apart from
+ * "frames never arrived". */
+const recvWin = [];
+export function trackReceived() {
+  const now = Date.now();
+  recvWin.push(now);
+  while (recvWin.length && now - recvWin[0] > 2000) recvWin.shift();
+  if (recvWin.length > 400) recvWin.splice(0, recvWin.length - 400);
+}
+
+/** Latest {t:"streamStats"} from the PC agent (frames/s it sent, skipped as
+ * unchanged, held back by a full socket, and average capture+encode ms). */
+let pcStats = null;
+addListener((event) => {
+  if (event.t === "streamStats") pcStats = { ...event, at: Date.now() };
+  else if (event.t === "hello" || event.t === "close") pcStats = null;
+});
+
 export function useStreamStats() {
-  const [s, setS] = useState({ total: statTotal, rate: 0, fps: 0, dropped: statDropped });
+  const [s, setS] = useState({ total: statTotal, rate: 0, fps: 0, recv: 0, pc: null, dropped: statDropped });
   useEffect(() => {
     const timer = setInterval(() => {
       const now = Date.now();
@@ -65,7 +84,11 @@ export function useStreamStats() {
       const sum = statWin.reduce((a, e) => a + e.bytes, 0);
       const dt = statWin.length ? (now - statWin[0].t) / 1000 : 0;
       const span = statWin.length > 1 ? (statWin[statWin.length - 1].t - statWin[0].t) / 1000 : 0;
+      while (recvWin.length && now - recvWin[0] > 2000) recvWin.shift();
+      const rspan = recvWin.length > 1 ? (recvWin[recvWin.length - 1] - recvWin[0]) / 1000 : 0;
       setS({
+        recv: rspan > 0.3 ? Math.round(recvWin.length / rspan) : 0,
+        pc: pcStats && now - pcStats.at < 5000 ? pcStats : null,
         total: statTotal,
         rate: dt > 0.2 ? sum / dt : 0,
         fps: span > 0.3 ? Math.round(statWin.length / span) : 0,

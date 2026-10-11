@@ -4,7 +4,7 @@ import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { bytesToBase64 } from "./protocol";
 import { releaseScreenHandler, setScreenHandler } from "./connection";
-import { trackDropped } from "./cursor";
+import { trackDropped, trackReceived } from "./cursor";
 
 export const COLORS = {
   bg: "#0b1220",
@@ -83,42 +83,44 @@ export function ScreenView({ style, imageStyle, onFrame, monKey }) {
   cbRef.current = onFrame;
 
   // Stable handler: only refs + setUris, so focus re-registration is safe.
-  // Backpressure: enqueue at most ~15fps into the Image decoder. Faster
-  // streams (22fps setting) would otherwise churn giant base64 strings on
-  // the JS thread and freeze the app after minutes. Dropped frames are
-  // counted for stats; the visible frame is never blanked. Dropped frames
-  // are marked _dropped so meters count DISPLAYED frames only (honest real
-  // fps) while cursor/size metadata still flows.
+  // Backpressure, latest-wins: at most ONE frame is decoding in the Image
+  // layer. A frame that arrives meanwhile is parked (replacing any older
+  // parked frame, which counts as dropped) and is shown the moment the decode
+  // finishes. The old rule dropped every frame that arrived within 120 ms of
+  // an enqueue, so after each decode the viewer sat idle until the NEXT frame
+  // came in: on a 19 fps stream that alone cut displayed fps to ~6.
+  // Frames marked _dropped still flow for cursor/size metadata, while meters
+  // count DISPLAYED frames only (honest real fps).
   const lastEnqueueAt = useRef(0);
   const pendingDecode = useRef(false);
+  const parkedRef = useRef(null);
   const monKeyRef = useRef(monKey);
   monKeyRef.current = monKey;
   const handlerRef = useRef(null);
+  const presentRef = useRef(null);
   if (!handlerRef.current) {
     handlerRef.current = (frame) => {
       if (!frame?.jpeg?.length) return; // keep last valid frame
+      trackReceived();
+      // A decode that never reports back (rare onLoad loss) must not wedge
+      // the viewer: after 400 ms treat it as finished.
+      if (pendingDecode.current && Date.now() - lastEnqueueAt.current < 400) {
+        const old = parkedRef.current;
+        parkedRef.current = frame;
+        if (old) {
+          trackDropped();
+          try {
+            cbRef.current?.({ ...old, _dropped: true });
+          } catch {
+            // metadata consumers must not break rendering
+          }
+        }
+        return;
+      }
+      presentRef.current(frame);
+    };
+    presentRef.current = (frame) => {
       const now = Date.now();
-      // If a decode is still pending and we enqueued very recently, drop:
-      // the decoder is behind, showing an older frame longer is smoother
-      // than queuing base64 churn that freezes the app.
-      if (pendingDecode.current && now - lastEnqueueAt.current < 120) {
-        trackDropped();
-        try {
-          cbRef.current?.({ ...frame, _dropped: true });
-        } catch {
-          // metadata consumers must not break rendering
-        }
-        return;
-      }
-      if (now - lastEnqueueAt.current < 45) {
-        // Over cap: metadata flows, display + meters skip this one.
-        try {
-          cbRef.current?.({ ...frame, _dropped: true });
-        } catch {
-          // metadata consumers must not break rendering
-        }
-        return;
-      }
       try {
         cbRef.current?.(frame);
       } catch {
@@ -187,6 +189,14 @@ export function ScreenView({ style, imageStyle, onFrame, monKey }) {
     }, []),
   );
 
+  // Decode finished (or failed): show the parked frame right away.
+  function drainParked() {
+    const parked = parkedRef.current;
+    if (!parked) return;
+    parkedRef.current = null;
+    presentRef.current(parked);
+  }
+
   function onLoad(slot) {
     // Swap only for the newest issued frame; ignore stale decodes.
     pendingDecode.current = false;
@@ -194,10 +204,12 @@ export function ScreenView({ style, imageStyle, onFrame, monKey }) {
       frontRef.current = slot;
       setFront(slot);
     }
+    drainParked();
   }
 
   function onError() {
     pendingDecode.current = false;
+    drainParked();
     // keep last valid frame; next frame will retry
   }
 
