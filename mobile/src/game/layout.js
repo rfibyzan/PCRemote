@@ -209,8 +209,10 @@ export function stickVector(cx, cy, radius, px, py) {
 }
 
 /**
- * D-pad directions for a touch: 8-way with a small dead centre, so sliding a
- * thumb around the cross rolls through diagonals like a real pad.
+ * D-pad directions for a touch: 8-way with a small dead centre. Each
+ * cardinal owns a 60 deg wedge and the diagonals only a 30 deg wedge between
+ * them, so pressing an arm gives exactly that direction while sliding into
+ * a corner still rolls through the diagonal.
  */
 export function dpadDirs(cx, cy, size, px, py) {
   const dx = px - cx;
@@ -219,10 +221,10 @@ export function dpadDirs(cx, cy, size, px, py) {
   if (Math.hypot(dx, dy) < size * 0.12) return out;
   const a = (Math.atan2(-dy, dx) * 180) / Math.PI; // 0 = right, 90 = up
   const deg = (a + 360) % 360;
-  out.right = deg < 67.5 || deg > 292.5;
-  out.up = deg > 22.5 && deg < 157.5;
-  out.left = deg > 112.5 && deg < 247.5;
-  out.down = deg > 202.5 && deg < 337.5;
+  out.right = deg < 60 || deg > 300;
+  out.up = deg > 30 && deg < 150;
+  out.left = deg > 120 && deg < 240;
+  out.down = deg > 210 && deg < 330;
   return out;
 }
 

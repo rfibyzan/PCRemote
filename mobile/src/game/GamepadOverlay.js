@@ -218,17 +218,26 @@ export default function GamepadOverlay({ layout, pad, editMode, selected, onSele
     [router],
   );
 
-  const measure = useCallback(() => {
-    const v = viewRef.current;
-    if (!v || typeof v.measureInWindow !== "function") return;
-    v.measureInWindow((x, y, w, h) => {
-      if (Number.isFinite(x) && Number.isFinite(y)) originRef.current = { x, y };
-      if (w > 0 && h > 0) {
-        sizeRef.current = { W: w, H: h };
-        setSize({ W: w, H: h });
-      }
-    });
+  // Size comes from onLayout: the same coordinate space the controls are
+  // drawn in. (measureInWindow is NOT used for coordinates: with Android
+  // edge-to-edge + landscape it can disagree with pageX/pageY by the
+  // status-bar / cutout inset, which shifted every touch down-right.)
+  const onLayout = useCallback((e) => {
+    const { width, height } = e.nativeEvent.layout;
+    if (width > 0 && height > 0) {
+      sizeRef.current = { W: width, H: height };
+      setSize({ W: width, H: height });
+    }
   }, []);
+
+  // Page -> overlay offset, calibrated from the event's own touch: children
+  // are pointerEvents="none", so the overlay is always the event target and
+  // pageX - locationX is exactly where its top-left sits in page space.
+  function calibrate(ne) {
+    const ox = ne.pageX - ne.locationX;
+    const oy = ne.pageY - ne.locationY;
+    if (Number.isFinite(ox) && Number.isFinite(oy)) originRef.current = { x: ox, y: oy };
+  }
 
   function local(t) {
     return { x: t.pageX - originRef.current.x, y: t.pageY - originRef.current.y };
@@ -287,6 +296,7 @@ export default function GamepadOverlay({ layout, pad, editMode, selected, onSele
 
   // ---- play-mode routing (every finger) ----
   function onTouchStart(e) {
+    calibrate(e.nativeEvent);
     if (editRef.current) return editStart(e);
     for (const t of e.nativeEvent.changedTouches || []) {
       const p = local(t);
@@ -313,7 +323,7 @@ export default function GamepadOverlay({ layout, pad, editMode, selected, onSele
     <View
       ref={viewRef}
       style={StyleSheet.absoluteFill}
-      onLayout={measure}
+      onLayout={onLayout}
       onStartShouldSetResponder={() => true}
       onMoveShouldSetResponder={() => true}
       onResponderTerminationRequest={() => false}

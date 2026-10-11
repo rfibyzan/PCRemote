@@ -10,9 +10,9 @@
  *   zero-state + gamepadEnd on exit. Stream crop is forced to Fit while in GAME
  *   and the previous tab crop is restored on exit.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
-import * as ScreenOrientation from "expo-screen-orientation";
+import { useFocusEffect } from "expo-router";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { ScreenView } from "../components";
 import { StreamControls, setSel } from "../controls";
@@ -25,6 +25,7 @@ import GamepadOverlay from "../game/GamepadOverlay";
 import { EditToolbar, GameChrome, SettingsSheet } from "../game/GameMenus";
 import { LIMITS, controlOpacity, defaultLayout, patchControl, stepValue } from "../game/layout";
 import { loadLayout, saveLayout } from "../game/storage";
+import { applyOrientation } from "../orientation";
 
 const HEARTBEAT_MS = 500;
 const TICK_MS = 33;
@@ -78,48 +79,55 @@ export default function GameScreen({ onExit }) {
     cursor.feed(f);
   }
 
-  useEffect(() => {
-    exitRef.current = false;
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE).catch(() => {});
-    activateKeepAwakeAsync().catch(() => {});
-    // GAME always shows the full screen; stash the tab crop for restore.
-    prevCropRef.current = getCommittedCrop();
-    send(msg.crop(0, 0, 1, 1));
-    setCommittedCrop({ x: 0, y: 0, w: 1, h: 1 });
-    setSel({ crop: { x: 0, y: 0, w: 1, h: 1 }, gameLock: true });
-    const offPad = addListener((event) => {
-      if (event.t === "gamepad") setPadStatus({ on: Boolean(event.on), error: event.error || "" });
-    });
-    const timer = setInterval(() => {
-      if (pad.takeDirty() || Date.now() - lastSent.current.at >= HEARTBEAT_MS) sendPad();
-    }, TICK_MS);
-    lastFrameAt.current = Date.now();
-    lastResendAt.current = 0;
-    const stallTimer = setInterval(() => {
-      if (exitRef.current) return;
-      const idle = Date.now() - lastFrameAt.current;
-      if (idle > 4000 && getStatus().connected) {
-        setStalled(true);
-        if (Date.now() - lastResendAt.current > 4000) {
-          lastResendAt.current = Date.now();
-          try {
-            send(msg.screen(true));
-          } catch {
-            // best-effort
+  // The GAME tab stays mounted after its first visit, so the whole session
+  // (landscape lock, keep-awake, crop, send timers) runs on FOCUS and is torn
+  // down on blur — re-entering GAME always starts a fresh, landscape session.
+  const [session, setSession] = useState(0);
+  useFocusEffect(
+    useCallback(() => {
+      exitRef.current = false;
+      setSession((n) => n + 1);
+      applyOrientation("landscape");
+      activateKeepAwakeAsync().catch(() => {});
+      // GAME always shows the full screen; stash the tab crop for restore.
+      prevCropRef.current = getCommittedCrop();
+      send(msg.crop(0, 0, 1, 1));
+      setCommittedCrop({ x: 0, y: 0, w: 1, h: 1 });
+      setSel({ crop: { x: 0, y: 0, w: 1, h: 1 }, gameLock: true });
+      const offPad = addListener((event) => {
+        if (event.t === "gamepad") setPadStatus({ on: Boolean(event.on), error: event.error || "" });
+      });
+      const timer = setInterval(() => {
+        if (pad.takeDirty() || Date.now() - lastSent.current.at >= HEARTBEAT_MS) sendPad();
+      }, TICK_MS);
+      lastFrameAt.current = Date.now();
+      lastResendAt.current = 0;
+      const stallTimer = setInterval(() => {
+        if (exitRef.current) return;
+        const idle = Date.now() - lastFrameAt.current;
+        if (idle > 4000 && getStatus().connected) {
+          setStalled(true);
+          if (Date.now() - lastResendAt.current > 4000) {
+            lastResendAt.current = Date.now();
+            try {
+              send(msg.screen(true));
+            } catch {
+              // best-effort
+            }
           }
+        } else if (idle <= 4000) {
+          setStalled(false);
         }
-      } else if (idle <= 4000) {
-        setStalled(false);
-      }
-    }, 1000);
-    return () => {
-      clearInterval(timer);
-      clearInterval(stallTimer);
-      offPad();
-      cleanup();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      }, 1000);
+      return () => {
+        clearInterval(timer);
+        clearInterval(stallTimer);
+        offPad();
+        cleanup();
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  );
 
   function cleanup() {
     if (exitRef.current) return;
@@ -142,7 +150,7 @@ export default function GameScreen({ onExit }) {
       // teardown is best-effort
     }
     deactivateKeepAwake().catch(() => {});
-    ScreenOrientation.unlockAsync().catch(() => {});
+    // No unlock here: the tab we land on applies its own orientation.
   }
 
   function exit() {
@@ -185,6 +193,7 @@ export default function GameScreen({ onExit }) {
       {!layout.showStream && <ScreenView style={styles.hiddenStream} onFrame={onGameFrame} />}
 
       <GamepadOverlay
+        key={session}
         layout={layout}
         pad={pad}
         editMode={editMode}

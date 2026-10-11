@@ -115,6 +115,8 @@ test("dpad: 8-way with diagonals and dead centre", () => {
   assert(up.up && !up.left && !up.right && !up.down, "up");
   const ur = dpadDirs(0, 0, 100, 30, -30);
   assert(ur.up && ur.right && !ur.left && !ur.down, "up-right");
+  const left = dpadDirs(0, 0, 100, -40, 18); // ~24 deg below the left arm axis
+  assert(left.left && !left.down && !left.up, "left arm stays pure left");
   const c = dpadDirs(0, 0, 100, 2, 2);
   assert(!c.up && !c.down && !c.left && !c.right, "centre");
 });
@@ -167,6 +169,15 @@ test("router: finger keeps its stick when sliding off it", () => {
   r.start(1, S.cx, S.cy);
   r.move(1, W / 2, S.cy);
   assert(pad.sticks.left[0] === 1, "still steering");
+});
+
+test("router: fixed stick touched slightly off-centre does not drift", () => {
+  const { r, pad, layout, W, H } = makeRouter();
+  const S = box(layout, "stickL", W, H);
+  r.start(1, S.cx + 6, S.cy + 6);
+  assert(pad.sticks.left[0] === 0 && pad.sticks.left[1] === 0, JSON.stringify(pad.sticks.left));
+  r.move(1, S.cx + 400, S.cy + 6);
+  assert(pad.sticks.left[0] === 1, "full right");
 });
 
 test("router: second thumb on a held stick is ignored", () => {
