@@ -1,7 +1,7 @@
 /** TYPE (layout C): shared viewer on top, fixed control area below:
  *   free-text field (Enter never clears it)
  *   row 1, page A: Ctrl Alt Shift Win Esc Tab Del
- *   row 1, page B: Hold Send Home End PgUp PgDn Ins
+ *   row 1, page B: Hold Paste Home End PgUp PgDn Ins
  *   row 2 (always): Bksp Enter ← ↑ ↓ → and ⋯ (flips page A/B)
  * Protocol/functions preserved: key tap, down-only hold, combo chords, text.
  */
@@ -80,13 +80,11 @@ export default function TypeScreen() {
     setHoldMode(!holdMode);
   }
 
-  // Send: dispatch the currently held modifiers as one press+release chord.
-  // Assumption (not visible in the reference screenshot): Send transmits the
-  // staged Hold combination. Uses only the existing combo protocol.
-  function sendHeld() {
-    if (!held.length) return;
-    send(msg.combo([...held]));
-    setHeld([]);
+  // Paste = Ctrl+V on the PC. (Replaces the old "Send" key, which only
+  // fired the held modifiers and did nothing otherwise: typed text already
+  // goes to the PC live, and Enter comes from the phone keyboard.)
+  function paste() {
+    send(msg.combo(["ctrl", "v"]));
   }
 
   // Free-text field: Enter must NEVER clear the buffer. Soft-keyboard return
@@ -167,7 +165,7 @@ export default function TypeScreen() {
   ];
   const ROW_B = [
     { label: holdMode ? "Hold●" : "Hold", active: holdMode, onPress: toggleHoldMode },
-    { label: "Send", accent: true, onPress: sendHeld },
+    { label: "Paste", onPress: paste },
     { label: "Home", onPress: () => tapKey("home") },
     { label: "End", onPress: () => tapKey("end") },
     { label: "PgUp", onPress: () => tapKey("pageup") },

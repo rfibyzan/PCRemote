@@ -1,22 +1,60 @@
 /** Universal viewer panel: Click / Look / Bar + screen + zoom + source chips.
  * Used by PAD, TYPE and WIN so the mode behavior is identical everywhere.
  * CLICK: L/R/M selector sets the tap+drag button, tap = abs click, drag = drag.
- * LOOK: drag to pan, pinch to zoom (EXACT commit, no aspect relock), Fit/1x/2x/4x
- * are the only intentional aspect-locked zooms. BAR: scrollbar overlay.
- * Cross-tab: transient pinch transform is per-tab but resynced on focus so the
- * pointer never desyncs after zoom + tab switch. Stalled streams auto-resubscribe.
+ * LOOK: camera model (src/camera.js). Pan, pinch, fling and double-tap run
+ * on the UI thread (react-native-gesture-handler + Reanimated), so the view
+ * follows the fingers even while the JS thread is busy decoding frames.
+ * Frames are drawn on a whole-monitor canvas at the rect their header says
+ * they cover; the PC is only asked for a (padded) region around the view, so
+ * a new sharper region never moves the picture: no rebase, no jump.
+ * BAR: scrollbar overlay. The camera is shared across PAD/TYPE/WIN.
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import Reanimated, {
+  cancelAnimation,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withDecay,
+  withTiming,
+} from "react-native-reanimated";
 import { useFocusEffect } from "expo-router";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { COLORS, MonitorChips, ScreenView } from "./components";
-import { ConnDot, StreamControls, StreamStats, effectiveFpsValue, getQuality, getSel, setSel, useMonitorSource, useSel } from "./controls";
-import { CursorDot, cursorPixels, trackFrameBytes } from "./cursor";
+import { ConnDot, StreamControls, StreamStats, getSel, setSel, useMonitorSource, useSel } from "./controls";
+import { trackFrameBytes } from "./cursor";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD } from "./tablayout";
-import { MIN_CROP, clampCrop, clampLiveScale, cropMatches, pinchStep, sliderFractionToZoom } from "./zoom";
+import {
+  MAX_ZOOM,
+  camFor,
+  camToNorm,
+  clampCam,
+  fitCanvas,
+  maxPan,
+  monitorToView,
+  normToCam,
+  pinchCam,
+  regionCovers,
+  regionFor,
+  resolveCrop,
+  rubber,
+  viewToMonitor,
+  visibleRect,
+  zoomAt,
+} from "./camera";
+
+const RING = 22;
+const ZOOM_MS = 220;
+// While moving we ask for a roomy region so small pans need no new crop;
+// once the camera rests we ask for a tight one so the view is sharp.
+const PAD_MOVING = 0.8;
+const PAD_REST = 0.3;
+const STRETCH_MOVING = 2.6;
+const STRETCH_REST = 1.7;
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -32,6 +70,17 @@ const CLICK_BTNS = [
 // The agent keeps ONE crop per socket, so duplicates across panels would
 // re-encode identically and look like flicker.
 let lastSentCrop = null;
+// Recent crops we asked for, newest last: frame headers quantize the crop to
+// 1/255, so frames are snapped back to the exact region before placement.
+const sentCrops = [];
+function rememberCrop(c) {
+  sentCrops.push({ ...c });
+  if (sentCrops.length > 16) sentCrops.splice(0, sentCrops.length - 16);
+}
+function snapCrop(header) {
+  const list = lastSentCrop ? [...sentCrops, lastSentCrop] : sentCrops;
+  return resolveCrop(header, list);
+}
 
 export function getCommittedCrop() {
   return lastSentCrop ? { ...lastSentCrop } : null;
@@ -41,6 +90,7 @@ export function getCommittedCrop() {
 // this in sync or post-exit commits will be skipped/duplicated as stale.
 export function setCommittedCrop(c) {
   lastSentCrop = c ? { ...c } : null;
+  if (c) rememberCrop(c);
 }
 
 export default function ViewerPanel({ title = "", touchpad = true, actions = true, onTap = null, children = null }) {
@@ -76,36 +126,32 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     }
   }
   const cropTimer = useRef(null);
-  const animTimer = useRef(null);
   const lastRef = useRef(null);
   const dragRef = useRef(false);
   const vTouch = useRef(null);
-  const pinch = useRef(null);
   const barDrag = useRef(null);
   // Last completed tap (for double/triple-tap word/line select).
   const tapRef = useRef({ t: 0, x: 0, y: 0 });
-  // Zoom slider (Look, right edge): absolute 1x..MAX_ZOOM, center-anchored.
+  // Zoom slider (Look, right edge): absolute 1x..MAX_ZOOM, centre-anchored.
   const [trackH, setTrackH] = useState(0);
   const trackHRef = useRef(0);
-  // LOCAL transform zoom (UI thread, 60fps): transient feedback during an
-  // active pinch. Committed to the remote crop on release; the transform
-  // then settles back to identity as sharper crop frames arrive. No black
-  // flash: the last valid frame is always kept underneath.
-  const scaleV = useRef(new Animated.Value(1)).current;
-  const panV = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-  const settleAnim = useRef(null);
-  const liveRef = useRef({ s: 1, tx: 0, ty: 0 });
-  // Mirror state exists only to re-render minimap/badge/dot at ~10 Hz while
-  // the Animated values drive pixels at 60fps without re-renders.
-  const [, setLive] = useState({ s: 1, tx: 0, ty: 0 });
-  const liveTimer = useRef(null);
-  const rebaseTimer = useRef(null);
-  // Counts received frames: rebase waits for a NEW frame, never a bare timer.
-  const frameTick = useRef(0);
-  // Crop carried in the header of the last DISPLAYED frame. Rebase waits for
-  // a frame encoded with the committed crop, not just any new frame: frames
-  // already in flight still show the old region and caused a visible jump.
-  const lastFrameCrop = useRef(null);
+  // CAMERA (UI thread). s = zoom (1 = Fit), tx/ty = view px. JS keeps a
+  // mirror (camRef) for tap mapping, region requests, minimap and badge.
+  const camS = useSharedValue(1);
+  const camX = useSharedValue(0);
+  const camY = useSharedValue(0);
+  const vwS = useSharedValue(0);
+  const vhS = useSharedValue(0);
+  const aspectS = useSharedValue(16 / 9);
+  const curX = useSharedValue(-1);
+  const curY = useSharedValue(-1);
+  const lastSyncS = useSharedValue(0);
+  const camRef = useRef({ s: 1, tx: 0, ty: 0 });
+  const aspectRef = useRef(0); // 0 = monitor shape unknown yet
+  // Re-render trigger for minimap / badge / slider (~10 Hz while moving).
+  const [, setCamTick] = useState(0);
+  const tickTimer = useRef(null);
+  const regionAt = useRef(0);
   const lastFrameAt = useRef(0);
   const lastResendAt = useRef(0);
   const [cur, setCur] = useState(null);
@@ -125,22 +171,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       setTapBlocked(false);
     }, 1500);
   }
-  // Touch telemetry (temporary diagnosis): throttled Metro logs, no behavior.
-  const teleLast = useRef(0);
-  function tele(msg) {
-    const now = Date.now();
-    if (now - teleLast.current < 500) return;
-    teleLast.current = now;
-    console.log(`[touch] ${msg}`);
-  }
-  function touchKeys(t) {
-    if (!t) return "none";
-    const keys = [];
-    if (typeof t.locationX === "number") keys.push(`loc=${t.locationX},${t.locationY}`);
-    if (typeof t.pageX === "number") keys.push(`page=${t.pageX},${t.pageY}`);
-    return keys.join(" ") || "NO-COORDS";
-  }
-
   useEffect(() => {
     return addListener((event) => {
       if (event.t === "cur" && typeof event.cx === "number") feedCursor(event.cx, event.cy);
@@ -158,14 +188,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         // best-effort
       }
       if (cropTimer.current) clearTimeout(cropTimer.current);
-      if (animTimer.current) clearInterval(animTimer.current);
-      if (liveTimer.current) clearTimeout(liveTimer.current);
-      if (rebaseTimer.current) clearTimeout(rebaseTimer.current);
+      if (tickTimer.current) clearTimeout(tickTimer.current);
       if (stallTimer.current) clearInterval(stallTimer.current);
       if (tapBlockedTimer.current) clearTimeout(tapBlockedTimer.current);
-      stopSettle();
-      cropTimer.current = animTimer.current = liveTimer.current = rebaseTimer.current = null;
-      pinch.current = null;
+      cropTimer.current = tickTimer.current = null;
       vTouch.current = null;
     };
   }, []);
@@ -182,22 +208,18 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       if (event.t === "close" || event.t === "hello") {
         releaseHoldSilent();
         vTouch.current = null;
-        pinch.current = null;
       }
     });
   }, []);
 
-  // Cross-tab resync: transient live transform is per-tab, committed crop is
-  // shared. On focus, drop any stale live (which belonged to another tab's
-  // crop), cancel in-flight gestures, and re-assert the shared crop so agent
-  // and client agree. This is what previously required manual Fit.
+  // Cross-tab resync: the camera is shared (resolution-independent) across
+  // PAD/TYPE/WIN. On focus, adopt it for this view, cancel stray gestures and
+  // re-assert the shared crop so agent and client agree.
   useFocusEffect(
     useCallback(() => {
       const gen = ++focusGen.current;
-      resetTransformInstant();
-      pinch.current = null;
       vTouch.current = null;
-      dimsWarned.current = false;
+      adoptSharedCam();
       // Re-assert shared crop idempotently (agent dedups identical crop).
       // Skipped while GAME owns the crop — its Fit/restore transaction is
       // authoritative and a background panel must not fight it.
@@ -205,6 +227,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         if (!getSel().gameLock) {
           const c = cropRef.current;
           if (c && (c.w < 0.995 || c.h < 0.995 || c.x > 0.004 || c.y > 0.004)) {
+            rememberCrop(c);
             send(msg.crop(c.x, c.y, c.w, c.h));
           }
         }
@@ -232,7 +255,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           // Soft recovery without restarting the app: re-subscribe + re-crop,
           // at most every 4s. lastFrameAt is deliberately NOT reset here so a
           // dead socket stays visibly stalled instead of looking recovered.
-          // If pong is also gone the socket layer (not us) owns the reconnect.
           if (Date.now() - lastResendAt.current > 4000) {
             lastResendAt.current = Date.now();
             try {
@@ -257,21 +279,19 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         } catch {
           // best-effort
         }
-        // Blur: cancel gesture + transient so returning never sees stale live.
-        pinch.current = null;
         vTouch.current = null;
         if (cropTimer.current) {
           clearTimeout(cropTimer.current);
           cropTimer.current = null;
         }
-        if (animTimer.current) {
-          clearInterval(animTimer.current);
-          animTimer.current = null;
-        }
-        stopSettle();
-        resetTransformInstant();
+        // Leave the camera where it is but stop any fling, and publish it so
+        // the next tab opens on the same view.
+        cancelAnimation(camS);
+        cancelAnimation(camX);
+        cancelAnimation(camY);
+        publishCam();
       };
-      // resetTransformInstant/send/msg are intentionally stable (refs/module).
+      // adoptSharedCam/publishCam/send/msg only touch refs and module state.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []),
   );
@@ -282,7 +302,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     if (p && Math.abs(p.x - x) < 0.004 && Math.abs(p.y - y) < 0.004) return;
     const n = { x, y };
     curRef.current = n;
-    setCur(n);
+    curX.value = x;
+    curY.value = y;
+    // The ring moves on the UI thread; React only needs to know it exists.
+    if (!p) setCur(n);
   }
 
   // Crop messages only leave the phone when the region actually changed:
@@ -294,6 +317,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       return;
     }
     lastSentCrop = { ...c };
+    rememberCrop(c);
     send(msg.crop(c.x, c.y, c.w, c.h));
   }
 
@@ -301,82 +325,153 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     setSel({ crop: { ...c } });
   }
 
-  function setCropThrottled(next, immediate) {
-    const c = clampCrop(next);
-    setCrop(c);
-    if (immediate) {
-      if (cropTimer.current) clearTimeout(cropTimer.current);
-      cropTimer.current = null;
-      sendCropIfChanged(c);
+  // ---- camera ------------------------------------------------------------
+
+  // Monitor shape (w/h). A real monitor's size wins; All/Cam derive it from
+  // the frames (frame px divided by the crop they cover).
+  function monitorAspect() {
+    const m = (monitors || []).find(
+      (mm) => current !== "all" && current !== "cam" && String(mm.id) === String(current),
+    );
+    if (m && m.w && m.h) return m.w / m.h;
+    return aspectRef.current || 0;
+  }
+
+  function setAspect(a) {
+    if (!(a > 0) || Math.abs(a - aspectRef.current) < 0.002) return;
+    aspectRef.current = a;
+    aspectS.value = a;
+  }
+
+  useEffect(() => {
+    const a = monitorAspect();
+    if (a) setAspect(a);
+    // monitorAspect reads monitors/current, which are the deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitors, current]);
+
+  function geom() {
+    const vw = viewSize.current.w || 0;
+    const vh = viewSize.current.h || 0;
+    const a = monitorAspect();
+    if (!vw || !vh || !a) return null;
+    return { vw, vh, fit: fitCanvas(vw, vh, a) };
+  }
+
+  function bumpTick(force) {
+    if (force) {
+      if (tickTimer.current) clearTimeout(tickTimer.current);
+      tickTimer.current = null;
+      setCamTick((t) => t + 1);
       return;
     }
-    if (cropTimer.current) return;
-    cropTimer.current = setTimeout(() => {
-      cropTimer.current = null;
-      sendCropIfChanged({ ...cropRef.current });
-    }, 180);
+    if (tickTimer.current) return;
+    tickTimer.current = setTimeout(() => {
+      tickTimer.current = null;
+      setCamTick((t) => t + 1);
+    }, 100);
+  }
+
+  // Ask the PC for the region around the view. Moving: roomy, rarely.
+  // At rest: tight, so the picture is sharp. The picture never moves when
+  // the new region arrives, because frames are placed by their own crop.
+  function requestRegion(moving) {
+    if (getSel().gameLock) return;
+    const g = geom();
+    if (!g) return;
+    const vis = visibleRect(camRef.current, g.fit, g.vw, g.vh);
+    const held = lastSentCrop || cropRef.current;
+    if (moving) {
+      if (regionCovers(held, vis, STRETCH_MOVING)) return;
+      const now = Date.now();
+      if (now - regionAt.current < 140) return;
+      regionAt.current = now;
+      const r = regionFor(vis, PAD_MOVING);
+      setCrop(r);
+      sendCropIfChanged(r);
+      return;
+    }
+    if (regionCovers(held, vis, STRETCH_REST)) return;
+    regionAt.current = Date.now();
+    const r = regionFor(vis, PAD_REST);
+    setCrop(r);
+    sendCropIfChanged(r);
+  }
+
+  // Stable bridges for runOnJS: the gestures are built once per mode, while
+  // the handlers they call are re-created on every render.
+  const moveRef = useRef(null);
+  const restRef = useRef(null);
+  const jsMove = useRef((s, tx, ty) => moveRef.current?.(s, tx, ty)).current;
+  const jsRest = useRef((s, tx, ty) => restRef.current?.(s, tx, ty)).current;
+  moveRef.current = onCamMove;
+  restRef.current = onCamRest;
+
+  // UI thread -> JS: camera moved (throttled in the worklet).
+  function onCamMove(s, tx, ty) {
+    camRef.current = { s, tx, ty };
+    bumpTick(false);
+    requestRegion(true);
+  }
+
+  // UI thread -> JS: camera came to rest.
+  function onCamRest(s, tx, ty) {
+    camRef.current = { s, tx, ty };
+    bumpTick(true);
+    requestRegion(false);
+    publishCam();
+  }
+
+  function publishCam() {
+    const g = geom();
+    if (!g) return;
+    setSel({ cam: camToNorm(camRef.current, g.fit, g.vw, g.vh) });
+  }
+
+  function applyCamInstant(c) {
+    cancelAnimation(camS);
+    cancelAnimation(camX);
+    cancelAnimation(camY);
+    camS.value = c.s;
+    camX.value = c.tx;
+    camY.value = c.ty;
+    camRef.current = { ...c };
+    bumpTick(true);
+  }
+
+  function adoptSharedCam() {
+    const g = geom();
+    const n = getSel().cam;
+    if (!g || !n) return;
+    applyCamInstant(normToCam(n, g.fit, g.vw, g.vh));
+  }
+
+  // Animated camera move from JS (buttons, slider release).
+  function animateCamTo(c) {
+    const g = geom();
+    if (!g) return;
+    const t = clampCam(c, g.fit.bw, g.fit.bh, g.vw, g.vh);
+    camRef.current = t;
+    const cfg = { duration: ZOOM_MS };
+    camX.value = withTiming(t.tx, cfg);
+    camY.value = withTiming(t.ty, cfg);
+    camS.value = withTiming(t.s, cfg, (fin) => {
+      "worklet";
+      if (fin) runOnJS(onCamRest)(t.s, t.tx, t.ty);
+    });
+    bumpTick(true);
+  }
+
+  // Zoom to an absolute level around the current view centre.
+  function zoomTo(z) {
+    const g = geom();
+    if (!g) return;
+    const n = camToNorm(camRef.current, g.fit, g.vw, g.vh);
+    animateCamTo(camFor(z, n.cx, n.cy, g.fit, g.vw, g.vh));
   }
 
   function resetCrop() {
-    resetTransformInstant();
-    if (animTimer.current) {
-      clearInterval(animTimer.current);
-      animTimer.current = null;
-    }
-    setCropThrottled({ x: 0, y: 0, w: 1, h: 1 }, true);
-  }
-
-  // Zoom target locked to the viewer aspect so the encoded region fills the
-  // view with no black bars. cx/cy = monitor-norm center to keep.
-  function aspectCrop(w, cx, cy) {
-    const v = viewSize.current;
-    const d = monitorDims();
-    if (!d) return null; // dims unknown (before hello/layout): never crash
-    const { fw, fh } = d;
-    const viewA = (v.w || 1) / Math.max(1, v.h);
-    let nw = Math.max(MIN_CROP, Math.min(1, w));
-    let nh = (nw * fw) / (fh * viewA);
-    if (nh > 1) {
-      nh = 1;
-      nw = (nh * fh * viewA) / fw;
-    }
-    nh = Math.max(MIN_CROP, Math.min(1, nh));
-    return clampCrop({ x: cx - nw / 2, y: cy - nh / 2, w: nw, h: nh });
-  }
-
-  function zoomToWidth(w) {
-    const c = cropRef.current;
-    const target = aspectCrop(w, c.x + c.w / 2, c.y + c.h / 2);
-    if (!target) return;
-    resetTransformInstant();
-    zoomAnimated(target);
-  }
-
-  // Smooth stepped zoom (~120 ms) instead of a discrete jump.
-  function zoomAnimated(to) {
-    const from = { ...cropRef.current };
-    if (animTimer.current) {
-      clearInterval(animTimer.current);
-      animTimer.current = null;
-    }
-    const steps = 6;
-    let i = 0;
-    animTimer.current = setInterval(() => {
-      i += 1;
-      const t = Math.min(1, i / steps);
-      const c = clampCrop({
-        x: from.x + (to.x - from.x) * t,
-        y: from.y + (to.y - from.y) * t,
-        w: from.w + (to.w - from.w) * t,
-        h: from.h + (to.h - from.h) * t,
-      });
-      setCrop(c);
-      if (t >= 1) {
-        clearInterval(animTimer.current);
-        animTimer.current = null;
-        setCropThrottled(to, true);
-      }
-    }, 20);
+    animateCamTo({ s: 1, tx: 0, ty: 0 });
   }
 
   function onPick(id) {
@@ -385,252 +480,166 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   }
 
   function resetCropSilent() {
-    resetTransformInstant();
+    applyCamInstant({ s: 1, tx: 0, ty: 0 });
+    setSel({ cam: { z: 1, cx: 0.5, cy: 0.5 } });
     setCrop({ x: 0, y: 0, w: 1, h: 1 });
     const c = cropRef.current;
     if (c.w < 0.995 || c.h < 0.995) sendCropIfChanged({ x: 0, y: 0, w: 1, h: 1 });
   }
 
-  // Mirror the live transform into state (throttled) for minimap / badge /
-  // cursor-dot. The Animated values themselves drive pixels at 60fps.
-  function syncLive(force) {
-    if (!force) {
-      if (liveTimer.current) return;
-      liveTimer.current = setTimeout(() => {
-        liveTimer.current = null;
-        setLive({ ...liveRef.current });
-      }, 100);
-      return;
-    }
-    if (liveTimer.current) {
-      clearTimeout(liveTimer.current);
-      liveTimer.current = null;
-    }
-    setLive({ ...liveRef.current });
+  // Viewer-local point -> monitor point through the camera. Null when the
+  // monitor shape or the layout is unknown: taps are ignored, never mis-fired.
+  function mapToMonitor(x, y) {
+    const g = geom();
+    if (!g) return null;
+    const m = viewToMonitor(x, y, camRef.current, g.fit, g.vw, g.vh);
+    if (m.x < -0.01 || m.x > 1.01 || m.y < -0.01 || m.y > 1.01) return null;
+    return { x: clamp01(m.x), y: clamp01(m.y) };
   }
 
-  function stopSettle() {
-    if (settleAnim.current) {
-      settleAnim.current.stop();
-      settleAnim.current = null;
-    }
-    if (rebaseTimer.current) {
-      clearTimeout(rebaseTimer.current);
-      rebaseTimer.current = null;
-    }
-  }
+  // ---- gestures (UI thread) ------------------------------------------------
 
-  function resetTransformInstant() {
-    stopSettle();
-    liveRef.current = { s: 1, tx: 0, ty: 0 };
-    scaleV.setValue(1);
-    panV.setValue({ x: 0, y: 0 });
-    syncLive(true);
-  }
+  const lookOn = sub === "Look" && current !== "cam";
+  const startS = useSharedValue({ s: 1, tx: 0, ty: 0, fx: 0, fy: 0 });
+  const decayLeft = useSharedValue(0);
 
-  // Guarded rebase for the PERSISTENT transform model: after a crop follow
-  // is sent, drop back to identity once its sharper frames have had time to
-  // arrive (content matches, so the cut is invisible). Cancelled by any new
-  // gesture — fingers never wait for frames, so zoom feels realtime at any
-  // stream fps. Timing scales with the EFFECTIVE stream fps (remote/cropped
-  // aware), not the raw user target.
-  function scheduleRebase() {
-    stopSettle();
-    let delay = 350;
-    try {
-      const q = getQuality();
-      const c = cropRef.current;
-      const cropped = Boolean(c && (c.w < 0.995 || c.h < 0.995));
-      const remote = String(getStatus().link || "") === "remote";
-      const fps = effectiveFpsValue(q.q, q.fpsStep, { remote, cropped });
-      delay = Math.max(200, Math.min(600, Math.round(1000 / Math.max(1, fps)) + 150));
-    } catch {
-      // fall back to the default delay
-    }
-    const snap = { ...liveRef.current };
-    const tick0 = frameTick.current;
-    const t0 = Date.now();
-    const check = () => {
-      rebaseTimer.current = null;
-      const L = liveRef.current;
-      if (
-        Math.abs(L.s - snap.s) > 0.001 ||
-        Math.abs(L.tx - snap.tx) > 1 ||
-        Math.abs(L.ty - snap.ty) > 1
-      ) {
-        return; // fingers moved on — the gesture owns the transform now
-      }
-      // Rebase only once a NEW frame encoded with the COMMITTED crop has
-      // arrived (or 800ms passed with a stalled stream, so we never get
-      // stuck transformed). Old-crop frames still in flight are skipped.
-      const fresh = frameTick.current !== tick0 && cropMatches(lastFrameCrop.current, cropRef.current);
-      if (!fresh && Date.now() - t0 < 800) {
-        rebaseTimer.current = setTimeout(check, 50);
+  const lookGesture = useMemo(() => {
+    // Release: clamp scale, fling with the finger's velocity inside the edges
+    // (rubber band at the rim), then report the resting camera to JS.
+    function settle(vx, vy) {
+      "worklet";
+      const vw = vwS.value;
+      const vh = vhS.value;
+      const fit = fitCanvas(vw, vh, aspectS.value);
+      const c = clampCam({ s: camS.value, tx: camX.value, ty: camY.value }, fit.bw, fit.bh, vw, vh);
+      const { mx, my } = maxPan(c.s, fit.bw, fit.bh, vw, vh);
+      const cfg = { duration: ZOOM_MS };
+      if (Math.abs(c.s - camS.value) > 0.001) camS.value = withTiming(c.s, cfg);
+      const inside = Math.abs(camX.value - c.tx) < 0.5 && Math.abs(camY.value - c.ty) < 0.5;
+      const fast = Math.hypot(vx, vy) > 250;
+      if (inside && fast && (mx > 0 || my > 0)) {
+        // Two decays end at different times: report rest after the last one.
+        decayLeft.value = 2;
+        const done = () => {
+          "worklet";
+          decayLeft.value -= 1;
+          if (decayLeft.value === 0) runOnJS(jsRest)(camS.value, camX.value, camY.value);
+        };
+        camX.value = withDecay({ velocity: mx > 0 ? vx : 0, clamp: [-mx, mx], rubberBandEffect: true, deceleration: 0.994 }, done);
+        camY.value = withDecay({ velocity: my > 0 ? vy : 0, clamp: [-my, my], rubberBandEffect: true, deceleration: 0.994 }, done);
         return;
       }
-      liveRef.current = { s: 1, tx: 0, ty: 0 };
-      scaleV.setValue(1);
-      panV.setValue({ x: 0, y: 0 });
-      syncLive(true);
+      camX.value = withTiming(c.tx, cfg);
+      camY.value = withTiming(c.ty, cfg, (fin) => {
+        "worklet";
+        if (fin) runOnJS(jsRest)(c.s, c.tx, c.ty);
+      });
+    }
+
+    const pinchG = Gesture.Pinch()
+      .enabled(lookOn)
+      .onStart((e) => {
+        cancelAnimation(camS);
+        cancelAnimation(camX);
+        cancelAnimation(camY);
+        startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: e.focalX, fy: e.focalY };
+      })
+      .onUpdate((e) => {
+        const st = startS.value;
+        const vw = vwS.value;
+        const vh = vhS.value;
+        const fit = fitCanvas(vw, vh, aspectS.value);
+        const c = pinchCam(st, { x: st.fx, y: st.fy }, { x: e.focalX, y: e.focalY }, e.scale, vw, vh);
+        const { mx, my } = maxPan(c.s, fit.bw, fit.bh, vw, vh);
+        camS.value = c.s;
+        camX.value = rubber(c.tx, mx, vw);
+        camY.value = rubber(c.ty, my, vh);
+        const now = Date.now();
+        if (now - lastSyncS.value > 80) {
+          lastSyncS.value = now;
+          runOnJS(jsMove)(camS.value, camX.value, camY.value);
+        }
+      })
+      .onEnd(() => {
+        settle(0, 0);
+      });
+
+    const panG = Gesture.Pan()
+      .enabled(lookOn)
+      .maxPointers(1)
+      .minDistance(2)
+      .onStart(() => {
+        cancelAnimation(camX);
+        cancelAnimation(camY);
+        startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: 0, fy: 0 };
+      })
+      .onUpdate((e) => {
+        const st = startS.value;
+        const vw = vwS.value;
+        const vh = vhS.value;
+        const fit = fitCanvas(vw, vh, aspectS.value);
+        const { mx, my } = maxPan(camS.value, fit.bw, fit.bh, vw, vh);
+        camX.value = rubber(st.tx + e.translationX, mx, vw);
+        camY.value = rubber(st.ty + e.translationY, my, vh);
+        const now = Date.now();
+        if (now - lastSyncS.value > 80) {
+          lastSyncS.value = now;
+          runOnJS(jsMove)(camS.value, camX.value, camY.value);
+        }
+      })
+      .onEnd((e) => {
+        settle(e.velocityX, e.velocityY);
+      });
+
+    const doubleTapG = Gesture.Tap()
+      .enabled(lookOn)
+      .numberOfTaps(2)
+      .maxDuration(250)
+      .maxDistance(24)
+      .onEnd((e, ok) => {
+        if (!ok) return;
+        const vw = vwS.value;
+        const vh = vhS.value;
+        const fit = fitCanvas(vw, vh, aspectS.value);
+        const cur = { s: camS.value, tx: camX.value, ty: camY.value };
+        const target = cur.s < 1.6 ? zoomAt(cur, 2.5 / cur.s, { x: e.x, y: e.y }, vw, vh) : { s: 1, tx: 0, ty: 0 };
+        const t = clampCam(target, fit.bw, fit.bh, vw, vh);
+        const cfg = { duration: ZOOM_MS };
+        camX.value = withTiming(t.tx, cfg);
+        camY.value = withTiming(t.ty, cfg);
+        camS.value = withTiming(t.s, cfg, (fin) => {
+          if (fin) runOnJS(jsRest)(t.s, t.tx, t.ty);
+        });
+      });
+
+    return Gesture.Simultaneous(pinchG, panG, doubleTapG);
+    // Shared values and the JS bridges are stable; only the mode matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lookOn]);
+
+  // Canvas = whole monitor fitted into the view, moved by the camera.
+  const canvasStyle = useAnimatedStyle(() => {
+    const fit = fitCanvas(vwS.value, vhS.value, aspectS.value);
+    return {
+      position: "absolute",
+      left: fit.ox,
+      top: fit.oy,
+      width: fit.bw,
+      height: fit.bh,
+      transform: [{ translateX: camX.value }, { translateY: camY.value }, { scale: camS.value }],
     };
-    rebaseTimer.current = setTimeout(check, delay);
-  }
+  });
 
-  // Region pixel dims from TRUE monitor size only. Returns null when the
-  // monitor is unknown or the view isn't laid out yet — callers must NOT
-  // silently fall back to stale frame dims (that was the cross-tab pointer
-  // desync: new tab mapped taps with zeros until first frame arrived).
-  // Fit (w=1,h=1) masked the bug, which is why users had to Fit first.
-  const dimsWarned = useRef(false);
-  function monitorDims() {
-    const c = cropRef.current;
-    const m = (monitors || []).find(
-      (mm) => current !== "all" && current !== "cam" && String(mm.id) === String(current),
-    );
-    if (m && m.w && m.h) {
-      return { fw: Math.max(1, c.w * m.w), fh: Math.max(1, c.h * m.h), exact: true };
-    }
-    // All/Cam legitimately use frame dims (no single monitor size).
-    if (current === "all" || current === "cam") {
-      const f = frameSize.current;
-      if (f.w && f.h) return { fw: f.w, fh: f.h, exact: true };
-      return null;
-    }
-    if (!dimsWarned.current) {
-      dimsWarned.current = true;
-      console.log(`[pointer] no true monitor dims for current=${String(current)} — tap ignored until hello/layout`);
-    }
-    return null;
-  }
-
-  // Viewer-local point -> UNCLAMPED fractions of the displayed image.
-  // Returns null when dims unknown so taps are ignored, never mis-mapped.
-  function localToFrac(lx, ly) {
-    const d = monitorDims();
-    if (!d) return null;
-    const vw = viewSize.current.w || 0;
-    const vh = viewSize.current.h || 0;
-    if (!vw || !vh) return null;
-    const { fw, fh } = d;
-    const scale = Math.min(vw / Math.max(1, fw), vh / Math.max(1, fh));
-    const dispW = Math.max(1, fw * scale);
-    const dispH = Math.max(1, fh * scale);
-    const offX = (vw - dispW) / 2;
-    const offY = (vh - dispH) / 2;
-    return { nx: (lx - offX) / dispW, ny: (ly - offY) / dispH, dispW, dispH };
-  }
-
-  function mapToMonitor(tx, ty, cr) {
-    // Invert the live transform first: taps land on displayed content,
-    // which may be zoomed/panned independently of the committed crop.
-    // Returns null when dims unknown: caller must ignore, never mis-fire.
-    const L = liveRef.current;
-    const vw = viewSize.current.w || 0;
-    const vh = viewSize.current.h || 0;
-    if (!vw || !vh) return null;
-    const cx = vw / 2;
-    const cy = vh / 2;
-    const ux = cx + (tx - cx - L.tx) / Math.max(0.01, L.s);
-    const uy = cy + (ty - cy - L.ty) / Math.max(0.01, L.s);
-    const fr = localToFrac(ux, uy);
-    if (!fr) return null;
-    const { nx, ny } = fr;
-    const c = cr || cropRef.current;
-    return { x: clamp01(c.x + clamp01(nx) * c.w), y: clamp01(c.y + clamp01(ny) * c.h) };
-  }
-
-  // Average viewer-local touch point (locationX/Y are viewer-relative on the
-  // bare image area); null when unavailable -> gestures fall back to center.
-  function avgLocal(touches) {
-    let sx = 0;
-    let sy = 0;
-    for (const t of touches) {
-      if (typeof t.locationX !== "number" || typeof t.locationY !== "number") return null;
-      sx += t.locationX;
-      sy += t.locationY;
-    }
-    return { x: sx / touches.length, y: sy / touches.length };
-  }
-
-  // NOTE (relock audit): pinch/slider commits are EXACT — fingers leave R,
-  // we commit clampCrop(R). No normalizeAspect here (deleted): relock rewrote
-  // R into R' and the rebase visibly jumped, plus per-tab viewSize made the
-  // same zoom commit different crops per tab. Explicit Fit/1x/2x/4x buttons
-  // remain aspect-locked via aspectCrop/zoomToWidth (intentional).
-
-  // Visible monitor rect = committed crop composed with the live transient
-  // transform. Drives the minimap, ZOOM badge and pinch commit.
-  // Returns null when dims/view unknown (no guessing).
-  function visibleRect() {
-    const c = cropRef.current;
-    const L = liveRef.current;
-    const v = viewSize.current;
-    if (!v.w || !v.h) return null;
-    const cx = v.w / 2;
-    const cy = v.h / 2;
-    const inv = (dx, dy) => ({
-      x: cx + (dx - cx - L.tx) / Math.max(0.01, L.s),
-      y: cy + (dy - cy - L.ty) / Math.max(0.01, L.s),
-    });
-    const p1 = inv(0, 0);
-    const p2 = inv(v.w, v.h);
-    const m1 = localToFrac(p1.x, p1.y);
-    const m2 = localToFrac(p2.x, p2.y);
-    if (!m1 || !m2) return null;
-    const x0 = Math.max(0, Math.min(1, c.x + Math.min(m1.nx, m2.nx) * c.w));
-    const y0 = Math.max(0, Math.min(1, c.y + Math.min(m1.ny, m2.ny) * c.h));
-    const x1 = Math.max(0, Math.min(1, c.x + Math.max(m1.nx, m2.nx) * c.w));
-    const y1 = Math.max(0, Math.min(1, c.y + Math.max(m1.ny, m2.ny) * c.h));
-    return { x: x0, y: y0, w: Math.max(0.01, x1 - x0), h: Math.max(0.01, y1 - y0) };
-  }
-
-  // Commit a finished pan: EXACT visible viewport becomes the remote crop.
-  // No-op when the finger never moved the transform (tap in Look mode).
-  // At Fit (or unmoved), the visible rect equals the committed crop: snap
-  // back instantly instead of waiting out a rebase.
-  function commitPan() {
-    const L = liveRef.current;
-    if (Math.abs(L.s - 1) < 0.02 && Math.abs(L.tx) < 2 && Math.abs(L.ty) < 2) {
-      resetTransformInstant();
-      return;
-    }
-    const vis = visibleRect();
-    if (!vis) {
-      resetTransformInstant();
-      return;
-    }
-    const c = cropRef.current;
-    if (
-      Math.abs(vis.x - c.x) < 0.001 && Math.abs(vis.y - c.y) < 0.001 &&
-      Math.abs(vis.w - c.w) < 0.001 && Math.abs(vis.h - c.h) < 0.001
-    ) {
-      resetTransformInstant();
-      return;
-    }
-    setCropThrottled(clampCrop(vis), true);
-    scheduleRebase();
-  }
-
-  // Commit a finished pinch: the EXACT visible viewport becomes the remote
-  // crop (sharpness follow). NO aspect-relock here (verified relock source):
-  // normalizeAspect is only for explicit Fit/1x/2x/4x buttons.
-  function commitPinch() {
-    const st = pinch.current;
-    const L = liveRef.current;
-    // Commit when the gesture actually moved anything, either direction:
-    // s<1 is a legitimate zoom-OUT and must not be discarded.
-    if (!st || (Math.abs(L.s - 1) < 0.02 && Math.abs(L.tx) < 2 && Math.abs(L.ty) < 2)) {
-      resetTransformInstant();
-      return;
-    }
-    const vis = visibleRect();
-    if (!vis) {
-      resetTransformInstant();
-      return;
-    }
-    setCropThrottled(clampCrop(vis), true);
-    scheduleRebase();
-  }
+  // Cursor ring follows the camera on the UI thread (no re-render per frame).
+  const ringStyle = useAnimatedStyle(() => {
+    if (curX.value < 0 || vwS.value <= 0) return { opacity: 0 };
+    const vw = vwS.value;
+    const vh = vhS.value;
+    const fit = fitCanvas(vw, vh, aspectS.value);
+    const p = monitorToView(curX.value, curY.value, { s: camS.value, tx: camX.value, ty: camY.value }, fit, vw, vh);
+    const vis = p.x >= -RING && p.x <= vw + RING && p.y >= -RING && p.y <= vh + RING;
+    return { opacity: vis ? 1 : 0, transform: [{ translateX: p.x - RING / 2 }, { translateY: p.y - RING / 2 }] };
+  });
 
   function viewerLocal(e) {
     const t = e.nativeEvent.touches?.[0] || e.nativeEvent;
@@ -638,37 +647,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     return { x: t.pageX || 0, y: t.pageY || 0 };
   }
 
+  // ---- Click mode (raw touches; Look is owned by the gesture handler) -----
+
   function onViewerTouchStart(e) {
-    if (current === "cam") return;
-    const touches = e.nativeEvent.touches || [];
-    if (sub === "Look") {
-      tele(`Look start n=${touches.length} t0=${touchKeys(touches[0])} view=${viewSize.current.w}x${viewSize.current.h} origin=${originRef.current ? `${originRef.current.x},${originRef.current.y}` : "null"}`);
-      if (touches.length === 2) {
-        // New gesture continues from the LIVE transform (persistent model):
-        // cancel any pending rebase, never snap fingers back to identity.
-        // dPrev seeds the INCREMENTAL ratio below (immune to a tiny d0).
-        // Origin snapshot decides the anchor space for the WHOLE gesture so
-        // a late measurement can never yank mid-pinch.
-        stopSettle();
-        measureOrigin();
-        const dx = touches[0].pageX - touches[1].pageX;
-        const dy = touches[0].pageY - touches[1].pageY;
-        // Anchor space locked per gesture; a missing origin falls back to
-        // center EXPLICITLY (logged once here, never silently per frame).
-        const hasAnchor = Boolean(originRef.current) || Boolean(avgLocal(touches));
-        if (!hasAnchor) console.log("[zoom] pinch anchor: no origin/location — center fallback");
-        pinch.current = {
-          dPrev: Math.hypot(dx, dy),
-          crop: { ...cropRef.current },
-          useOrigin: Boolean(originRef.current),
-        };
-      } else {
-        const p = viewerLocal(e);
-        pinch.current = null;
-        vTouch.current = { x: p.x, y: p.y };
-      }
-      return;
-    }
+    if (current === "cam" || sub === "Look") return;
     const p = viewerLocal(e);
     // Double-tap detection for word select: a second quick tap near the last
     // one arms word-drag. Windows selects words on click, down+drag — which is
@@ -681,88 +663,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   }
 
   function onViewerTouchMove(e) {
-    if (current === "cam") return;
+    if (current === "cam" || sub === "Look") return;
     const touches = e.nativeEvent.touches || [];
-    if (sub === "Look") {
-      if (touches.length === 2 && pinch.current) {
-        // INCREMENTAL persistent zoom: each move frame scales relative to
-        // the PREVIOUS frame (d/dPrev), composed onto the live transform.
-        // A tiny starting span can never explode the zoom, and pinching-in
-        // always zooms back out symmetrically. 60fps, no crop per frame.
-        const st = pinch.current;
-        const dx = touches[0].pageX - touches[1].pageX;
-        const dy = touches[0].pageY - touches[1].pageY;
-        const d = Math.max(1, Math.hypot(dx, dy));
-        tele(`pinch move d=${Math.round(d)} dPrev=${Math.round(st.dPrev || 0)} t0=${touchKeys(touches[0])}`);
-        const vw = viewSize.current.w || 1;
-        const vh = viewSize.current.h || 1;
-        const pm = { x: (touches[0].pageX + touches[1].pageX) / 2, y: (touches[0].pageY + touches[1].pageY) / 2 };
-        // Anchor: page midpoint minus measured viewer origin. locationX is
-        // only a fallback (unreliable on some Android builds); center last.
-        let ax;
-        let ay;
-        const o = st.useOrigin ? originRef.current : null;
-        if (o) {
-          ax = pm.x - o.x;
-          ay = pm.y - o.y;
-        } else {
-          const lm = avgLocal(touches);
-          ax = lm ? lm.x : vw / 2;
-          ay = lm ? lm.y : vh / 2;
-        }
-        // INCREMENTAL zoom, total kept within [1x, MAX_ZOOM] of the monitor;
-        // the content under the finger midpoint stays under the fingers.
-        const { s, tx, ty } = pinchStep({
-          live: liveRef.current,
-          dPrev: st.dPrev,
-          d,
-          anchor: { x: ax, y: ay },
-          view: { w: vw, h: vh },
-          cropW: st.crop.w,
-        });
-        st.dPrev = d;
-        liveRef.current = { s, tx, ty };
-        scaleV.setValue(s);
-        panV.setValue({ x: tx, y: ty });
-        syncLive(false);
-        return;
-      }
-      const p = viewerLocal(e);
-      const start = vTouch.current;
-      if (!start) {
-        vTouch.current = { x: p.x, y: p.y };
-        return;
-      }
-      // Transient pan at 60fps (same persistent model as pinch): the finger
-      // moves the Animated layer instantly, the committed crop follows on
-      // release (sharpness commit + guarded rebase). The old crop-driven pan
-      // streamed throttled crops mid-drag and felt one step behind.
-      // No hard cover-clamp here: zoom usually lives in the CROP (live scale
-      // 1), so clamping to cover would freeze panning. A 25% overscroll
-      // margin keeps the feel bounded; the commit itself is clamped to the
-      // monitor, so steady state never shows bars.
-      const vw = viewSize.current.w || 0;
-      const vh = viewSize.current.h || 0;
-      if (!vw || !vh || !monitorDims()) {
-        vTouch.current = { x: p.x, y: p.y };
-        return;
-      }
-      const L = liveRef.current;
-      const dx = p.x - start.x;
-      const dy = p.y - start.y;
-      const s = Math.max(0.01, L.s);
-      const mx = Math.max(0, (vw * s - vw) / 2) + vw * 0.25;
-      const my = Math.max(0, (vh * s - vh) / 2) + vh * 0.25;
-      const tx = Math.max(-mx, Math.min(mx, L.tx + dx));
-      const ty = Math.max(-my, Math.min(my, L.ty + dy));
-      liveRef.current = { s: L.s, tx, ty };
-      scaleV.setValue(L.s);
-      panV.setValue({ x: tx, y: ty });
-      syncLive(false);
-      tele(`pan move p=${Math.round(p.x)},${Math.round(p.y)} t=${Math.round(tx)},${Math.round(ty)}`);
-      vTouch.current = { x: p.x, y: p.y, panned: true };
-      return;
-    }
     if (touches.length === 2) {
       const t = touches[0];
       const last = lastRef.current;
@@ -801,30 +703,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   }
 
   function onViewerTouchEnd(e) {
-    if (current === "cam") {
+    if (current === "cam" || sub === "Look") {
       vTouch.current = null;
-      return;
-    }
-    if (sub === "Look") {
-      // Commit only when the LAST finger lifts. Lifting one finger of a
-      // pinch hands over to a one-finger pan instead of committing (and
-      // re-encoding) mid-gesture.
-      const left = e.nativeEvent.touches?.length || 0;
-      if (left > 0) {
-        if (pinch.current) pinch.current = null;
-        const p = viewerLocal(e);
-        vTouch.current = { x: p.x, y: p.y };
-        return;
-      }
-      vTouch.current = null;
-      // Both pinch and pan commit their transient transform (sharpness
-      // follow with guarded rebase). Pure taps reset the identity.
-      if (pinch.current) {
-        commitPinch();
-        pinch.current = null;
-      } else {
-        commitPan();
-      }
       return;
     }
     const st = vTouch.current;
@@ -944,53 +824,45 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     barDrag.current = null;
   }
 
-  // Slider drag: continuous center-anchored transient scale. Commit on release.
+  // Slider drag: absolute zoom around the view centre, live; rest on release.
   function onSliderTouch(e) {
     const t = e.nativeEvent.touches?.[0];
     if (!t || typeof t.locationY !== "number") return;
+    const g = geom();
+    if (!g) return;
     const h = trackHRef.current || 1;
-    const z = sliderFractionToZoom(t.locationY / h);
-    const c0 = cropRef.current;
-    const s = clampLiveScale(z * c0.w, c0.w);
-    liveRef.current = { s, tx: 0, ty: 0 };
-    scaleV.setValue(s);
-    panV.setValue({ x: 0, y: 0 });
-    syncLive(false);
+    const f = Math.max(0, Math.min(1, t.locationY / h));
+    const z = 1 + (1 - f) * (MAX_ZOOM - 1);
+    const n = camToNorm(camRef.current, g.fit, g.vw, g.vh);
+    applyCamInstant(camFor(z, n.cx, n.cy, g.fit, g.vw, g.vh));
+    requestRegion(true);
   }
 
   function onSliderEnd() {
-    // Same persistent model as pinch: EXACT commit (no relock), guarded rebase.
-    const vis = visibleRect();
-    if (!vis) return;
-    setCropThrottled(clampCrop(vis), true);
-    scheduleRebase();
+    const c = camRef.current;
+    onCamRest(c.s, c.tx, c.ty);
   }
 
   function onFrame(f) {
     // Dropped frames still carry fresh cursor/size metadata, but they were
-    // NOT displayed: skip the rebase tick and byte meters so "real fps"
-    // means displayed frames (honest).
-    if (f?.w && f?.h) frameSize.current = { w: f.w, h: f.h };
+    // NOT displayed: skip the byte meters so "real fps" means displayed
+    // frames (honest).
+    if (f?.w && f?.h) {
+      frameSize.current = { w: f.w, h: f.h };
+      // All / Cam have no single monitor size: derive the shape from frames.
+      const real = (monitors || []).some(
+        (mm) => current !== "all" && current !== "cam" && String(mm.id) === String(current) && mm.w && mm.h,
+      );
+      if (!real) {
+        const c = snapCrop(f.crop);
+        setAspect(f.w / Math.max(0.001, c.w) / (f.h / Math.max(0.001, c.h)));
+      }
+    }
     if (typeof f?.cx === "number") feedCursor(f.cx, f.cy);
     lastFrameAt.current = Date.now();
     if (stalled) setStalled(false);
     if (f?._dropped) return;
-    if (f?.crop) lastFrameCrop.current = f.crop;
-    frameTick.current += 1;
     trackFrameBytes(f?.jpeg?.length);
-  }
-
-  function cursorDot() {
-    if (!cur) return null;
-    const v = viewSize.current;
-    if (!v.w || !v.h) return null;
-    const c = cropRef.current;
-    // Same exact-dims mapping as taps (see monitorDims). Null = hide, never guess.
-    const d = monitorDims();
-    if (!d) return null;
-    const p = cursorPixels(cur.x, cur.y, v.w, v.h, d.fw, d.fh, c);
-    if (!p.visible) return null;
-    return <CursorDot x={p.x} y={p.y} />;
   }
 
   // Stream settings popover (preset / Q / fps): opened from the gear or the
@@ -1011,7 +883,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // or click button changes, instead of a text line that pushed the viewer.
   const hintText =
     sub === "Look"
-      ? "Geser = pan · pinch = zoom"
+      ? "Geser = pan · pinch = zoom · 2x tap = zoom"
       : clickBtn === "right"
         ? "Tap = klik kanan · drag = drag kanan"
         : clickBtn === "middle"
@@ -1023,23 +895,15 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     const t = setTimeout(() => setHintOn(false), 3500);
     return () => clearTimeout(t);
   }, [sub, clickBtn]);
-  // Effective viewport for minimap/badge/slider: committed crop + live transform.
-  // Null until dims+layout ready → fall back to committed crop for badge/minimap.
-  const visOrNull = (() => {
-    try {
-      return visibleRect();
-    } catch {
-      return null;
-    }
-  })();
-  const vis = visOrNull || { ...cropRef.current };
-  const effZoom = 1 / Math.max(0.01, vis.w);
-  const sliderFrac = Math.max(0, Math.min(1, (effZoom - 1) / 7));
+  // Minimap / badge / slider read the JS camera mirror (~10 Hz while moving).
+  const g0 = geom();
+  const vis = g0 ? visibleRect(camRef.current, g0.fit, g0.vw, g0.vh) : { x: 0, y: 0, w: 1, h: 1 };
+  const effZoom = camRef.current.s || 1;
+  const sliderFrac = Math.max(0, Math.min(1, (effZoom - 1) / (MAX_ZOOM - 1)));
 
-  // Mode switch always starts from an identity transform: a leftover
-  // transient scale would misalign taps and flash the viewport.
+  // The camera stays where it is across Click/Look: zoom in with Look, then
+  // switch to Click and tap precisely on the zoomed picture.
   function changeSub(s) {
-    resetTransformInstant();
     setSel({ mode: s });
   }
 
@@ -1071,29 +935,42 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         </Pressable>
       </View>
       <View style={styles.viewerBox}>
+        <GestureDetector gesture={lookGesture}>
         <View
           ref={wrapRef}
           style={styles.viewerWrap}
+          collapsable={false}
           onLayout={(e) => {
             const { width, height } = e.nativeEvent.layout;
+            const prev = viewSize.current;
             viewSize.current = { w: width, h: height };
+            vwS.value = width;
+            vhS.value = height;
             measureOrigin();
+            // Keep the same monitor point centred when the view resizes
+            // (soft keyboard, rotation), clamped to the new edges.
+            const a = monitorAspect();
+            if (a && prev.w && prev.h && (prev.w !== width || prev.h !== height)) {
+              const n = camToNorm(camRef.current, fitCanvas(prev.w, prev.h, a), prev.w, prev.h);
+              applyCamInstant(normToCam(n, fitCanvas(width, height, a), width, height));
+            } else if (!prev.w) {
+              adoptSharedCam();
+            }
+            bumpTick(true);
           }}
           onTouchStart={onViewerTouchStart}
           onTouchMove={onViewerTouchMove}
           onTouchEnd={onViewerTouchEnd}
         >
-          {/* Local transform layer: transient pinch feedback at 60fps.
-              ScreenView double-buffer internals untouched underneath. */}
-          <Animated.View
-            style={[
-              styles.zoomLayer,
-              { transform: [{ scale: scaleV }, { translateX: panV.x }, { translateY: panV.y }] },
-            ]}
-          >
-            <ScreenView style={styles.screen} onFrame={onFrame} monKey={current} />
-            {cursorDot()}
-          </Animated.View>
+          {/* Camera canvas: whole monitor, frames placed at their own crop. */}
+          <Reanimated.View style={canvasStyle} pointerEvents="none">
+            <ScreenView style={styles.canvasFill} onFrame={onFrame} monKey={current} placed resolveCrop={snapCrop} />
+          </Reanimated.View>
+          {!!cur && <Reanimated.View pointerEvents="none" style={[styles.ring, ringStyle]} />}
+        </View>
+        </GestureDetector>
+        {/* Look controls sit beside (not inside) the gesture view so a drag on
+            the slider or a tap on a button never pans the camera. */}
           {sub === "Look" && (
             <View style={styles.zoomSlider} pointerEvents="box-none">
               <View
@@ -1118,13 +995,13 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           )}
           {sub === "Look" && (
             <View style={styles.lookBar} pointerEvents="box-none">
-              <View style={styles.zoomRow}>
-                <View style={styles.zoomBadge} pointerEvents="none">
+              <View style={styles.zoomRow} pointerEvents="none">
+                <View style={styles.zoomBadge}>
                   <Text style={styles.zoomBadgeText}>ZOOM {effZoom.toFixed(1)}x</Text>
                 </View>
               </View>
-              <View style={styles.lookBottom}>
-                <View style={styles.minimap}>
+              <View style={styles.lookBottom} pointerEvents="box-none">
+                <View style={styles.minimap} pointerEvents="none">
                   <View
                     style={[
                       styles.viewport,
@@ -1140,17 +1017,15 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.zoomRowScroll}>
                   <View style={styles.zoomRow}>
                     <Pressable onPress={resetCrop} style={styles.zoomBtn}><Text style={styles.zoomText}>Fit</Text></Pressable>
-                    <Pressable onPress={() => zoomToWidth(0.6)} style={styles.zoomBtn}><Text style={styles.zoomText}>1x</Text></Pressable>
-                    <Pressable onPress={() => zoomToWidth(0.35)} style={styles.zoomBtn}><Text style={styles.zoomText}>2x</Text></Pressable>
-                    <Pressable onPress={() => zoomToWidth(0.2)} style={styles.zoomBtn}><Text style={styles.zoomText}>4x</Text></Pressable>
-                    <Pressable onPress={() => zoomToWidth(Math.max(MIN_CROP, crop.w * 0.8))} style={styles.zoomBtn}><Text style={styles.zoomText}>+</Text></Pressable>
-                    <Pressable onPress={() => zoomToWidth(Math.min(1, crop.w * 1.25))} style={styles.zoomBtn}><Text style={styles.zoomText}>−</Text></Pressable>
+                    <Pressable onPress={() => zoomTo(2)} style={styles.zoomBtn}><Text style={styles.zoomText}>2x</Text></Pressable>
+                    <Pressable onPress={() => zoomTo(4)} style={styles.zoomBtn}><Text style={styles.zoomText}>4x</Text></Pressable>
+                    <Pressable onPress={() => zoomTo(effZoom * 1.25)} style={styles.zoomBtn}><Text style={styles.zoomText}>+</Text></Pressable>
+                    <Pressable onPress={() => zoomTo(effZoom / 1.25)} style={styles.zoomBtn}><Text style={styles.zoomText}>−</Text></Pressable>
                   </View>
                 </ScrollView>
               </View>
             </View>
           )}
-        </View>
         <View style={[styles.overlayTop, bar && styles.shiftForBar]} pointerEvents="none">
           {hintOn && sub === "Click" && !streamOpen && (
             <View style={styles.hintPill}>
@@ -1282,8 +1157,18 @@ const styles = StyleSheet.create({
   clickTextActive: { color: "#0b1220" },
   viewerBox: { flex: 1, minHeight: 160, marginHorizontal: 8, marginBottom: 6, position: "relative" },
   viewerWrap: { flex: 1, borderRadius: 12, overflow: "hidden", backgroundColor: "#000" },
-  zoomLayer: { flex: 1 },
-  screen: { flex: 1 },
+  canvasFill: { width: "100%", height: "100%" },
+  ring: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    width: RING,
+    height: RING,
+    borderRadius: RING / 2,
+    borderWidth: 2,
+    borderColor: "#38bdf8",
+    backgroundColor: "transparent",
+  },
   lookBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: 6, gap: 6 },
   zoomSlider: { position: "absolute", right: 4, top: 56, bottom: 118, width: 36, alignItems: "center" },
   zTrack: { flex: 1, width: 10, borderRadius: 5, backgroundColor: "rgba(30,41,59,0.7)" },
