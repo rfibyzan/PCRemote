@@ -15,19 +15,10 @@ import { StreamControls, effectiveFpsValue, getQuality, getSel, setSel, useMonit
 import { CursorDot, cursorPixels, trackFrameBytes } from "./cursor";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
+import { MIN_CROP, clampCrop, clampLiveScale, cropMatches, pinchStep, sliderFractionToZoom } from "./zoom";
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
-}
-function clampCrop(c) {
-  const w = Math.max(0.05, Math.min(1, c.w));
-  const h = Math.max(0.05, Math.min(1, c.h));
-  return {
-    x: Math.max(0, Math.min(1 - w, c.x)),
-    y: Math.max(0, Math.min(1 - h, c.y)),
-    w,
-    h,
-  };
 }
 
 const CLICK_BTNS = [
@@ -90,7 +81,7 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
   const barDrag = useRef(null);
   // Last completed tap (for double/triple-tap word/line select).
   const tapRef = useRef({ t: 0, x: 0, y: 0 });
-  // Zoom slider (Look, right edge): absolute 1x..4x, center-anchored.
+  // Zoom slider (Look, right edge): absolute 1x..MAX_ZOOM, center-anchored.
   const [trackH, setTrackH] = useState(0);
   const trackHRef = useRef(0);
   // LOCAL transform zoom (UI thread, 60fps): transient feedback during an
@@ -108,6 +99,10 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
   const rebaseTimer = useRef(null);
   // Counts received frames: rebase waits for a NEW frame, never a bare timer.
   const frameTick = useRef(0);
+  // Crop carried in the header of the last DISPLAYED frame. Rebase waits for
+  // a frame encoded with the committed crop, not just any new frame: frames
+  // already in flight still show the old region and caused a visible jump.
+  const lastFrameCrop = useRef(null);
   const lastFrameAt = useRef(0);
   const lastResendAt = useRef(0);
   const [cur, setCur] = useState(null);
@@ -332,22 +327,26 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
   // view with no black bars. cx/cy = monitor-norm center to keep.
   function aspectCrop(w, cx, cy) {
     const v = viewSize.current;
-    const { fw, fh } = monitorDims();
+    const d = monitorDims();
+    if (!d) return null; // dims unknown (before hello/layout): never crash
+    const { fw, fh } = d;
     const viewA = (v.w || 1) / Math.max(1, v.h);
-    let nw = Math.max(0.05, Math.min(1, w));
+    let nw = Math.max(MIN_CROP, Math.min(1, w));
     let nh = (nw * fw) / (fh * viewA);
     if (nh > 1) {
       nh = 1;
       nw = (nh * fh * viewA) / fw;
     }
-    nh = Math.max(0.05, Math.min(1, nh));
+    nh = Math.max(MIN_CROP, Math.min(1, nh));
     return clampCrop({ x: cx - nw / 2, y: cy - nh / 2, w: nw, h: nh });
   }
 
   function zoomToWidth(w) {
-    resetTransformInstant();
     const c = cropRef.current;
-    zoomAnimated(aspectCrop(w, c.x + c.w / 2, c.y + c.h / 2));
+    const target = aspectCrop(w, c.x + c.w / 2, c.y + c.h / 2);
+    if (!target) return;
+    resetTransformInstant();
+    zoomAnimated(target);
   }
 
   // Smooth stepped zoom (~120 ms) instead of a discrete jump.
@@ -458,10 +457,12 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
       ) {
         return; // fingers moved on — the gesture owns the transform now
       }
-      // Rebase only once a NEW frame has actually arrived (or 800ms passed
-      // with a stalled stream, so we never get stuck transformed).
-      if (frameTick.current === tick0 && Date.now() - t0 < 800) {
-        rebaseTimer.current = setTimeout(check, 150);
+      // Rebase only once a NEW frame encoded with the COMMITTED crop has
+      // arrived (or 800ms passed with a stalled stream, so we never get
+      // stuck transformed). Old-crop frames still in flight are skipped.
+      const fresh = frameTick.current !== tick0 && cropMatches(lastFrameCrop.current, cropRef.current);
+      if (!fresh && Date.now() - t0 < 800) {
+        rebaseTimer.current = setTimeout(check, 50);
         return;
       }
       liveRef.current = { s: 1, tx: 0, ty: 0 };
@@ -692,16 +693,6 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
         tele(`pinch move d=${Math.round(d)} dPrev=${Math.round(st.dPrev || 0)} t0=${touchKeys(touches[0])}`);
         const vw = viewSize.current.w || 1;
         const vh = viewSize.current.h || 1;
-        const c0 = st.crop;
-        const ratio = d / Math.max(1, st.dPrev || d);
-        st.dPrev = d;
-        const L = liveRef.current;
-        // Total zoom stays within [1x, 8x] relative to the committed crop.
-        const s = Math.max(c0.w, Math.min(8 * c0.w, L.s * ratio));
-        // Keep the CURRENT finger point fixed: content under the hand stays
-        // under the hand, so the gesture both zooms and pans naturally.
-        const cx = vw / 2;
-        const cy = vh / 2;
         const pm = { x: (touches[0].pageX + touches[1].pageX) / 2, y: (touches[0].pageY + touches[1].pageY) / 2 };
         // Anchor: page midpoint minus measured viewer origin. locationX is
         // only a fallback (unreliable on some Android builds); center last.
@@ -716,16 +707,17 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
           ax = lm ? lm.x : vw / 2;
           ay = lm ? lm.y : vh / 2;
         }
-        const sLive = Math.max(0.01, L.s);
-        const fbx = cx + (ax - cx - L.tx) / sLive;
-        const fby = cy + (ay - cy - L.ty) / sLive;
-        let tx = (ax - cx) - (fbx - cx) * s;
-        let ty = (ay - cy) - (fby - cy) * s;
-        // Clamp so the scaled content always covers the viewer (no new bars).
-        const mx = Math.max(0, ((vw * s - vw) / 2));
-        const my = Math.max(0, ((vh * s - vh) / 2));
-        tx = Math.max(-mx, Math.min(mx, tx));
-        ty = Math.max(-my, Math.min(my, ty));
+        // INCREMENTAL zoom, total kept within [1x, MAX_ZOOM] of the monitor;
+        // the content under the finger midpoint stays under the fingers.
+        const { s, tx, ty } = pinchStep({
+          live: liveRef.current,
+          dPrev: st.dPrev,
+          d,
+          anchor: { x: ax, y: ay },
+          view: { w: vw, h: vh },
+          cropW: st.crop.w,
+        });
+        st.dPrev = d;
         liveRef.current = { s, tx, ty };
         scaleV.setValue(s);
         panV.setValue({ x: tx, y: ty });
@@ -811,6 +803,16 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
       return;
     }
     if (sub === "Look") {
+      // Commit only when the LAST finger lifts. Lifting one finger of a
+      // pinch hands over to a one-finger pan instead of committing (and
+      // re-encoding) mid-gesture.
+      const left = e.nativeEvent.touches?.length || 0;
+      if (left > 0) {
+        if (pinch.current) pinch.current = null;
+        const p = viewerLocal(e);
+        vTouch.current = { x: p.x, y: p.y };
+        return;
+      }
       vTouch.current = null;
       // Both pinch and pan commit their transient transform (sharpness
       // follow with guarded rebase). Pure taps reset the identity.
@@ -940,17 +942,13 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
   }
 
   // Slider drag: continuous center-anchored transient scale. Commit on release.
-  function sliderFractionToZ(f) {
-    return 1 + (1 - Math.max(0, Math.min(1, f))) * 7;
-  }
-
   function onSliderTouch(e) {
     const t = e.nativeEvent.touches?.[0];
     if (!t || typeof t.locationY !== "number") return;
     const h = trackHRef.current || 1;
-    const z = sliderFractionToZ(t.locationY / h);
+    const z = sliderFractionToZoom(t.locationY / h);
     const c0 = cropRef.current;
-    const s = Math.max(c0.w, Math.min(8 * c0.w, z * c0.w));
+    const s = clampLiveScale(z * c0.w, c0.w);
     liveRef.current = { s, tx: 0, ty: 0 };
     scaleV.setValue(s);
     panV.setValue({ x: 0, y: 0 });
@@ -974,6 +972,7 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
     lastFrameAt.current = Date.now();
     if (stalled) setStalled(false);
     if (f?._dropped) return;
+    if (f?.crop) lastFrameCrop.current = f.crop;
     frameTick.current += 1;
     trackFrameBytes(f?.jpeg?.length);
   }
@@ -1120,7 +1119,7 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
                     <Pressable onPress={() => zoomToWidth(0.6)} style={styles.zoomBtn}><Text style={styles.zoomText}>1x</Text></Pressable>
                     <Pressable onPress={() => zoomToWidth(0.35)} style={styles.zoomBtn}><Text style={styles.zoomText}>2x</Text></Pressable>
                     <Pressable onPress={() => zoomToWidth(0.2)} style={styles.zoomBtn}><Text style={styles.zoomText}>4x</Text></Pressable>
-                    <Pressable onPress={() => zoomToWidth(Math.max(0.05, crop.w * 0.8))} style={styles.zoomBtn}><Text style={styles.zoomText}>+</Text></Pressable>
+                    <Pressable onPress={() => zoomToWidth(Math.max(MIN_CROP, crop.w * 0.8))} style={styles.zoomBtn}><Text style={styles.zoomText}>+</Text></Pressable>
                     <Pressable onPress={() => zoomToWidth(Math.min(1, crop.w * 1.25))} style={styles.zoomBtn}><Text style={styles.zoomText}>−</Text></Pressable>
                   </View>
                 </ScrollView>
