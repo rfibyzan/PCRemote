@@ -500,8 +500,11 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // ---- gestures (UI thread) ------------------------------------------------
 
   const lookOn = sub === "Look" && current !== "cam";
-  const startS = useSharedValue({ s: 1, tx: 0, ty: 0, fx: 0, fy: 0 });
+  const startS = useSharedValue({ s: 1, tx: 0, ty: 0, fx: 0, fy: 0, k0: 1, n: 2 });
   const decayLeft = useSharedValue(0);
+  const pinching = useSharedValue(false);
+  const pinchEndAt = useSharedValue(0);
+  const panS = useSharedValue({ tx: 0, ty: 0, ox: 0, oy: 0, held: false, mixed: false });
 
   const lookGesture = useMemo(() => {
     // Release: clamp scale, fling with the finger's velocity inside the edges
@@ -536,20 +539,32 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       });
     }
 
+    // Pinch. Only two-finger events move the camera: when a finger lifts,
+    // Android reports the last event(s) with the focal point snapped to the
+    // finger that is still down, which used to shove the view sideways right
+    // as the pinch ended. Whenever the finger count changes the gesture is
+    // re-anchored at the current camera, so the focal point never jumps.
     const pinchG = Gesture.Pinch()
       .enabled(lookOn)
       .onStart((e) => {
         cancelAnimation(camS);
         cancelAnimation(camX);
         cancelAnimation(camY);
-        startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: e.focalX, fy: e.focalY };
+        pinching.value = true;
+        startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: e.focalX, fy: e.focalY, k0: e.scale, n: e.numberOfPointers };
       })
       .onUpdate((e) => {
+        if (e.numberOfPointers < 2) return;
+        if (e.numberOfPointers !== startS.value.n) {
+          startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: e.focalX, fy: e.focalY, k0: e.scale, n: e.numberOfPointers };
+          return;
+        }
         const st = startS.value;
         const vw = vwS.value;
         const vh = vhS.value;
         const fit = fitCanvas(vw, vh, aspectS.value);
-        const c = pinchCam(st, { x: st.fx, y: st.fy }, { x: e.focalX, y: e.focalY }, e.scale, vw, vh);
+        const k = e.scale / Math.max(0.0001, st.k0);
+        const c = pinchCam(st, { x: st.fx, y: st.fy }, { x: e.focalX, y: e.focalY }, k, vw, vh);
         const { mx, my } = maxPan(c.s, fit.bw, fit.bh, vw, vh);
         camS.value = c.s;
         camX.value = rubber(c.tx, mx, vw);
@@ -562,25 +577,40 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       })
       .onEnd(() => {
         settle(0, 0);
+      })
+      .onFinalize(() => {
+        pinching.value = false;
+        pinchEndAt.value = Date.now();
       });
 
+    // One-finger pan. It stands still while a pinch runs, re-anchors when the
+    // pinch hands back to one finger, and never flings out of a pinch (the
+    // leftover finger's velocity is not a throw).
     const panG = Gesture.Pan()
       .enabled(lookOn)
       .maxPointers(1)
       .minDistance(2)
-      .onStart(() => {
+      .onStart((e) => {
         cancelAnimation(camX);
         cancelAnimation(camY);
-        startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: 0, fy: 0 };
+        panS.value = { tx: camX.value, ty: camY.value, ox: e.translationX, oy: e.translationY, held: pinching.value, mixed: pinching.value };
       })
       .onUpdate((e) => {
-        const st = startS.value;
+        if (pinching.value || e.numberOfPointers !== 1) {
+          panS.value = { ...panS.value, held: true, mixed: true };
+          return;
+        }
+        if (panS.value.held) {
+          panS.value = { tx: camX.value, ty: camY.value, ox: e.translationX, oy: e.translationY, held: false, mixed: true };
+          return;
+        }
+        const st = panS.value;
         const vw = vwS.value;
         const vh = vhS.value;
         const fit = fitCanvas(vw, vh, aspectS.value);
         const { mx, my } = maxPan(camS.value, fit.bw, fit.bh, vw, vh);
-        camX.value = rubber(st.tx + e.translationX, mx, vw);
-        camY.value = rubber(st.ty + e.translationY, my, vh);
+        camX.value = rubber(st.tx + e.translationX - st.ox, mx, vw);
+        camY.value = rubber(st.ty + e.translationY - st.oy, my, vh);
         const now = Date.now();
         if (now - lastSyncS.value > 80) {
           lastSyncS.value = now;
@@ -588,7 +618,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         }
       })
       .onEnd((e) => {
-        settle(e.velocityX, e.velocityY);
+        if (pinching.value) return; // the pinch settles the camera itself
+        const recent = Date.now() - pinchEndAt.value < 250;
+        if (panS.value.mixed || recent) settle(0, 0);
+        else settle(e.velocityX, e.velocityY);
       });
 
     const doubleTapG = Gesture.Tap()
