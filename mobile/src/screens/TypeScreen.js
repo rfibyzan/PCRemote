@@ -1,8 +1,8 @@
 /** TYPE: compact reference layout (no full QWERTY grid).
- * Row1: Send | Hold | Ctrl | Alt | Shift | Win
- * Row2: "Type like a PC keyboard" free-text field
- * Row3: Esc | Tab | Bksp | Enter | Del
- * Row4: arrows | Home | End | PgUp | PgDn
+ * Layout (below the shared fixed-size viewer):
+ *   free-text field (Enter never clears it)
+ *   card: Hold | Ctrl Alt Shift Win | Send  /  Esc Tab Bksp Enter Del
+ *   card: inverted-T arrows | Home PgUp / End PgDn
  * Protocol/functions preserved: key tap, down-only hold, combo chords, text.
  */
 import React, { useEffect, useRef, useState } from "react";
@@ -134,17 +134,26 @@ export default function TypeScreen() {
     send(msg.key("enter"));
   }
 
-  function Key({ label, k, active, onPress, onLongPress }) {
+  function Key({ label, active, onPress, onLongPress, wide, accent }) {
     return (
       <Pressable
         onPress={onPress}
         onLongPress={onLongPress}
-        style={[styles.key, active && styles.keyActive]}
+        hitSlop={2}
+        style={({ pressed }) => [
+          styles.key,
+          wide && styles.keyWide,
+          accent && styles.keyAccent,
+          active && styles.keyActive,
+          pressed && styles.keyPressed,
+        ]}
       >
         <Text style={[styles.keyText, active && styles.keyTextActive]}>{label}</Text>
       </Pressable>
     );
   }
+
+  const nav = (k) => NAV.find((n) => n.key === k);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
@@ -152,46 +161,69 @@ export default function TypeScreen() {
         <Text style={styles.title}>Type</Text>
         <ConnDot />
       </View>
-      <ViewerPanel viewerHeight={null} touchpad={false} actions={false} />
+      <ViewerPanel touchpad={false} actions={false} />
       <ScrollView style={styles.kb} contentContainerStyle={styles.kbContent} keyboardShouldPersistTaps="handled">
-      <View style={styles.row}>
-        <Key label="Send" k="send" onPress={sendHeld} />
-        <Key label="Hold" k="hold" active={holdMode} onPress={toggleHoldMode} />
-        {MODS.map((k) => (
-          <Key key={k} label={k[0].toUpperCase() + k.slice(1)} k={k} active={held.includes(k)} onPress={() => tapModifier(k)} />
-        ))}
-      </View>
-      <View style={styles.freeRow}>
-        <TextInput
-          style={styles.free}
-          value={free}
-          onChangeText={handleFreeChange}
-          onSubmitEditing={handleFreeSubmit}
-          placeholder="Type like a PC keyboard"
-          placeholderTextColor={COLORS.muted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          multiline={false}
-          blurOnSubmit={false}
-          returnKeyType="send"
-          submitBehavior="submit"
-        />
-        {!!free && (
-          <Pressable onPress={() => setFree("")} style={styles.clearBtn} accessibilityLabel="Clear typed text">
-            <Text style={styles.clearText}>✕</Text>
-          </Pressable>
-        )}
-      </View>
-      <View style={styles.row}>
-        {SPECIAL.map((k) => (
-          <Key key={k} label={SPECIAL_LABEL[k]} k={k} onPress={() => tapKey(k)} />
-        ))}
-      </View>
-      <View style={styles.row}>
-        {NAV.map((n) => (
-          <Key key={n.key} label={n.label} k={n.key} onPress={() => tapKey(n.key)} />
-        ))}
-      </View>
+        <View style={styles.freeRow}>
+          <TextInput
+            style={styles.free}
+            value={free}
+            onChangeText={handleFreeChange}
+            onSubmitEditing={handleFreeSubmit}
+            placeholder="Ketik seperti keyboard PC"
+            placeholderTextColor={COLORS.muted}
+            autoCapitalize="none"
+            autoCorrect={false}
+            multiline={false}
+            blurOnSubmit={false}
+            returnKeyType="send"
+            submitBehavior="submit"
+          />
+          {!!free && (
+            <Pressable onPress={() => setFree("")} style={styles.clearBtn} accessibilityLabel="Clear typed text">
+              <Text style={styles.clearText}>✕</Text>
+            </Pressable>
+          )}
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.row}>
+            <Key label={holdMode ? "Hold ●" : "Hold"} active={holdMode} onPress={toggleHoldMode} />
+            {MODS.map((k) => (
+              <Key key={k} label={k[0].toUpperCase() + k.slice(1)} active={held.includes(k)} onPress={() => tapModifier(k)} />
+            ))}
+            <Key label="Send" accent onPress={sendHeld} />
+          </View>
+          <View style={styles.row}>
+            {SPECIAL.map((k) => (
+              <Key key={k} label={SPECIAL_LABEL[k]} onPress={() => tapKey(k)} />
+            ))}
+          </View>
+        </View>
+
+        <View style={[styles.card, styles.navCard]}>
+          <View style={styles.arrows}>
+            <View style={styles.row}>
+              <View style={styles.keySpacer} />
+              <Key label="↑" onPress={() => tapKey(nav("up").key)} />
+              <View style={styles.keySpacer} />
+            </View>
+            <View style={styles.row}>
+              <Key label="←" onPress={() => tapKey(nav("left").key)} />
+              <Key label="↓" onPress={() => tapKey(nav("down").key)} />
+              <Key label="→" onPress={() => tapKey(nav("right").key)} />
+            </View>
+          </View>
+          <View style={styles.navKeys}>
+            <View style={styles.row}>
+              <Key label="Home" onPress={() => tapKey("home")} />
+              <Key label="PgUp" onPress={() => tapKey("pageup")} />
+            </View>
+            <View style={styles.row}>
+              <Key label="End" onPress={() => tapKey("end")} />
+              <Key label="PgDn" onPress={() => tapKey("pagedown")} />
+            </View>
+          </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -199,17 +231,25 @@ export default function TypeScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
-  kb: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
-  kbContent: { padding: 8, paddingTop: 4, gap: 5, paddingBottom: 12 },
-  topRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8 },
+  kb: { flex: 1 },
+  kbContent: { paddingHorizontal: 8, paddingBottom: 12, gap: 8 },
+  topRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, height: 32 },
   title: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
-  row: { flexDirection: "row", gap: 3 },
-  key: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 8, paddingVertical: 8, alignItems: "center", minWidth: 30 },
-  keyActive: { backgroundColor: "#0c4a6e" },
-  keyText: { color: COLORS.text, fontSize: 11, fontWeight: "700" },
+  card: { backgroundColor: COLORS.card, borderRadius: 12, padding: 6, gap: 6 },
+  navCard: { flexDirection: "row", gap: 10 },
+  arrows: { flex: 3, gap: 6 },
+  navKeys: { flex: 2, gap: 6 },
+  row: { flexDirection: "row", gap: 6 },
+  key: { flex: 1, height: 38, backgroundColor: COLORS.chip, borderRadius: 8, alignItems: "center", justifyContent: "center", minWidth: 0 },
+  keySpacer: { flex: 1 },
+  keyWide: { flex: 2 },
+  keyAccent: { backgroundColor: "#075985" },
+  keyActive: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: COLORS.accent },
+  keyPressed: { opacity: 0.6 },
+  keyText: { color: COLORS.text, fontSize: 12, fontWeight: "700" },
   keyTextActive: { color: COLORS.accent },
-  free: { flex: 1, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, padding: 10 },
+  free: { flex: 1, height: 44, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 12, paddingHorizontal: 12 },
   freeRow: { flexDirection: "row", gap: 6, alignItems: "center" },
-  clearBtn: { backgroundColor: COLORS.chip, borderRadius: 10, width: 36, height: 36, alignItems: "center", justifyContent: "center" },
+  clearBtn: { backgroundColor: COLORS.chip, borderRadius: 10, width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   clearText: { color: COLORS.muted, fontWeight: "800", fontSize: 14 },
 });
