@@ -36,8 +36,8 @@ export class GamepadState {
     }
   }
 
-  setStick(which, x, y) {
-    const d = applyDeadzone(x, y);
+  setStick(which, x, y, dead = STICK_DEADZONE) {
+    const d = applyDeadzone(x, y, dead);
     if (which === "left") {
       if (this.lx !== d.x || this.ly !== d.y) { this.lx = d.x; this.ly = d.y; this._dirty = true; }
     } else {
