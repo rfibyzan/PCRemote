@@ -70,11 +70,15 @@ export class TouchRouter {
     this.fingers.set(id, f);
     if (def.kind === "stick") {
       this.stickOwner.set(ctrl, id);
-      if (floating) {
+      const travel = (box.w / 2) * 0.72;
+      // Floating: neutral wherever the thumb lands. Fixed: a touch near the
+      // centre is also taken as neutral, so landing a few px off-centre never
+      // produces an instant drift.
+      if (floating || Math.hypot(px - box.cx, py - box.cy) < travel * 0.25) {
         f.ox = px;
         f.oy = py;
       }
-      this.visual.origins = { ...this.visual.origins, [ctrl]: { x: f.ox - box.cx, y: f.oy - box.cy } };
+      if (floating) this.visual.origins = { ...this.visual.origins, [ctrl]: { x: f.ox - box.cx, y: f.oy - box.cy } };
       const t = this.now();
       if (t - (this.lastStickEnd[ctrl] || 0) < DOUBLE_TAP_MS) this._setFingerButtons(f, new Set([def.click]));
     }
