@@ -455,6 +455,12 @@ const { width: winW, height: winH } = useWindowDimensions();
     [W, H, insetL, insetR, insetT],
   );
   const rects = useMemo(() => computeRects(metrics), [metrics]);
+  // The touch router is built ONCE (useMemo []), so it must read geometry
+  // through refs. Reading `rects`/`metrics`/`origin` directly froze the
+  // first-render values (portrait size, origin 0,0, before the landscape
+  // lock + onLayout), so right-side zones were hit-tested in the wrong place.
+  const geoRef = useRef({ rects, metrics, origin });
+  geoRef.current = { rects, metrics, origin };
   const dbgRects = useMemo(() => (showDbg ? pageRects(rects, layout, origin) : []), [showDbg, rects, origin, layout]);
   const { R, dW, dH, fD, topPad, leftPad, rightPad, clusterTop, shoulderY } = metrics;
 
@@ -475,7 +481,8 @@ const { width: winW, height: winH } = useWindowDimensions();
 
   function zoneOf(pageX, pageY) {
     try {
-      return hitTest(rects, layoutRef.current, pageX, pageY, 0, origin);
+      const g = geoRef.current;
+      return hitTest(g.rects, layoutRef.current, pageX, pageY, 0, g.origin);
     } catch {
       return null;
     }
@@ -504,7 +511,8 @@ const { width: winW, height: winH } = useWindowDimensions();
   function moveZone(f, t) {
     const { zone } = f;
     if (zone === "stickL" || zone === "stickR") {
-      const rr = metrics.R;
+      const m = geoRef.current.metrics;
+      const rr = m.R;
       let dx = (t.pageX - f.ox) / rr;
       let dy = -(t.pageY - f.oy) / rr; // +up
       const mag = Math.hypot(dx, dy);
@@ -512,7 +520,7 @@ const { width: winW, height: winH } = useWindowDimensions();
         dx /= mag;
         dy /= mag;
       }
-      const K = metrics.K;
+      const K = m.K;
       pad.setStick(zone === "stickL" ? "left" : "right", dx, dy);
       setKnobVisual(zone, { x: dx * (rr - K), y: -dy * (rr - K) });
       flush();
@@ -670,6 +678,27 @@ const { width: winW, height: winH } = useWindowDimensions();
             if (!seen.has(id)) forgetFinger(id);
           }
         },
+        // Every later finger DOWN arrives here (RN responderStart), so taps
+        // that never move are registered too. Android reuses pointer ids: a
+        // stale entry under the same id (lifted with no move in between)
+        // is dropped first, else the new finger inherits the old zone.
+        onPanResponderStart: (e) => {
+          for (const t of changedOnes(e)) {
+            const id = t.identifier;
+            if (id === undefined || id === null) continue;
+            const f = fingersRef.current.get(id);
+            if (f && (f.ox !== t.pageX || f.oy !== t.pageY)) forgetFinger(id);
+            trackTouch(t);
+          }
+        },
+        // Each finger UP (not just the last) releases its own zone at once,
+        // so a lifted button/stick never waits for another finger to move.
+        onPanResponderEnd: (e) => {
+          for (const t of changedOnes(e)) {
+            const id = t.identifier;
+            if (id !== undefined && id !== null) forgetFinger(id);
+          }
+        },
         onPanResponderRelease: () => {
           releaseAllFingers();
         },
@@ -732,8 +761,15 @@ const { width: winW, height: winH } = useWindowDimensions();
       if (event.t === "gamepad") setPadStatus({ on: Boolean(event.on), error: event.error || "" });
     });
     // Continuous analog updates at ~30 Hz (dirty-gated); buttons flush immediately too.
+    // Heartbeat: the agent zeroes the pad after WATCHDOG_MS (2 s) without an
+    // update, so a stick or button held perfectly still must be re-sent.
+    let lastPadSend = 0;
     const timer = setInterval(() => {
-      if (pad.takeDirty()) send(msg.gamepad(pad.snapshot()));
+      const now = Date.now();
+      if (pad.takeDirty() || now - lastPadSend >= 500) {
+        lastPadSend = now;
+        send(msg.gamepad(pad.snapshot()));
+      }
     }, 33);
     // Stall watchdog: re-assert the screen subscription when frames stop,
     // at most every 4s. lastFrameAt is deliberately NOT reset here so a dead
