@@ -1,11 +1,14 @@
-/** WIN: PC screen viewer + monitor/source + stream controls + Windows controls. */
+/** WIN (layout C): shared viewer + fixed control area: section tabs
+ * (Sistem | Edit | Media | Fn | Lainnya) over two rows of buttons. Every
+ * section fits in those two rows except Lainnya, which scrolls inside the
+ * area (the area itself never grows, so the viewer stays the same size). */
 import React, { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
 import { COLORS } from "../components";
-import { ConnDot } from "../controls";
 import ViewerPanel from "../viewer";
+import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
 
@@ -19,8 +22,12 @@ const MEDIA = [
   { a: "voldown", icon: "volume-down" },
   { a: "volup", icon: "volume-up" },
 ];
-const FKEYS = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"];
-const MODS = ["ctrl", "alt", "shift", "win"];
+const FKEYS = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"];
+const SECTIONS = ["Sistem", "Edit", "Media", "Fn", "Lainnya"];
+// Last section survives tab switches (WIN stays mounted, but keep it explicit).
+let lastSection = "Sistem";
+const TABS_H = 28;
+const CELL_H = rowHeight(2, [TABS_H]);
 // Bigger touch target without bigger visuals (Win buttons are Type-small).
 // Horizontal slop stays <= gap (3px) so adjacent buttons never overlap and
 // RN can't pick the wrong one; vertical gets a bit more (rows are taller).
@@ -29,7 +36,11 @@ const HIT = { top: 4, bottom: 4, left: 2, right: 2 };
 export default function WinScreen() {
   const [clip, setClip] = useState("");
   const [url, setUrl] = useState("");
-  const [more, setMore] = useState(false);
+  const [section, setSectionState] = useState(lastSection);
+  function setSection(v) {
+    lastSection = v;
+    setSectionState(v);
+  }
   // Apps = Alt+Tab switcher hold: first tap opens and HOLDS Alt, second tap
   // (Apps again or any viewer tap) releases to confirm the selection.
   const [appsHeld, setAppsHeld] = useState(false);
@@ -74,104 +85,130 @@ export default function WinScreen() {
     };
   }, []);
 
+  function Btn({ label, icon, onPress, active, danger, wide, fn, a11y }) {
+    return (
+      <Pressable
+        onPress={onPress}
+        hitSlop={HIT}
+        accessibilityLabel={a11y || label}
+        style={({ pressed }) => [styles.cell, fn && styles.cellFn, wide && styles.cellWide, active && styles.cellActive, danger && styles.dangerCell, pressed && styles.cellPressed]}
+      >
+        {icon ? <MaterialIcons name={icon} size={16} color={COLORS.text} /> : null}
+        {label ? <Text style={[styles.cellText, active && styles.cellTextActive]} numberOfLines={1}>{label}</Text> : null}
+      </Pressable>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <View style={styles.topRow}>
-        <Text style={styles.title}>Win</Text>
-        <ConnDot />
-      </View>
-      <ViewerPanel viewerHeight={null} touchpad={false} actions={false} onTap={releaseApps} />
-      <ScrollView style={styles.ctl} contentContainerStyle={styles.ctlContent}>
-      <View style={styles.grid}>
-        <Pressable onPress={() => send(msg.key("win"))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Start</Text></Pressable>
-        <Pressable onPress={tapApps} hitSlop={HIT} style={[styles.cell, appsHeld && styles.cellActive]}>
-          <Text style={[styles.cellText, appsHeld && styles.cellTextActive]}>Apps</Text>
-        </Pressable>
-        <Pressable onPress={() => send(msg.combo(["alt", "f4"]))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Close</Text></Pressable>
-        <Pressable onPress={() => send(msg.key("esc"))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Esc</Text></Pressable>
-        <Pressable onPress={() => send(msg.combo(["win", "tab"]))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Task View</Text></Pressable>
-        <Pressable onPress={() => send(msg.combo(["win", "d"]))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Desktop</Text></Pressable>
-        <Pressable onPress={() => send(msg.open("explorer"))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Files</Text></Pressable>
-        <Pressable onPress={() => send(msg.open("browser"))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Browser</Text></Pressable>
-        <Pressable onPress={() => send(msg.combo(["ctrl", "c"]))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Copy</Text></Pressable>
-        <Pressable onPress={() => send(msg.combo(["ctrl", "v"]))} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>Paste</Text></Pressable>
-        <Pressable onPress={() => send(msg.clipboard())} hitSlop={HIT} style={styles.cell}><Text style={styles.cellText}>PC Clip</Text></Pressable>
-        {MODS.map((k) => (
-          <Pressable key={k} onPress={() => send(msg.key(k))} hitSlop={HIT} style={styles.cell}>
-            <Text style={styles.cellText}>{k}</Text>
-          </Pressable>
-        ))}
-        {MEDIA.map((m) => (
-          <Pressable key={m.a} onPress={() => send(msg.media(m.a))} hitSlop={HIT} style={styles.cell} accessibilityLabel={m.a}>
-            <MaterialIcons name={m.icon} size={16} color={COLORS.text} />
-          </Pressable>
-        ))}
-        <Pressable onPress={() => send(msg.lock())} hitSlop={HIT} style={[styles.cell, styles.dangerCell]} accessibilityLabel="Lock PC">
-          <MaterialIcons name="lock" size={16} color={COLORS.text} />
-        </Pressable>
-      </View>
-      <View style={styles.fRow}>
-        {FKEYS.map((k) => (
-          <Pressable key={k} onPress={() => send(msg.key(k))} hitSlop={HIT} style={styles.fCell}>
-            <Text style={styles.fText}>{k}</Text>
+      <ViewerPanel title="Win" touchpad={false} actions={false} onTap={releaseApps}>
+      <View style={styles.tabs}>
+        {SECTIONS.map((sec) => (
+          <Pressable key={sec} onPress={() => setSection(sec)} style={[styles.tab, section === sec && styles.tabActive]}>
+            <Text style={[styles.tabText, section === sec && styles.tabTextActive]}>{sec}</Text>
           </Pressable>
         ))}
       </View>
-      <Pressable onPress={() => setMore((m) => !m)} hitSlop={HIT} style={styles.cell}>
-        <Text style={styles.cellText}>More {more ? "▾" : "▸"}</Text>
-      </Pressable>
-      {more && (
-      <View style={styles.more}>
-      <Text style={styles.section}>Launch</Text>
-      <View style={styles.grid}>
-        {APPS.map((a) => (
-          <Pressable key={a} onPress={() => send(msg.open(a))} hitSlop={HIT} style={styles.cell}>
-            <Text style={styles.cellText}>{a}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <Text style={styles.section}>Open URL</Text>
-      <View style={styles.row}>
-        <TextInput style={styles.input} value={url} onChangeText={setUrl} placeholder="https://…" placeholderTextColor={COLORS.muted} autoCapitalize="none" />
-        <Pressable onPress={() => url.trim() && send(msg.open(url.trim()))} hitSlop={HIT} style={styles.go}>
-          <Text style={styles.cellText}>Go</Text>
-        </Pressable>
-      </View>
-      <Text style={styles.section}>Clipboard</Text>
-      <View style={styles.row}>
-        <TextInput style={styles.input} value={clip} onChangeText={setClip} placeholder="(empty)" placeholderTextColor={COLORS.muted} multiline />
-        <Pressable onPress={() => send(msg.clipboard(clip))} hitSlop={HIT} style={styles.go}>
-          <Text style={styles.cellText}>Set</Text>
-        </Pressable>
-      </View>
-      <Pressable onPress={() => send(msg.clipboard())} hitSlop={HIT} style={styles.cell}>
-        <Text style={styles.cellText}>Refresh clipboard</Text>
-      </Pressable>
-      </View>
-      )}
+      <ScrollView style={styles.ctl} contentContainerStyle={styles.ctlContent} keyboardShouldPersistTaps="handled">
+        {section === "Sistem" && (
+          <View style={styles.grid}>
+            <Btn icon="apps" label="Start" onPress={() => send(msg.key("win"))} />
+            <Btn icon="swap-horiz" label="Apps" active={appsHeld} onPress={tapApps} />
+            <Btn icon="view-carousel" label="Task View" onPress={() => send(msg.combo(["win", "tab"]))} />
+            <Btn icon="desktop-windows" label="Desktop" onPress={() => send(msg.combo(["win", "d"]))} />
+            <Btn icon="close" label="Close" onPress={() => send(msg.combo(["alt", "f4"]))} />
+            <Btn icon="keyboard-return" label="Esc" onPress={() => send(msg.key("esc"))} />
+            <Btn icon="folder" label="Files" onPress={() => send(msg.open("explorer"))} />
+            <Btn icon="public" label="Browser" onPress={() => send(msg.open("browser"))} />
+            <Btn icon="lock" label="Lock" danger a11y="Lock PC" onPress={() => send(msg.lock())} />
+          </View>
+        )}
+        {section === "Edit" && (
+          <View style={styles.grid}>
+            <Btn icon="content-copy" label="Copy" onPress={() => send(msg.combo(["ctrl", "c"]))} />
+            <Btn icon="content-paste" label="Paste" onPress={() => send(msg.combo(["ctrl", "v"]))} />
+            <Btn icon="content-cut" label="Cut" onPress={() => send(msg.combo(["ctrl", "x"]))} />
+            <Btn icon="select-all" label="Select all" onPress={() => send(msg.combo(["ctrl", "a"]))} />
+            <Btn icon="undo" label="Undo" onPress={() => send(msg.combo(["ctrl", "z"]))} />
+            <Btn icon="redo" label="Redo" onPress={() => send(msg.combo(["ctrl", "y"]))} />
+            <Btn icon="save" label="Save" onPress={() => send(msg.combo(["ctrl", "s"]))} />
+            <Btn icon="search" label="Find" onPress={() => send(msg.combo(["ctrl", "f"]))} />
+          </View>
+        )}
+        {section === "Media" && (
+          <View style={styles.grid}>
+            {MEDIA.map((m) => (
+              <Btn key={m.a} icon={m.icon} a11y={m.a} onPress={() => send(msg.media(m.a))} />
+            ))}
+          </View>
+        )}
+        {section === "Fn" && (
+          <View style={styles.grid}>
+            {FKEYS.map((k) => (
+              <Btn key={k} label={k.toUpperCase()} fn onPress={() => send(msg.key(k))} />
+            ))}
+          </View>
+        )}
+        {section === "Lainnya" && (
+          <View style={styles.more}>
+            <Text style={styles.section}>Buka aplikasi</Text>
+            <View style={styles.grid}>
+              {APPS.map((a) => (
+                <Btn key={a} label={a} onPress={() => send(msg.open(a))} />
+              ))}
+            </View>
+            <Text style={styles.section}>Buka URL</Text>
+            <View style={styles.row}>
+              <TextInput style={styles.input} value={url} onChangeText={setUrl} placeholder="https://…" placeholderTextColor={COLORS.muted} autoCapitalize="none" />
+              <Pressable onPress={() => url.trim() && send(msg.open(url.trim()))} hitSlop={HIT} style={styles.go}>
+                <Text style={styles.goText}>Go</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.section}>Clipboard PC</Text>
+            <View style={styles.row}>
+              <TextInput style={styles.input} value={clip} onChangeText={setClip} placeholder="(kosong)" placeholderTextColor={COLORS.muted} multiline />
+              <View style={styles.clipBtns}>
+                <Pressable onPress={() => send(msg.clipboard(clip))} hitSlop={HIT} style={styles.go}>
+                  <Text style={styles.goText}>Set</Text>
+                </Pressable>
+                <Pressable onPress={() => send(msg.clipboard())} hitSlop={HIT} style={[styles.go, styles.goAlt]}>
+                  <MaterialIcons name="refresh" size={16} color={COLORS.text} />
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        )}
       </ScrollView>
+      </ViewerPanel>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
-  ctl: { flexGrow: 0, flexShrink: 1, minHeight: 0 },
-  ctlContent: { padding: 8, paddingTop: 4, gap: 4, paddingBottom: 12 },
-  topRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8 },
-  title: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
-  section: { color: COLORS.muted, fontWeight: "800", marginTop: 0, fontSize: 11 },
-  more: { gap: 5 },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 3 },
-  fRow: { flexDirection: "row", gap: 3 },
-  fCell: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 8, paddingVertical: 7, alignItems: "center", minWidth: 0 },
-  fText: { color: COLORS.text, fontWeight: "700", fontSize: 11, textTransform: "uppercase" },
-  cell: { flexGrow: 1, width: "23%", minWidth: 0, backgroundColor: COLORS.chip, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 6, alignItems: "center", justifyContent: "center" },
-  cellActive: { backgroundColor: "#0c4a6e" },
+  ctl: { flex: 1 },
+  ctlContent: { gap: 6 },
+  tabs: { flexDirection: "row", gap: 3, height: TABS_H, backgroundColor: COLORS.card, borderRadius: 9, padding: 2 },
+  tab: { flex: 1, borderRadius: 7, alignItems: "center", justifyContent: "center" },
+  tabActive: { backgroundColor: "#0c4a6e" },
+  tabText: { color: COLORS.muted, fontWeight: "800", fontSize: 11 },
+  tabTextActive: { color: COLORS.text },
+  section: { color: COLORS.muted, fontWeight: "800", fontSize: 11, marginTop: 2 },
+  more: { gap: 6 },
+  // 5 per row -> every section (max 9-10 buttons) fits in two rows.
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  cell: { width: "18.4%", flexGrow: 1, height: CELL_H, backgroundColor: COLORS.chip, borderRadius: 9, alignItems: "center", justifyContent: "center", gap: 1, paddingHorizontal: 2 },
+  cellFn: { width: "15%" },
+  cellWide: { width: "48%" },
+  cellActive: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: COLORS.accent },
+  cellPressed: { opacity: 0.6 },
   dangerCell: { backgroundColor: "#7f1d1d" },
-  cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 11 },
+  cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 10 },
   cellTextActive: { color: COLORS.accent },
   row: { flexDirection: "row", gap: 6 },
-  input: { flex: 1, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, padding: 10 },
-  go: { backgroundColor: "#0c4a6e", borderRadius: 8, padding: 10, justifyContent: "center" },
+  input: { flex: 1, minHeight: 40, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6 },
+  clipBtns: { gap: 6 },
+  go: { backgroundColor: "#0c4a6e", borderRadius: 10, minWidth: 48, height: 40, alignItems: "center", justifyContent: "center" },
+  goAlt: { backgroundColor: COLORS.chip },
+  goText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
 });

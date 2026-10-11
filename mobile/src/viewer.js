@@ -11,10 +11,11 @@ import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from "react-n
 import { useFocusEffect } from "expo-router";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { COLORS, MonitorChips, ScreenView } from "./components";
-import { StreamControls, effectiveFpsValue, getQuality, getSel, setSel, useMonitorSource, useSel } from "./controls";
+import { ConnDot, StreamControls, StreamStats, effectiveFpsValue, getQuality, getSel, setSel, useMonitorSource, useSel } from "./controls";
 import { CursorDot, cursorPixels, trackFrameBytes } from "./cursor";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
+import { CONTROL_H, CONTROL_GAP } from "./tablayout";
 import { MIN_CROP, clampCrop, clampLiveScale, cropMatches, pinchStep, sliderFractionToZoom } from "./zoom";
 
 function clamp01(v) {
@@ -42,7 +43,9 @@ export function setCommittedCrop(c) {
   lastSentCrop = c ? { ...c } : null;
 }
 
-export default function ViewerPanel({ viewerHeight, touchpad = true, actions = true, onTap = null }) {
+export default function ViewerPanel({ title = "", touchpad = true, actions = true, onTap = null, children = null }) {
+  // Layout C: header row + viewer (flex: 1) + fixed CONTROL_H area. The
+  // control area is identical on PAD / TYPE / WIN, so the viewer is too.
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
   const shared = useSel();
   const sub = shared.mode;
@@ -990,7 +993,36 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
     return <CursorDot x={p.x} y={p.y} />;
   }
 
-  const viewerStyle = viewerHeight ? { height: viewerHeight } : { flex: 1 };
+  // Stream settings popover (preset / Q / fps): opened from the gear or the
+  // fps pill, closes on outside tap or after a few idle seconds.
+  const [streamOpen, setStreamOpen] = useState(false);
+  const streamTimer = useRef(null);
+  const armStreamTimer = useCallback(() => {
+    if (streamTimer.current) clearTimeout(streamTimer.current);
+    streamTimer.current = setTimeout(() => setStreamOpen(false), 6000);
+  }, []);
+  useEffect(() => {
+    if (streamOpen) armStreamTimer();
+    else if (streamTimer.current) clearTimeout(streamTimer.current);
+    return () => streamTimer.current && clearTimeout(streamTimer.current);
+  }, [streamOpen, armStreamTimer]);
+
+  // Gesture hint: shown as a small overlay for a few seconds after the mode
+  // or click button changes, instead of a text line that pushed the viewer.
+  const hintText =
+    sub === "Look"
+      ? "Geser = pan · pinch = zoom"
+      : clickBtn === "right"
+        ? "Tap = klik kanan · drag = drag kanan"
+        : clickBtn === "middle"
+          ? "Tap = klik tengah · drag = drag tengah"
+          : "Tap = klik · 2x tap = kata · drag = pilih";
+  const [hintOn, setHintOn] = useState(true);
+  useEffect(() => {
+    setHintOn(true);
+    const t = setTimeout(() => setHintOn(false), 3500);
+    return () => clearTimeout(t);
+  }, [sub, clickBtn]);
   // Effective viewport for minimap/badge/slider: committed crop + live transform.
   // Null until dims+layout ready → fall back to committed crop for badge/minimap.
   const visOrNull = (() => {
@@ -1014,6 +1046,9 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
   return (
     <View style={styles.root}>
       <View style={styles.topRow}>
+        {!!title && <Text style={styles.title}>{title}</Text>}
+        <ConnDot />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.topScroll} contentContainerStyle={styles.topScrollContent}>
         <MonitorChips monitors={monitors} current={current} onPick={onPick} row />
         <View style={styles.modes}>
           {["Click", "Look"].map((s) => (
@@ -1025,28 +1060,17 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
             <Text style={[styles.subText, bar && styles.subTextActive]}>Bar</Text>
           </Pressable>
         </View>
+        </ScrollView>
+        <Pressable
+          onPress={() => setStreamOpen((v) => !v)}
+          style={[styles.gear, streamOpen && styles.subTabActive]}
+          hitSlop={6}
+          accessibilityLabel="Pengaturan stream"
+        >
+          <Text style={[styles.gearText, streamOpen && styles.subTextActive]}>⚙</Text>
+        </Pressable>
       </View>
-      <StreamControls compact />
-      <Text style={styles.hint}>
-        {sub === "Look"
-          ? "Look: drag to pan, pinch to zoom (exact, no relock)"
-          : clickBtn === "right"
-            ? "Click: tap = right-click, drag = right-drag · Hold menahan kanan (lepas = menu)"
-            : clickBtn === "middle"
-              ? "Click: tap = middle-click, drag = middle-drag · Hold menahan tengah"
-              : "Click: tap = click, 2x tap = word, drag = select · Hold menahan kiri"}
-      </Text>
-      {stalled && (
-        <View style={styles.stalled}>
-          <Text style={styles.stalledText}>Stream terhenti — mencoba lagi otomatis…</Text>
-        </View>
-      )}
-      {tapBlocked && !stalled && (
-        <View style={styles.blocked}>
-          <Text style={styles.blockedText}>Menunggu info layar, coba lagi sebentar…</Text>
-        </View>
-      )}
-      <View style={[styles.viewerBox, viewerStyle]}>
+      <View style={styles.viewerBox}>
         <View
           ref={wrapRef}
           style={styles.viewerWrap}
@@ -1127,6 +1151,55 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
             </View>
           )}
         </View>
+        <View style={[styles.overlayTop, bar && styles.shiftForBar]} pointerEvents="none">
+          {hintOn && sub === "Click" && !streamOpen && (
+            <View style={styles.hintPill}>
+              <Text style={styles.hint}>{hintText}</Text>
+            </View>
+          )}
+          {stalled && (
+            <View style={styles.stalled}>
+              <Text style={styles.stalledText}>Stream terhenti — mencoba lagi otomatis…</Text>
+            </View>
+          )}
+          {tapBlocked && !stalled && (
+            <View style={styles.blocked}>
+              <Text style={styles.blockedText}>Menunggu info layar, coba lagi sebentar…</Text>
+            </View>
+          )}
+          {!!(current === "cam" && camError) && (
+            <View style={styles.stalled}>
+              <Text style={styles.stalledText}>{camError}</Text>
+            </View>
+          )}
+        </View>
+        {sub === "Click" && (
+          <View style={[styles.clickSeg, bar && styles.shiftForBar]}>
+            {CLICK_BTNS.map((b) => (
+              <Pressable
+                key={b.id}
+                onPress={() => setSel({ clickBtn: b.id })}
+                hitSlop={4}
+                style={[styles.clickSegBtn, clickBtn === b.id && styles.clickBtnActive]}
+              >
+                <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+        {!streamOpen && (
+          <Pressable onPress={() => setStreamOpen(true)} style={styles.fpsPill} hitSlop={4} accessibilityLabel="Buka pengaturan stream">
+            <StreamStats />
+          </Pressable>
+        )}
+        {streamOpen && (
+          <>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => setStreamOpen(false)} accessibilityLabel="Tutup pengaturan stream" />
+            <View style={styles.streamPop} onTouchStart={armStreamTimer}>
+              <StreamControls compact />
+            </View>
+          </>
+        )}
         {bar && (
           <View style={styles.bar}>
             <Pressable onPress={() => send(msg.scroll(0, 240))} style={styles.barBtn}>
@@ -1141,20 +1214,7 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
           </View>
         )}
       </View>
-      {sub === "Click" && (
-        <View style={styles.clickRow}>
-          {CLICK_BTNS.map((b) => (
-            <Pressable
-              key={b.id}
-              onPress={() => setSel({ clickBtn: b.id })}
-              style={[styles.clickBtn, clickBtn === b.id && styles.clickBtnActive]}
-            >
-              <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-      {!!(current === "cam" && camError) && <Text style={styles.error}>{camError}</Text>}
+      <View style={styles.controls}>
       {actions && (
         <View style={styles.btnRow}>
           <Pressable onPress={() => send(msg.click("left", true, true))} style={styles.btn}>
@@ -1184,29 +1244,43 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
           </Text>
         </View>
       )}
+      {children}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  topRow: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 4, paddingHorizontal: 8 },
+  topRow: { flexDirection: "row", alignItems: "center", gap: 6, height: 36, paddingHorizontal: 8 },
+  title: { color: COLORS.text, fontSize: 15, fontWeight: "800" },
+  topScroll: { flex: 1 },
+  topScrollContent: { flexDirection: "row", alignItems: "center", gap: 4 },
+  gear: { backgroundColor: COLORS.chip, borderRadius: 999, width: 30, height: 28, alignItems: "center", justifyContent: "center" },
+  gearText: { color: COLORS.muted, fontSize: 15, fontWeight: "800" },
+  fpsPill: { position: "absolute", top: 6, right: 6, maxWidth: "75%", backgroundColor: "rgba(15,23,42,0.8)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 8 },
+  streamPop: { position: "absolute", top: 4, left: 0, right: 0 },
+  clickSeg: { position: "absolute", left: 6, bottom: 6, flexDirection: "row", gap: 4, backgroundColor: "rgba(15,23,42,0.7)", borderRadius: 999, padding: 3 },
+  clickSegBtn: { width: 34, height: 26, borderRadius: 999, backgroundColor: "rgba(30,41,59,0.9)", alignItems: "center", justifyContent: "center" },
+  shiftForBar: { left: 46 },
+  controls: { height: CONTROL_H, paddingHorizontal: 8, paddingBottom: 6, gap: CONTROL_GAP },
   modes: { flexDirection: "row", alignItems: "center", gap: 4 },
   subTab: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10 },
   subTabActive: { backgroundColor: "#0c4a6e" },
   subText: { color: COLORS.muted, fontWeight: "700" },
   subTextActive: { color: COLORS.text },
-  hint: { color: COLORS.muted, fontSize: 11, paddingHorizontal: 8, paddingTop: 2 },
-  stalled: { marginHorizontal: 8, marginTop: 4, backgroundColor: "rgba(127,29,29,0.9)", borderRadius: 8, padding: 8 },
+  hint: { color: "#e2e8f0", fontSize: 11, fontWeight: "700" },
+  hintPill: { alignSelf: "flex-start", backgroundColor: "rgba(15,23,42,0.8)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+  overlayTop: { position: "absolute", left: 6, right: 6, top: 32, gap: 4 },
+  stalled: { backgroundColor: "rgba(127,29,29,0.9)", borderRadius: 8, padding: 8 },
   stalledText: { color: "#e8eefc", fontSize: 12, fontWeight: "700", textAlign: "center" },
-  blocked: { marginHorizontal: 8, marginTop: 4, backgroundColor: "rgba(30,41,59,0.9)", borderRadius: 8, padding: 6 },
+  blocked: { backgroundColor: "rgba(30,41,59,0.9)", borderRadius: 8, padding: 6 },
   blockedText: { color: COLORS.muted, fontSize: 11, fontWeight: "700", textAlign: "center" },
-  clickRow: { flexDirection: "row", gap: 6, paddingHorizontal: 8, paddingTop: 6, marginBottom: 6 },
-  clickBtn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, paddingVertical: 6, alignItems: "center" },
+  clickBtn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   clickBtnActive: { backgroundColor: "#38bdf8" },
   clickText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
   clickTextActive: { color: "#0b1220" },
-  viewerBox: { flex: 1, minHeight: 200, margin: 8, position: "relative" },
+  viewerBox: { flex: 1, minHeight: 160, marginHorizontal: 8, marginBottom: 6, position: "relative" },
   viewerWrap: { flex: 1, borderRadius: 12, overflow: "hidden", backgroundColor: "#000" },
   zoomLayer: { flex: 1 },
   screen: { flex: 1 },
@@ -1229,9 +1303,9 @@ const styles = StyleSheet.create({
   barTrack: { flex: 1, width: 14, marginVertical: 6, borderRadius: 7, backgroundColor: "rgba(30,41,59,0.6)", alignItems: "center", justifyContent: "center" },
   barThumb: { width: 14, height: 44, borderRadius: 7, backgroundColor: "rgba(125,211,252,0.7)" },
   error: { color: COLORS.danger, paddingHorizontal: 8, textAlign: "center", fontSize: 12 },
-  btnRow: { flexDirection: "row", gap: 8, paddingHorizontal: 8, justifyContent: "center" },
-  btn: { flex: 1, maxWidth: 110, backgroundColor: COLORS.chip, borderRadius: 12, paddingVertical: 9, alignItems: "center" },
+  btnRow: { flexDirection: "row", gap: 6, height: 34 },
+  btn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   btnText: { color: COLORS.text, fontWeight: "700" },
-  pad: { height: 64, margin: 8, borderRadius: 16, backgroundColor: COLORS.card, overflow: "hidden", alignItems: "center", justifyContent: "center" },
+  pad: { flex: 1, borderRadius: 14, backgroundColor: COLORS.card, overflow: "hidden", alignItems: "center", justifyContent: "center" },
   padText: { color: COLORS.muted, textAlign: "center", fontSize: 12 },
 });
