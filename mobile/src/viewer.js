@@ -56,6 +56,11 @@ const PAD_REST = 0.3;
 const STRETCH_MOVING = 2.6;
 const STRETCH_REST = 1.7;
 
+// Largest focal-point move (px) accepted in a single pinch event. Real
+// two-finger motion stays well under this per event; a finger lifting makes
+// the focal point snap by half the finger spacing.
+const FOCAL_JUMP = 36;
+
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
 }
@@ -503,6 +508,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const startS = useSharedValue({ s: 1, tx: 0, ty: 0, fx: 0, fy: 0, k0: 1, n: 2 });
   const decayLeft = useSharedValue(0);
   const pinching = useSharedValue(false);
+  const lastF = useSharedValue({ x: 0, y: 0 });
   const pinchEndAt = useSharedValue(0);
   const panS = useSharedValue({ tx: 0, ty: 0, ox: 0, oy: 0, held: false, mixed: false });
 
@@ -551,11 +557,18 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         cancelAnimation(camX);
         cancelAnimation(camY);
         pinching.value = true;
+        lastF.value = { x: e.focalX, y: e.focalY };
         startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: e.focalX, fy: e.focalY, k0: e.scale, n: e.numberOfPointers };
       })
       .onUpdate((e) => {
         if (e.numberOfPointers < 2) return;
-        if (e.numberOfPointers !== startS.value.n) {
+        // On Android the event for a lifting finger still says 2 pointers,
+        // but its focal point has already snapped to the finger left behind.
+        // Two fingers cannot move the midpoint that far in one event, so a
+        // big jump is a pointer change: re-anchor and do not move.
+        const jump = Math.hypot(e.focalX - lastF.value.x, e.focalY - lastF.value.y) > FOCAL_JUMP;
+        lastF.value = { x: e.focalX, y: e.focalY };
+        if (jump || e.numberOfPointers !== startS.value.n) {
           startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: e.focalX, fy: e.focalY, k0: e.scale, n: e.numberOfPointers };
           return;
         }
