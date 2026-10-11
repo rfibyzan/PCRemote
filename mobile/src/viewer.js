@@ -7,7 +7,7 @@
  * pointer never desyncs after zoom + tab switch. Stalled streams auto-resubscribe.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Animated, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { COLORS, MonitorChips, ScreenView } from "./components";
@@ -15,6 +15,7 @@ import { StreamControls, effectiveFpsValue, getQuality, getSel, setSel, useMonit
 import { CursorDot, cursorPixels, trackFrameBytes } from "./cursor";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
+import { viewerBox } from "./tablayout";
 import { MIN_CROP, clampCrop, clampLiveScale, cropMatches, pinchStep, sliderFractionToZoom } from "./zoom";
 
 function clamp01(v) {
@@ -42,7 +43,10 @@ export function setCommittedCrop(c) {
   lastSentCrop = c ? { ...c } : null;
 }
 
-export default function ViewerPanel({ viewerHeight, touchpad = true, actions = true, onTap = null }) {
+export default function ViewerPanel({ touchpad = true, actions = true, onTap = null }) {
+  // Same fixed 16:9 box on PAD / TYPE / WIN (derived from the window only).
+  const win = useWindowDimensions();
+  const box = viewerBox(win.width, win.height);
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
   const shared = useSel();
   const sub = shared.mode;
@@ -990,7 +994,24 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
     return <CursorDot x={p.x} y={p.y} />;
   }
 
-  const viewerStyle = viewerHeight ? { height: viewerHeight } : { flex: 1 };
+  const viewerStyle = { height: box.height };
+
+  // Gesture hint: shown as a small overlay for a few seconds after the mode
+  // or click button changes, instead of a text line that pushed the viewer.
+  const hintText =
+    sub === "Look"
+      ? "Geser = pan · pinch = zoom"
+      : clickBtn === "right"
+        ? "Tap = klik kanan · drag = drag kanan"
+        : clickBtn === "middle"
+          ? "Tap = klik tengah · drag = drag tengah"
+          : "Tap = klik · 2x tap = kata · drag = pilih";
+  const [hintOn, setHintOn] = useState(true);
+  useEffect(() => {
+    setHintOn(true);
+    const t = setTimeout(() => setHintOn(false), 3500);
+    return () => clearTimeout(t);
+  }, [sub, clickBtn]);
   // Effective viewport for minimap/badge/slider: committed crop + live transform.
   // Null until dims+layout ready → fall back to committed crop for badge/minimap.
   const visOrNull = (() => {
@@ -1012,7 +1033,7 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
   }
 
   return (
-    <View style={styles.root}>
+    <View style={touchpad || actions ? styles.root : styles.rootFixed}>
       <View style={styles.topRow}>
         <MonitorChips monitors={monitors} current={current} onPick={onPick} row />
         <View style={styles.modes}>
@@ -1027,25 +1048,6 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
         </View>
       </View>
       <StreamControls compact />
-      <Text style={styles.hint}>
-        {sub === "Look"
-          ? "Look: drag to pan, pinch to zoom (exact, no relock)"
-          : clickBtn === "right"
-            ? "Click: tap = right-click, drag = right-drag · Hold menahan kanan (lepas = menu)"
-            : clickBtn === "middle"
-              ? "Click: tap = middle-click, drag = middle-drag · Hold menahan tengah"
-              : "Click: tap = click, 2x tap = word, drag = select · Hold menahan kiri"}
-      </Text>
-      {stalled && (
-        <View style={styles.stalled}>
-          <Text style={styles.stalledText}>Stream terhenti — mencoba lagi otomatis…</Text>
-        </View>
-      )}
-      {tapBlocked && !stalled && (
-        <View style={styles.blocked}>
-          <Text style={styles.blockedText}>Menunggu info layar, coba lagi sebentar…</Text>
-        </View>
-      )}
       <View style={[styles.viewerBox, viewerStyle]}>
         <View
           ref={wrapRef}
@@ -1127,6 +1129,28 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
             </View>
           )}
         </View>
+        <View style={styles.overlayTop} pointerEvents="none">
+          {stalled && (
+            <View style={styles.stalled}>
+              <Text style={styles.stalledText}>Stream terhenti — mencoba lagi otomatis…</Text>
+            </View>
+          )}
+          {tapBlocked && !stalled && (
+            <View style={styles.blocked}>
+              <Text style={styles.blockedText}>Menunggu info layar, coba lagi sebentar…</Text>
+            </View>
+          )}
+          {!!(current === "cam" && camError) && (
+            <View style={styles.stalled}>
+              <Text style={styles.stalledText}>{camError}</Text>
+            </View>
+          )}
+        </View>
+        {hintOn && sub === "Click" && (
+          <View style={styles.hintPill} pointerEvents="none">
+            <Text style={styles.hint}>{hintText}</Text>
+          </View>
+        )}
         {bar && (
           <View style={styles.bar}>
             <Pressable onPress={() => send(msg.scroll(0, 240))} style={styles.barBtn}>
@@ -1141,20 +1165,18 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
           </View>
         )}
       </View>
-      {sub === "Click" && (
-        <View style={styles.clickRow}>
-          {CLICK_BTNS.map((b) => (
-            <Pressable
-              key={b.id}
-              onPress={() => setSel({ clickBtn: b.id })}
-              style={[styles.clickBtn, clickBtn === b.id && styles.clickBtnActive]}
-            >
-              <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-      {!!(current === "cam" && camError) && <Text style={styles.error}>{camError}</Text>}
+      {/* Always rendered (dimmed in Look) so nothing below ever jumps. */}
+      <View style={[styles.clickRow, sub !== "Click" && styles.clickRowOff]} pointerEvents={sub === "Click" ? "auto" : "none"}>
+        {CLICK_BTNS.map((b) => (
+          <Pressable
+            key={b.id}
+            onPress={() => setSel({ clickBtn: b.id })}
+            style={[styles.clickBtn, clickBtn === b.id && styles.clickBtnActive]}
+          >
+            <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
+          </Pressable>
+        ))}
+      </View>
       {actions && (
         <View style={styles.btnRow}>
           <Pressable onPress={() => send(msg.click("left", true, true))} style={styles.btn}>
@@ -1190,23 +1212,27 @@ export default function ViewerPanel({ viewerHeight, touchpad = true, actions = t
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  rootFixed: { flexGrow: 0, flexShrink: 0 },
   topRow: { flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 4, paddingHorizontal: 8 },
   modes: { flexDirection: "row", alignItems: "center", gap: 4 },
   subTab: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10 },
   subTabActive: { backgroundColor: "#0c4a6e" },
   subText: { color: COLORS.muted, fontWeight: "700" },
   subTextActive: { color: COLORS.text },
-  hint: { color: COLORS.muted, fontSize: 11, paddingHorizontal: 8, paddingTop: 2 },
-  stalled: { marginHorizontal: 8, marginTop: 4, backgroundColor: "rgba(127,29,29,0.9)", borderRadius: 8, padding: 8 },
+  hint: { color: "#e2e8f0", fontSize: 11, fontWeight: "700" },
+  hintPill: { position: "absolute", left: 8, bottom: 8, backgroundColor: "rgba(15,23,42,0.8)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+  overlayTop: { position: "absolute", left: 8, right: 8, top: 8, gap: 4 },
+  stalled: { backgroundColor: "rgba(127,29,29,0.9)", borderRadius: 8, padding: 8 },
   stalledText: { color: "#e8eefc", fontSize: 12, fontWeight: "700", textAlign: "center" },
-  blocked: { marginHorizontal: 8, marginTop: 4, backgroundColor: "rgba(30,41,59,0.9)", borderRadius: 8, padding: 6 },
+  blocked: { backgroundColor: "rgba(30,41,59,0.9)", borderRadius: 8, padding: 6 },
   blockedText: { color: COLORS.muted, fontSize: 11, fontWeight: "700", textAlign: "center" },
-  clickRow: { flexDirection: "row", gap: 6, paddingHorizontal: 8, paddingTop: 6, marginBottom: 6 },
-  clickBtn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, paddingVertical: 6, alignItems: "center" },
+  clickRow: { flexDirection: "row", gap: 6, paddingHorizontal: 8, height: 32, marginBottom: 6 },
+  clickRowOff: { opacity: 0.3 },
+  clickBtn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   clickBtnActive: { backgroundColor: "#38bdf8" },
   clickText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
   clickTextActive: { color: "#0b1220" },
-  viewerBox: { flex: 1, minHeight: 200, margin: 8, position: "relative" },
+  viewerBox: { marginHorizontal: 8, marginVertical: 6, position: "relative" },
   viewerWrap: { flex: 1, borderRadius: 12, overflow: "hidden", backgroundColor: "#000" },
   zoomLayer: { flex: 1 },
   screen: { flex: 1 },
@@ -1232,6 +1258,6 @@ const styles = StyleSheet.create({
   btnRow: { flexDirection: "row", gap: 8, paddingHorizontal: 8, justifyContent: "center" },
   btn: { flex: 1, maxWidth: 110, backgroundColor: COLORS.chip, borderRadius: 12, paddingVertical: 9, alignItems: "center" },
   btnText: { color: COLORS.text, fontWeight: "700" },
-  pad: { height: 64, margin: 8, borderRadius: 16, backgroundColor: COLORS.card, overflow: "hidden", alignItems: "center", justifyContent: "center" },
+  pad: { flex: 1, minHeight: 90, margin: 8, borderRadius: 16, backgroundColor: COLORS.card, overflow: "hidden", alignItems: "center", justifyContent: "center" },
   padText: { color: COLORS.muted, textAlign: "center", fontSize: 12 },
 });
