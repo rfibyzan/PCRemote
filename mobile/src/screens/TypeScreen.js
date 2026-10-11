@@ -1,37 +1,33 @@
-/** TYPE: compact reference layout (no full QWERTY grid).
- * Layout (below the shared fixed-size viewer):
+/** TYPE (layout C): shared viewer on top, fixed control area below:
  *   free-text field (Enter never clears it)
- *   card: Hold | Ctrl Alt Shift Win | Send  /  Esc Tab Bksp Enter Del
- *   card: inverted-T arrows | Home PgUp / End PgDn
+ *   row 1, page A: Ctrl Alt Shift Win Esc Tab Del
+ *   row 1, page B: Hold Send Home End PgUp PgDn Ins
+ *   row 2 (always): Bksp Enter ← ↑ ↓ → and ⋯ (flips page A/B)
  * Protocol/functions preserved: key tap, down-only hold, combo chords, text.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View, ScrollView } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { COLORS } from "../components";
-import { ConnDot } from "../controls";
 import ViewerPanel from "../viewer";
+import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
 
 const MODS = ["ctrl", "alt", "shift", "win"];
-const SPECIAL = ["esc", "tab", "backspace", "enter", "delete"];
-const SPECIAL_LABEL = { esc: "Esc", tab: "Tab", backspace: "Bksp", enter: "Enter", delete: "Del" };
-const NAV = [
-  { label: "←", key: "left" },
-  { label: "→", key: "right" },
-  { label: "↑", key: "up" },
-  { label: "↓", key: "down" },
-  { label: "Home", key: "home" },
-  { label: "End", key: "end" },
-  { label: "PgUp", key: "pageup" },
-  { label: "PgDn", key: "pagedown" },
-];
+const FIELD_H = 36;
+// Last key page survives tab switches.
+let lastPage = "A";
 
 export default function TypeScreen() {
   const [held, setHeld] = useState([]);
   const [holdMode, setHoldMode] = useState(true);
   const [free, setFree] = useState("");
+  const [page, setPageState] = useState(lastPage);
+  function setPage(v) {
+    lastPage = v;
+    setPageState(v);
+  }
   // Modifier cleanup: held Ctrl/Alt/Shift/Win must never stay down on the PC
   // after unmount, socket close, or across a reconnect.
   const heldRef = useRef([]);
@@ -153,24 +149,46 @@ export default function TypeScreen() {
     );
   }
 
-  const nav = (k) => NAV.find((n) => n.key === k);
+  // Two pages share the same two key rows; "⋯" flips between them so the
+  // control area never grows (layout C keeps the viewer big).
+  const ROW_COMMON = [
+    { label: "Bksp", onPress: () => tapKey("backspace") },
+    { label: "Enter", onPress: () => tapKey("enter") },
+    { label: "←", onPress: () => tapKey("left") },
+    { label: "↑", onPress: () => tapKey("up") },
+    { label: "↓", onPress: () => tapKey("down") },
+    { label: "→", onPress: () => tapKey("right") },
+  ];
+  const ROW_A = [
+    ...MODS.map((k) => ({ label: k[0].toUpperCase() + k.slice(1), active: held.includes(k), onPress: () => tapModifier(k) })),
+    { label: "Esc", onPress: () => tapKey("esc") },
+    { label: "Tab", onPress: () => tapKey("tab") },
+    { label: "Del", onPress: () => tapKey("delete") },
+  ];
+  const ROW_B = [
+    { label: holdMode ? "Hold●" : "Hold", active: holdMode, onPress: toggleHoldMode },
+    { label: "Send", accent: true, onPress: sendHeld },
+    { label: "Home", onPress: () => tapKey("home") },
+    { label: "End", onPress: () => tapKey("end") },
+    { label: "PgUp", onPress: () => tapKey("pageup") },
+    { label: "PgDn", onPress: () => tapKey("pagedown") },
+    { label: "Ins", onPress: () => tapKey("insert") },
+  ];
+  const rows = [page === "B" ? ROW_B : ROW_A, ROW_COMMON];
+  const keyH = rowHeight(2, [FIELD_H]);
+  const heldHint = held.length ? held.map((k) => k[0].toUpperCase() + k.slice(1)).join("+") + " + …" : null;
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <View style={styles.topRow}>
-        <Text style={styles.title}>Type</Text>
-        <ConnDot />
-      </View>
-      <ViewerPanel touchpad={false} actions={false} />
-      <ScrollView style={styles.kb} contentContainerStyle={styles.kbContent} keyboardShouldPersistTaps="handled">
+      <ViewerPanel title="Type" touchpad={false} actions={false}>
         <View style={styles.freeRow}>
           <TextInput
             style={styles.free}
             value={free}
             onChangeText={handleFreeChange}
             onSubmitEditing={handleFreeSubmit}
-            placeholder="Ketik seperti keyboard PC"
-            placeholderTextColor={COLORS.muted}
+            placeholder={heldHint || "Ketik seperti keyboard PC"}
+            placeholderTextColor={heldHint ? COLORS.accent : COLORS.muted}
             autoCapitalize="none"
             autoCorrect={false}
             multiline={false}
@@ -184,72 +202,33 @@ export default function TypeScreen() {
             </Pressable>
           )}
         </View>
-
-        <View style={styles.card}>
-          <View style={styles.row}>
-            <Key label={holdMode ? "Hold ●" : "Hold"} active={holdMode} onPress={toggleHoldMode} />
-            {MODS.map((k) => (
-              <Key key={k} label={k[0].toUpperCase() + k.slice(1)} active={held.includes(k)} onPress={() => tapModifier(k)} />
+        {rows.map((r, ri) => (
+          <View key={ri} style={[styles.row, { height: keyH }]}>
+            {r.map((k, ki) => (
+              <Key key={ki} {...k} />
             ))}
-            <Key label="Send" accent onPress={sendHeld} />
+            {ri === 1 && (
+              <Key label={page === "B" ? "abc" : "⋯"} active={page === "B"} onPress={() => setPage(page === "B" ? "A" : "B")} />
+            )}
           </View>
-          <View style={styles.row}>
-            {SPECIAL.map((k) => (
-              <Key key={k} label={SPECIAL_LABEL[k]} onPress={() => tapKey(k)} />
-            ))}
-          </View>
-        </View>
-
-        <View style={[styles.card, styles.navCard]}>
-          <View style={styles.arrows}>
-            <View style={styles.row}>
-              <View style={styles.keySpacer} />
-              <Key label="↑" onPress={() => tapKey(nav("up").key)} />
-              <View style={styles.keySpacer} />
-            </View>
-            <View style={styles.row}>
-              <Key label="←" onPress={() => tapKey(nav("left").key)} />
-              <Key label="↓" onPress={() => tapKey(nav("down").key)} />
-              <Key label="→" onPress={() => tapKey(nav("right").key)} />
-            </View>
-          </View>
-          <View style={styles.navKeys}>
-            <View style={styles.row}>
-              <Key label="Home" onPress={() => tapKey("home")} />
-              <Key label="PgUp" onPress={() => tapKey("pageup")} />
-            </View>
-            <View style={styles.row}>
-              <Key label="End" onPress={() => tapKey("end")} />
-              <Key label="PgDn" onPress={() => tapKey("pagedown")} />
-            </View>
-          </View>
-        </View>
-      </ScrollView>
+        ))}
+      </ViewerPanel>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
-  kb: { flex: 1 },
-  kbContent: { paddingHorizontal: 8, paddingBottom: 12, gap: 8 },
-  topRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, height: 32 },
-  title: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
-  card: { backgroundColor: COLORS.card, borderRadius: 12, padding: 6, gap: 6 },
-  navCard: { flexDirection: "row", gap: 10 },
-  arrows: { flex: 3, gap: 6 },
-  navKeys: { flex: 2, gap: 6 },
-  row: { flexDirection: "row", gap: 6 },
-  key: { flex: 1, height: 38, backgroundColor: COLORS.chip, borderRadius: 8, alignItems: "center", justifyContent: "center", minWidth: 0 },
-  keySpacer: { flex: 1 },
+  row: { flexDirection: "row", gap: 5 },
+  key: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 8, alignItems: "center", justifyContent: "center", minWidth: 0 },
   keyWide: { flex: 2 },
   keyAccent: { backgroundColor: "#075985" },
   keyActive: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: COLORS.accent },
   keyPressed: { opacity: 0.6 },
   keyText: { color: COLORS.text, fontSize: 12, fontWeight: "700" },
   keyTextActive: { color: COLORS.accent },
-  free: { flex: 1, height: 44, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 12, paddingHorizontal: 12 },
-  freeRow: { flexDirection: "row", gap: 6, alignItems: "center" },
-  clearBtn: { backgroundColor: COLORS.chip, borderRadius: 10, width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  free: { flex: 1, height: FIELD_H, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 0 },
+  freeRow: { flexDirection: "row", gap: 6, alignItems: "center", height: FIELD_H },
+  clearBtn: { backgroundColor: COLORS.chip, borderRadius: 10, width: FIELD_H, height: FIELD_H, alignItems: "center", justifyContent: "center" },
   clearText: { color: COLORS.muted, fontWeight: "800", fontSize: 14 },
 });
