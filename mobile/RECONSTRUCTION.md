@@ -56,10 +56,16 @@ stable component identity (no per-frame remount).
   messages and shows no quality UI.
 - Screen renderer is double-buffered: the visible frame is never blanked
   while the next JPEG decodes; invalid frames are ignored.
-- Xbox overlay: 2 analog sticks (±1, deadzone 0.12, auto-center, +Y up),
-  D-pad, A/B/X/Y, LB/RB, LT/RT (0…1, tap = full), Back/Start/Guide.
-- `{t:"gamepad",state}` at ~30 Hz + immediate button flush; multi-touch
-  via independent responders; exit sends zero-state + `gamepadEnd`.
+- Xbox overlay: 2 analog sticks (±1, deadzone 0.12 default/adjustable,
+  auto-center, +Y up, double-tap-hold = L3/R3), 8-way D-pad, A/B/X/Y,
+  LB/RB, LT/RT (0…1, tap = full), Back/Start/Guide, optional L3/R3 buttons.
+- Layout is data (`src/game/layout.js`): every control movable, resizable,
+  per-control opacity, hideable; global opacity/scale, haptics, fixed or
+  floating sticks. Saved to `gamepad-layout-v2.json` in the document dir.
+- `{t:"gamepad",state}` at ~30 Hz when dirty + immediate button/trigger
+  flush + 500 ms heartbeat; multi-touch via one router tracking every
+  pointer id from first contact (`src/game/router.js`); exit sends
+  zero-state + `gamepadEnd`.
 - Audio: `{t:"gameAudio",on}` → `PA`-header Opus packets → rolling Ogg
   segments → platform decoder. Starts/stops with GAME only (no Audio tab).
 
