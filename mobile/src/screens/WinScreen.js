@@ -1,12 +1,14 @@
-/** WIN: shared fixed-size viewer + Windows controls in sections
- * (Sistem | Edit | Media | Fn | Lainnya) so the panel never scrolls far. */
+/** WIN (layout C): shared viewer + fixed control area: section tabs
+ * (Sistem | Edit | Media | Fn | Lainnya) over two rows of buttons. Every
+ * section fits in those two rows except Lainnya, which scrolls inside the
+ * area (the area itself never grows, so the viewer stays the same size). */
 import React, { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
 import { COLORS } from "../components";
-import { ConnDot } from "../controls";
 import ViewerPanel from "../viewer";
+import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
 
@@ -24,7 +26,8 @@ const FKEYS = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11
 const SECTIONS = ["Sistem", "Edit", "Media", "Fn", "Lainnya"];
 // Last section survives tab switches (WIN stays mounted, but keep it explicit).
 let lastSection = "Sistem";
-const MODS = ["ctrl", "alt", "shift", "win"];
+const TABS_H = 28;
+const CELL_H = rowHeight(2, [TABS_H]);
 // Bigger touch target without bigger visuals (Win buttons are Type-small).
 // Horizontal slop stays <= gap (3px) so adjacent buttons never overlap and
 // RN can't pick the wrong one; vertical gets a bit more (rows are taller).
@@ -82,15 +85,15 @@ export default function WinScreen() {
     };
   }, []);
 
-  function Btn({ label, icon, onPress, active, danger, wide, a11y }) {
+  function Btn({ label, icon, onPress, active, danger, wide, fn, a11y }) {
     return (
       <Pressable
         onPress={onPress}
         hitSlop={HIT}
         accessibilityLabel={a11y || label}
-        style={({ pressed }) => [styles.cell, wide && styles.cellWide, active && styles.cellActive, danger && styles.dangerCell, pressed && styles.cellPressed]}
+        style={({ pressed }) => [styles.cell, fn && styles.cellFn, wide && styles.cellWide, active && styles.cellActive, danger && styles.dangerCell, pressed && styles.cellPressed]}
       >
-        {icon ? <MaterialIcons name={icon} size={18} color={COLORS.text} /> : null}
+        {icon ? <MaterialIcons name={icon} size={16} color={COLORS.text} /> : null}
         {label ? <Text style={[styles.cellText, active && styles.cellTextActive]} numberOfLines={1}>{label}</Text> : null}
       </Pressable>
     );
@@ -98,11 +101,7 @@ export default function WinScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <View style={styles.topRow}>
-        <Text style={styles.title}>Win</Text>
-        <ConnDot />
-      </View>
-      <ViewerPanel touchpad={false} actions={false} onTap={releaseApps} />
+      <ViewerPanel title="Win" touchpad={false} actions={false} onTap={releaseApps}>
       <View style={styles.tabs}>
         {SECTIONS.map((sec) => (
           <Pressable key={sec} onPress={() => setSection(sec)} style={[styles.tab, section === sec && styles.tabActive]}>
@@ -134,9 +133,6 @@ export default function WinScreen() {
             <Btn icon="redo" label="Redo" onPress={() => send(msg.combo(["ctrl", "y"]))} />
             <Btn icon="save" label="Save" onPress={() => send(msg.combo(["ctrl", "s"]))} />
             <Btn icon="search" label="Find" onPress={() => send(msg.combo(["ctrl", "f"]))} />
-            {MODS.map((k) => (
-              <Btn key={k} label={k[0].toUpperCase() + k.slice(1)} onPress={() => send(msg.key(k))} />
-            ))}
           </View>
         )}
         {section === "Media" && (
@@ -149,7 +145,7 @@ export default function WinScreen() {
         {section === "Fn" && (
           <View style={styles.grid}>
             {FKEYS.map((k) => (
-              <Btn key={k} label={k.toUpperCase()} onPress={() => send(msg.key(k))} />
+              <Btn key={k} label={k.toUpperCase()} fn onPress={() => send(msg.key(k))} />
             ))}
           </View>
         )}
@@ -183,6 +179,7 @@ export default function WinScreen() {
           </View>
         )}
       </ScrollView>
+      </ViewerPanel>
     </SafeAreaView>
   );
 }
@@ -190,28 +187,28 @@ export default function WinScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
   ctl: { flex: 1 },
-  ctlContent: { paddingHorizontal: 8, paddingBottom: 12, gap: 6 },
-  topRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, height: 32 },
-  title: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
-  tabs: { flexDirection: "row", gap: 4, marginHorizontal: 8, marginBottom: 6, backgroundColor: COLORS.card, borderRadius: 10, padding: 3 },
-  tab: { flex: 1, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  ctlContent: { gap: 6 },
+  tabs: { flexDirection: "row", gap: 3, height: TABS_H, backgroundColor: COLORS.card, borderRadius: 9, padding: 2 },
+  tab: { flex: 1, borderRadius: 7, alignItems: "center", justifyContent: "center" },
   tabActive: { backgroundColor: "#0c4a6e" },
   tabText: { color: COLORS.muted, fontWeight: "800", fontSize: 11 },
   tabTextActive: { color: COLORS.text },
   section: { color: COLORS.muted, fontWeight: "800", fontSize: 11, marginTop: 2 },
   more: { gap: 6 },
+  // 5 per row -> every section (max 9-10 buttons) fits in two rows.
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  cell: { width: "23.5%", flexGrow: 1, height: 48, backgroundColor: COLORS.chip, borderRadius: 10, alignItems: "center", justifyContent: "center", gap: 2, paddingHorizontal: 4 },
+  cell: { width: "18.4%", flexGrow: 1, height: CELL_H, backgroundColor: COLORS.chip, borderRadius: 9, alignItems: "center", justifyContent: "center", gap: 1, paddingHorizontal: 2 },
+  cellFn: { width: "15%" },
   cellWide: { width: "48%" },
   cellActive: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: COLORS.accent },
   cellPressed: { opacity: 0.6 },
-  dangerCell: { backgroundColor: "#7f1d1d", flexGrow: 0 },
-  cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 11 },
+  dangerCell: { backgroundColor: "#7f1d1d" },
+  cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 10 },
   cellTextActive: { color: COLORS.accent },
   row: { flexDirection: "row", gap: 6 },
-  input: { flex: 1, minHeight: 44, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  input: { flex: 1, minHeight: 40, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6 },
   clipBtns: { gap: 6 },
-  go: { backgroundColor: "#0c4a6e", borderRadius: 10, minWidth: 48, height: 44, alignItems: "center", justifyContent: "center" },
+  go: { backgroundColor: "#0c4a6e", borderRadius: 10, minWidth: 48, height: 40, alignItems: "center", justifyContent: "center" },
   goAlt: { backgroundColor: COLORS.chip },
   goText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
 });
