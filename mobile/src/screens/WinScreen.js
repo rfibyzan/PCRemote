@@ -3,7 +3,7 @@
  * section fits in those two rows except Lainnya, which scrolls inside the
  * area (the area itself never grows, so the viewer stays the same size). */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View, ScrollView } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
 import { COLORS } from "../components";
@@ -12,7 +12,15 @@ import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
 
-const APPS = ["explorer", "taskmgr", "notepad", "terminal", "browser", "settings", "calc"];
+const APPS = [
+  { id: "explorer", label: "Files", icon: "folder" },
+  { id: "taskmgr", label: "Task", icon: "assessment" },
+  { id: "notepad", label: "Notes", icon: "description" },
+  { id: "terminal", label: "Term", icon: "terminal" },
+  { id: "browser", label: "Web", icon: "public" },
+  { id: "settings", label: "Set", icon: "settings" },
+  { id: "calc", label: "Calc", icon: "calculate" },
+];
 const MEDIA = [
   { a: "pause", icon: "pause" },
   { a: "stop", icon: "stop" },
@@ -36,6 +44,7 @@ const HIT = { top: 4, bottom: 4, left: 2, right: 2 };
 export default function WinScreen() {
   const [clip, setClip] = useState("");
   const [url, setUrl] = useState("");
+  const [field, setField] = useState("url");
   const [section, setSectionState] = useState(lastSection);
   function setSection(v) {
     lastSection = v;
@@ -85,13 +94,13 @@ export default function WinScreen() {
     };
   }, []);
 
-  function Btn({ label, icon, onPress, active, danger, wide, fn, a11y }) {
+  function Btn({ label, icon, onPress, active, danger, wide, fn, small, a11y }) {
     return (
       <Pressable
         onPress={onPress}
         hitSlop={HIT}
         accessibilityLabel={a11y || label}
-        style={({ pressed }) => [styles.cell, fn && styles.cellFn, wide && styles.cellWide, active && styles.cellActive, danger && styles.dangerCell, pressed && styles.cellPressed]}
+        style={({ pressed }) => [styles.cell, fn && styles.cellFn, small && styles.cellSmall, wide && styles.cellWide, active && styles.cellActive, danger && styles.dangerCell, pressed && styles.cellPressed]}
       >
         {icon ? <MaterialIcons name={icon} size={16} color={COLORS.text} /> : null}
         {label ? <Text style={[styles.cellText, active && styles.cellTextActive]} numberOfLines={1}>{label}</Text> : null}
@@ -109,7 +118,7 @@ export default function WinScreen() {
           </Pressable>
         ))}
       </View>
-      <ScrollView style={styles.ctl} contentContainerStyle={styles.ctlContent} keyboardShouldPersistTaps="handled">
+      <View style={styles.ctl}>
         {section === "Sistem" && (
           <View style={styles.grid}>
             <Btn icon="apps" label="Start" onPress={() => send(msg.key("win"))} />
@@ -151,34 +160,39 @@ export default function WinScreen() {
         )}
         {section === "Lainnya" && (
           <View style={styles.more}>
-            <Text style={styles.section}>Buka aplikasi</Text>
             <View style={styles.grid}>
               {APPS.map((a) => (
-                <Btn key={a} label={a} onPress={() => send(msg.open(a))} />
+                <Btn key={a.id} icon={a.icon} label={a.label} small a11y={a.id} onPress={() => send(msg.open(a.id))} />
               ))}
             </View>
-            <Text style={styles.section}>Buka URL</Text>
-            <View style={styles.row}>
-              <TextInput style={styles.input} value={url} onChangeText={setUrl} placeholder="https://…" placeholderTextColor={COLORS.muted} autoCapitalize="none" />
-              <Pressable onPress={() => url.trim() && send(msg.open(url.trim()))} hitSlop={HIT} style={styles.go}>
-                <Text style={styles.goText}>Go</Text>
+            {/* One input row for both: URL to open, or the PC clipboard. */}
+            <View style={[styles.row, { height: CELL_H }]}>
+              <Pressable onPress={() => setField(field === "url" ? "clip" : "url")} hitSlop={HIT} style={[styles.go, styles.goAlt]}>
+                <Text style={styles.goText}>{field === "url" ? "URL" : "Clip"} ⇄</Text>
               </Pressable>
-            </View>
-            <Text style={styles.section}>Clipboard PC</Text>
-            <View style={styles.row}>
-              <TextInput style={styles.input} value={clip} onChangeText={setClip} placeholder="(kosong)" placeholderTextColor={COLORS.muted} multiline />
-              <View style={styles.clipBtns}>
-                <Pressable onPress={() => send(msg.clipboard(clip))} hitSlop={HIT} style={styles.go}>
-                  <Text style={styles.goText}>Set</Text>
+              {field === "url" ? (
+                <TextInput style={styles.input} value={url} onChangeText={setUrl} placeholder="https://…" placeholderTextColor={COLORS.muted} autoCapitalize="none" />
+              ) : (
+                <TextInput style={styles.input} value={clip} onChangeText={setClip} placeholder="Clipboard PC (kosong)" placeholderTextColor={COLORS.muted} />
+              )}
+              {field === "url" ? (
+                <Pressable onPress={() => url.trim() && send(msg.open(url.trim()))} hitSlop={HIT} style={styles.go}>
+                  <Text style={styles.goText}>Go</Text>
                 </Pressable>
-                <Pressable onPress={() => send(msg.clipboard())} hitSlop={HIT} style={[styles.go, styles.goAlt]}>
-                  <MaterialIcons name="refresh" size={16} color={COLORS.text} />
-                </Pressable>
-              </View>
+              ) : (
+                <>
+                  <Pressable onPress={() => send(msg.clipboard(clip))} hitSlop={HIT} style={styles.go}>
+                    <Text style={styles.goText}>Set</Text>
+                  </Pressable>
+                  <Pressable onPress={() => send(msg.clipboard())} hitSlop={HIT} style={[styles.go, styles.goIcon]} accessibilityLabel="Ambil clipboard PC">
+                    <MaterialIcons name="refresh" size={16} color={COLORS.text} />
+                  </Pressable>
+                </>
+              )}
             </View>
           </View>
         )}
-      </ScrollView>
+      </View>
       </ViewerPanel>
     </SafeAreaView>
   );
@@ -186,19 +200,18 @@ export default function WinScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
-  ctl: { flex: 1 },
-  ctlContent: { gap: 6 },
+  ctl: { flex: 1, overflow: "hidden" },
   tabs: { flexDirection: "row", gap: 3, height: TABS_H, backgroundColor: COLORS.card, borderRadius: 9, padding: 2 },
   tab: { flex: 1, borderRadius: 7, alignItems: "center", justifyContent: "center" },
   tabActive: { backgroundColor: "#0c4a6e" },
   tabText: { color: COLORS.muted, fontWeight: "800", fontSize: 11 },
   tabTextActive: { color: COLORS.text },
-  section: { color: COLORS.muted, fontWeight: "800", fontSize: 11, marginTop: 2 },
   more: { gap: 6 },
   // 5 per row -> every section (max 9-10 buttons) fits in two rows.
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   cell: { width: "18.4%", flexGrow: 1, height: CELL_H, backgroundColor: COLORS.chip, borderRadius: 9, alignItems: "center", justifyContent: "center", gap: 1, paddingHorizontal: 2 },
   cellFn: { width: "15%" },
+  cellSmall: { width: "12.5%" },
   cellWide: { width: "48%" },
   cellActive: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: COLORS.accent },
   cellPressed: { opacity: 0.6 },
@@ -206,9 +219,9 @@ const styles = StyleSheet.create({
   cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 10 },
   cellTextActive: { color: COLORS.accent },
   row: { flexDirection: "row", gap: 6 },
-  input: { flex: 1, minHeight: 40, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6 },
-  clipBtns: { gap: 6 },
-  go: { backgroundColor: "#0c4a6e", borderRadius: 10, minWidth: 48, height: 40, alignItems: "center", justifyContent: "center" },
+  input: { flex: 1, height: CELL_H, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 0 },
+  goIcon: { minWidth: 40 },
+  go: { backgroundColor: "#0c4a6e", borderRadius: 10, minWidth: 48, paddingHorizontal: 8, height: CELL_H, alignItems: "center", justifyContent: "center" },
   goAlt: { backgroundColor: COLORS.chip },
   goText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
 });

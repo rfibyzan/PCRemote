@@ -15,7 +15,7 @@ import { ConnDot, StreamControls, StreamStats, effectiveFpsValue, getQuality, ge
 import { CursorDot, cursorPixels, trackFrameBytes } from "./cursor";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
-import { CONTROL_H, CONTROL_GAP } from "./tablayout";
+import { CONTROL_H, CONTROL_GAP, CONTROL_PAD } from "./tablayout";
 import { MIN_CROP, clampCrop, clampLiveScale, cropMatches, pinchStep, sliderFractionToZoom } from "./zoom";
 
 function clamp01(v) {
@@ -1263,7 +1263,7 @@ const styles = StyleSheet.create({
   clickSeg: { position: "absolute", left: 6, bottom: 6, flexDirection: "row", gap: 4, backgroundColor: "rgba(15,23,42,0.7)", borderRadius: 999, padding: 3 },
   clickSegBtn: { width: 34, height: 26, borderRadius: 999, backgroundColor: "rgba(30,41,59,0.9)", alignItems: "center", justifyContent: "center" },
   shiftForBar: { left: 46 },
-  controls: { height: CONTROL_H, paddingHorizontal: 8, paddingBottom: 6, gap: CONTROL_GAP },
+  controls: { height: CONTROL_H, paddingHorizontal: 8, paddingBottom: CONTROL_PAD, gap: CONTROL_GAP, overflow: "hidden" },
   modes: { flexDirection: "row", alignItems: "center", gap: 4 },
   subTab: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10 },
   subTabActive: { backgroundColor: "#0c4a6e" },

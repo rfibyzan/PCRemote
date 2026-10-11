@@ -11,13 +11,15 @@
  */
 export const CONTROL_H = 128; // dp, the whole area under the viewer
 export const CONTROL_GAP = 6;
+export const CONTROL_PAD = 6; // bottom padding inside CONTROL_H
+export const CONTROL_INNER = CONTROL_H - CONTROL_PAD; // height rows can use
 
 /**
  * Split CONTROL_H into rows. `fixed` = heights of rows that keep their own
  * height (e.g. a 36 dp text field), `flexRows` = how many rows share the rest.
  * Returns the height of one flexible row (never below 28 dp).
  */
-export function rowHeight(flexRows, fixed = [], total = CONTROL_H, gap = CONTROL_GAP) {
+export function rowHeight(flexRows, fixed = [], total = CONTROL_INNER, gap = CONTROL_GAP) {
   const n = Math.max(1, Math.floor(Number(flexRows) || 1));
   const rows = n + fixed.length;
   const used = fixed.reduce((a, b) => a + (Number(b) || 0), 0) + gap * (rows - 1);
