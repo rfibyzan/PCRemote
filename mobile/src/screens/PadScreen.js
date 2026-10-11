@@ -13,13 +13,13 @@ export default function PadScreen() {
         <Text style={styles.title}>Pad</Text>
         <ConnDot />
       </View>
-      <ViewerPanel viewerHeight={null} touchpad actions />
+      <ViewerPanel touchpad actions />
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, paddingTop: 4 },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 8, height: 32 },
   title: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
 });
