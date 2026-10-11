@@ -1,0 +1,24 @@
+{
+  "name": "pcremote-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node src/unit_test.js && node src/selftest.js",
+    "test:unit": "node src/unit_test.js",
+    "test:game": "node src/game_test.js",
+    "test:input": "node src/unit_test.js"
+  },
+  "dependencies": {
+    "koffi": "^2.11.0",
+    "screenshot-desktop": "^1.15.1",
+    "sharp": "^0.35.4",
+    "tweetnacl": "^1.0.3",
+    "tweetnacl-util": "^0.15.1",
+    "ws": "^8.18.3"
+  },
+  "allowScripts": {
+    "koffi@2.16.3": true
+  }
+}

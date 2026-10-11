@@ -1,0 +1,15 @@
+﻿PC Remote
+
+by Asphalt Cake
+Support: discord.gg/vKVBbyfHTD
+
+Give someone this whole folder, not just the exe.
+
+1. On the Windows PC, double-click PCRemote.exe and click Yes on the admin prompt.
+2. If Windows says it protected your PC, click More info, then Run anyway.
+3. Click the tray icon (check the hidden icons next to the clock) and enter the code on the phone once.
+4. On the phone, install PCRemote.apk. Allow unknown apps for this one install.
+
+Same Wi-Fi or mobile data both work. You do not need to trust a USB cable.
+If webcam is used, Windows Settings, Privacy, Camera must allow desktop apps.
+The code stays the same after restarts.

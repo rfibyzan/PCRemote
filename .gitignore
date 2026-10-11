@@ -1,0 +1,27 @@
+# Deps & generated
+node_modules/
+.expo/
+.sentry-native/
+mobile/android/
+mobile/ios/
+
+# Build outputs
+**/build/
+*.log
+
+# Large runtime binaries (download separately, see README.md)
+runtime/ffmpeg.exe
+runtime/node.exe
+runtime/cloudflared.exe
+
+# Secrets & signing
+.env
+*.keystore
+*.jks
+*.p12
+*.key
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
