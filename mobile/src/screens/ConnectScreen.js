@@ -1,122 +1,82 @@
-/** Pairing / connection screen with detailed staged progress.
- * First pair: enter the code shown on the PC tray (only moment the phone
- * ever shows a code field). Once paired, the code is never displayed —
- * only the PC may show it. Scan QR (or a pcremote://pair deep link from
- * the phone camera) pairs in one step: code + the PC's LAN hosts.
+/** Pairing / connection screen.
+ * First pair: scan the QR on the PC dashboard (or type the code once).
+ * Paired: connects by itself; every step shows in the live log below, so a
+ * failed connect always says where it stopped (and the log can be shared).
+ * Recent PCs connect with one tap; Log out forgets the current PC.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Button, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { COLORS } from "../components";
 import {
+  addListener,
   boot,
   cancelFind,
   clearPairing,
-  connect,
-  findPC,
+  connectToCode,
+  forgetRecent,
   getStatus,
-  probeHost,
   retryConnect,
-  setLockCode,
-  addListener,
 } from "../connection";
 import { normalizeCode } from "../protocol";
 import { formatCodeInput, fromParams } from "../pairqr";
 import QrScanner from "./QrScanner";
+import { LogPanel, RecentList, useRecent } from "./ConnPanels";
 
-// First promise to resolve wins; rejects only when all of them failed.
-function firstOk(promises) {
-  return new Promise((resolve, reject) => {
-    let left = promises.length;
-    if (!left) reject(new Error("no hosts"));
-    for (const p of promises) {
-      p.then(resolve, () => {
-        left -= 1;
-        if (!left) reject(new Error("no host answered"));
-      });
-    }
-  });
-}
+const BUSY_STATES = new Set(["connecting", "reconnecting"]);
+const STOP_STATES = new Set(["kicked", "blocked", "rejected", "stopped"]);
 
 export default function ConnectScreen({ onConnected, qrParams = null }) {
   const [code, setCode] = useState("");
-  const [paired, setPaired] = useState(false);
-  const [status, setStatus] = useState("idle");
-  const [detail, setDetail] = useState("");
-  const [stage, setStage] = useState("idle");
-  const [link, setLink] = useState("");
-  const [attempts, setAttempts] = useState(0);
-  const [lastError, setLastError] = useState("");
+  const [st, setSt] = useState(getStatus());
   const [busy, setBusy] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const qrDone = useRef("");
-  const savedRef = useRef("");
-
-  function syncStatus(s) {
-    setStatus(s.status);
-    setDetail(s.detail || "");
-    setStage(s.stage || s.status);
-    setLink(s.link || "");
-    setAttempts(s.attempts || 0);
-    setLastError(s.lastError || "");
-  }
+  const recent = useRecent();
+  const paired = Boolean(st.code);
 
   useEffect(() => {
     boot().then(() => {
       const s = getStatus();
+      setSt(s);
       const fromLink = qrParams ? fromParams(qrParams) : null;
       if (fromLink) {
         qrDone.current = `${qrParams.c}|${qrParams.h}`;
-        void pairFromQr(fromLink);
-      } else if (s.code) {
-        savedRef.current = s.code;
-        setPaired(true);
-        // Already paired: look for the PC immediately (original behavior).
-        if (s.hosts.length) pairAndConnect(s.code);
+        void run(fromLink.code, fromLink.hosts);
+      } else if (s.code && !BUSY_STATES.has(s.status) && !STOP_STATES.has(s.status)) {
+        // Paired: connect right away. Skipped while the connection is
+        // already retrying (no second connect racing it) and after the PC
+        // kicked / blocked us (the user decides).
+        void run(s.code);
       }
-      syncStatus(s);
     });
     return addListener((event) => {
       if (event.t === "hello") onConnected();
-      if (event.t === "status" || event.t === "progress" || event.t === "failed") syncStatus(getStatus());
-      if (event.t === "code") {
-        if (event.code) {
-          savedRef.current = event.code;
-          setPaired(true);
-        } else {
-          savedRef.current = "";
-          setPaired(false);
-        }
+      if (event.t === "status" || event.t === "progress" || event.t === "failed" || event.t === "code" || event.t === "close") {
+        setSt(getStatus());
       }
-      if (event.t === "close") setDetail("Terputus. Mencoba lagi…");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function pairAndConnect(rawCode) {
-    const clean = normalizeCode(rawCode ?? (paired ? savedRef.current : code));
-    if (clean.length < 8) {
-      setDetail("Enter the code shown on the PC");
-      return;
-    }
+  async function run(rawCode, hosts = []) {
+    const clean = normalizeCode(rawCode);
+    if (clean.length < 8) return;
     setBusy(true);
-    setDetail("Mencari PC…");
-    setLastError("");
-    await setLockCode(clean);
     try {
-      const url = await findPC(setDetail);
-      setDetail(`Ketemu, menghubungkan…`);
-      connect(url);
-    } catch (e) {
-      const m = String(e?.message || e);
-      if (m.includes("cancelled")) {
-        setDetail("Dibatalkan.");
-      } else {
-        setDetail("PC tidak ketemu. Coba scan QR di layar PC.");
-        setLastError(m);
-      }
+      await connectToCode(clean, { hosts });
+    } catch {
+      // the reason is already in the log / status
     } finally {
       setBusy(false);
+      setSt(getStatus());
     }
+  }
+
+  function onConnectPress() {
+    if (paired) return run(st.code);
+    const clean = normalizeCode(code);
+    if (clean.length < 8) return;
+    return run(clean);
   }
 
   // A second deep link while this screen is open (app already running).
@@ -127,46 +87,42 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
     const r = fromParams(qrParams);
     if (!r) return;
     qrDone.current = key;
-    void pairFromQr(r);
+    void run(r.code, r.hosts);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qrParams?.c, qrParams?.h]);
 
-  // QR result: save the code, try the LAN hosts from the QR directly (fast,
-  // same Wi-Fi), otherwise fall back to normal discovery (internet too).
-  async function pairFromQr(r) {
+  function onQr(r) {
     setScanOpen(false);
     setCode(formatCodeInput(r.code));
-    setLastError("");
-    if (!r.hosts.length) return pairAndConnect(r.code);
-    setBusy(true);
-    setDetail("QR terbaca, menghubungkan…");
-    await setLockCode(r.code);
-    try {
-      const url = await firstOk(r.hosts.map((h) => probeHost(h.host, h.port)));
-      connect(url);
-      return;
-    } catch {
-      // not on the same Wi-Fi: discovery below
-    } finally {
-      setBusy(false);
-    }
-    return pairAndConnect(r.code);
+    void run(r.code, r.hosts);
   }
 
+  const working = busy || BUSY_STATES.has(st.status);
+  const statusColor = STOP_STATES.has(st.status) || st.status === "failed" || st.status === "unreachable" ? COLORS.danger : working ? "#facc15" : COLORS.muted;
+
   return (
-    <View style={styles.root}>
+    <ScrollView style={styles.scroll} contentContainerStyle={styles.root} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>PC Remote</Text>
       {paired ? (
-        <Text style={styles.hint}>Paired ✓ — only the PC shows the pair code.</Text>
+        <Text style={styles.hint}>
+          {st.pcName ? `Terhubung ke ${st.pcName}` : "Sudah dipasangkan"} ✓ — HP akan menyambung sendiri selama PCRemote.exe jalan.
+        </Text>
       ) : (
-        <Text style={styles.hint}>On the PC, open the tray icon and enter this code once. It stays locked after restarts.</Text>
+        <Text style={styles.hint}>Buka dashboard PC Remote di PC, lalu scan QR-nya. Cukup sekali.</Text>
       )}
+
+      {!paired && (
+        <Pressable onPress={() => setScanOpen(true)} style={styles.scanBig}>
+          <Text style={styles.scanBigText}>▣  Scan QR di layar PC</Text>
+        </Pressable>
+      )}
+
       {!paired && (
         <TextInput
           style={styles.input}
           value={code}
           onChangeText={(t) => setCode(formatCodeInput(t))}
-          placeholder="ABCD 2345"
+          placeholder="atau ketik kode: ABCD 2345"
           placeholderTextColor={COLORS.muted}
           autoCapitalize="none"
           autoCorrect={false}
@@ -176,16 +132,20 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
           maxLength={9}
         />
       )}
+
       <View style={styles.row}>
-        <View style={styles.btnFlex}>
-          <Button title={busy ? "Mencari… (tap Batal)" : "Connect"} onPress={() => pairAndConnect()} disabled={false} />
-        </View>
-        {busy && (
+        <Pressable
+          style={[styles.primary, working && styles.primaryBusy, !paired && normalizeCode(code).length < 8 && styles.primaryOff]}
+          onPress={onConnectPress}
+          disabled={working || (!paired && normalizeCode(code).length < 8)}
+        >
+          <Text style={styles.primaryText}>{working ? "Menghubungkan…" : STOP_STATES.has(st.status) ? "Connect lagi" : "Connect"}</Text>
+        </Pressable>
+        {working && (
           <Pressable
             onPress={() => {
               cancelFind();
               setBusy(false);
-              setDetail("Dibatalkan.");
             }}
             style={styles.cancel}
           >
@@ -193,57 +153,74 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
           </Pressable>
         )}
       </View>
-      <Text style={styles.status}>
-        Status: {status}
-        {stage && stage !== status ? ` · ${stage}` : ""}
-        {link ? ` · ${link}` : ""}
-        {attempts ? ` · coba ${attempts}` : ""}
-        {paired ? " · Paired" : ""}
+
+      <Text style={[styles.status, { color: statusColor }]}>
+        {st.status}
+        {st.stage && st.stage !== st.status ? ` · ${st.stage}` : ""}
+        {st.link ? ` · ${st.link}` : ""}
+        {st.attempts ? ` · coba ${st.attempts}` : ""}
       </Text>
-      {!!detail && <Text style={styles.message}>{detail}</Text>}
-      {!!lastError && <Text style={styles.error}>{lastError}</Text>}
-      {(status === "failed" || status === "unreachable" || status === "reconnecting") && !busy && (
+      {!!st.detail && <Text style={styles.message}>{st.detail}</Text>}
+
+      {(st.status === "failed" || st.status === "unreachable" || st.status === "reconnecting") && !busy && (
         <Pressable onPress={() => retryConnect()} style={styles.retry}>
           <Text style={styles.retryText}>Coba lagi sekarang</Text>
         </Pressable>
       )}
-      <Pressable onPress={() => setScanOpen(true)} style={styles.scan}>
-        <Text style={styles.scanText}>▣  Scan QR di layar PC</Text>
-      </Pressable>
-      <QrScanner visible={scanOpen} onClose={() => setScanOpen(false)} onResult={pairFromQr} />
+
+      <LogPanel lines={8} />
+
+      <RecentList
+        recent={recent.filter((r) => r.code !== st.code)}
+        currentCode={st.code}
+        busy={working}
+        onConnect={(r) => run(r.code)}
+        onForget={(r) => forgetRecent(r.code)}
+      />
+
       {paired && (
-        <Pressable
-          onPress={() => {
-            clearPairing();
-            setCode("");
-            setDetail("");
-            setLastError("");
-          }}
-          style={styles.unpair}
-        >
-          <Text style={styles.unpairText}>Unpair this PC</Text>
-        </Pressable>
+        <View style={styles.row}>
+          <Pressable onPress={() => setScanOpen(true)} style={[styles.scan, styles.flex]}>
+            <Text style={styles.scanText}>▣  Scan QR PC lain</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              clearPairing();
+              setCode("");
+            }}
+            style={styles.logout}
+          >
+            <Text style={styles.logoutText}>Log out</Text>
+          </Pressable>
+        </View>
       )}
-    </View>
+      <QrScanner visible={scanOpen} onClose={() => setScanOpen(false)} onResult={onQr} />
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: COLORS.bg, padding: 24, justifyContent: "center", gap: 12 },
+  scroll: { flex: 1, backgroundColor: COLORS.bg },
+  root: { flexGrow: 1, padding: 24, paddingTop: 56, justifyContent: "center", gap: 12 },
   title: { color: COLORS.text, fontSize: 28, fontWeight: "800" },
   hint: { color: COLORS.muted, fontSize: 13 },
-  input: { backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 12, padding: 14, fontSize: 22, letterSpacing: 4, textAlign: "center" },
+  input: { backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 12, padding: 14, fontSize: 20, letterSpacing: 3, textAlign: "center" },
   row: { flexDirection: "row", gap: 8, alignItems: "center" },
-  btnFlex: { flex: 1 },
-  cancel: { backgroundColor: "#7f1d1d", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
+  flex: { flex: 1 },
+  primary: { flex: 1, backgroundColor: "#0284c7", borderRadius: 12, paddingVertical: 14, alignItems: "center" },
+  primaryBusy: { backgroundColor: "#0c4a6e" },
+  primaryOff: { backgroundColor: "#1e293b" },
+  primaryText: { color: "#fff", fontWeight: "800", fontSize: 15 },
+  cancel: { backgroundColor: "#7f1d1d", borderRadius: 12, paddingVertical: 14, paddingHorizontal: 16 },
   cancelText: { color: "#e8eefc", fontWeight: "800" },
-  status: { color: COLORS.muted, textAlign: "center" },
+  status: { textAlign: "center", fontSize: 12, fontWeight: "700" },
   message: { color: COLORS.accent, textAlign: "center" },
-  error: { color: COLORS.danger, textAlign: "center", fontSize: 12 },
   retry: { backgroundColor: "#0c4a6e", borderRadius: 10, padding: 12, alignItems: "center" },
   retryText: { color: "#e8eefc", fontWeight: "800" },
+  scanBig: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: "#38bdf8", borderRadius: 14, paddingVertical: 18, alignItems: "center" },
+  scanBigText: { color: "#e0f2fe", fontWeight: "800", fontSize: 16 },
   scan: { borderWidth: 1, borderColor: "#38bdf8", borderRadius: 12, padding: 12, alignItems: "center" },
   scanText: { color: "#7dd3fc", fontWeight: "800" },
-  unpair: { marginTop: 12, alignItems: "center", padding: 10 },
-  unpairText: { color: COLORS.danger, fontWeight: "700" },
+  logout: { borderWidth: 1, borderColor: "#7f1d1d", borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16 },
+  logoutText: { color: COLORS.danger, fontWeight: "800" },
 });
