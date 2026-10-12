@@ -34,6 +34,41 @@ import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam
 import { createGamepadSession } from "./gamepad.js";
 import { assertCredits, creditByline, creditChannel, creditSupport, creditsIntact } from "./credits.js";
 
+// Optional QR on the dashboard (`npm install` pulls "qrcode"). Without it the
+// page still works and simply shows the code.
+let QRCode = null;
+try {
+  QRCode = (await import("qrcode")).default;
+} catch {
+  QRCode = null;
+}
+const qrCache = { text: "", svg: "" };
+
+/** What the phone's QR scanner reads: lock code + LAN hosts (ip:port). The
+ * code is already printed on the same page; the hosts just skip discovery. */
+function pairUri() {
+  const hosts = state.lan.map((ip) => `${ip}:${state.port}`).join(",");
+  return `pcremote://pair?c=${encodeURIComponent(state.code)}${hosts ? `&h=${encodeURIComponent(hosts)}` : ""}`;
+}
+
+async function pairQrSvg() {
+  if (!QRCode || !state.code) return "";
+  const text = pairUri();
+  if (qrCache.text === text) return qrCache.svg;
+  try {
+    const svg = await QRCode.toString(text, { type: "svg", margin: 1, errorCorrectionLevel: "M", color: { dark: "#0b1220", light: "#ffffff" } });
+    qrCache.text = text;
+    qrCache.svg = svg;
+    return svg;
+  } catch {
+    return "";
+  }
+}
+
+function escapeHtml(v) {
+  return String(v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+}
+
 const state = {
   code: "",
   key: null,
@@ -333,7 +368,7 @@ async function handleCommand(ws, msg) {
   }
 }
 
-function dashboard() {
+function dashboard(qrSvg = "") {
   assertCredits("dashboard");
   const mons = publicMonitors();
   const shown = displayCode(state.code);
@@ -341,31 +376,67 @@ function dashboard() {
   const netOk = Boolean(state.tunnel);
   const by = creditByline();
   const support = creditSupport();
+  const pill = (label, ok, okText, waitText) =>
+    `<div class="pill"><span class="dot ${ok ? "on" : ""}"></span><span class="k">${label}</span><span class="${ok ? "ok" : "muted"}">${ok ? okText : waitText}</span></div>`;
+  const qrBlock = qrSvg
+    ? `<div class="qr">${qrSvg}</div><p class="qrcap">Scan with the PC Remote app<br><span class="muted">(Scan QR on the connect screen)</span></p>`
+    : `<div class="qr qr-off"><span>QR unavailable<br><small>run <code>npm install</code> in runtime\\agent</small></span></div>`;
   return `<!doctype html>
-<html><head><meta charset="utf-8"><title>PC Remote</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PC Remote</title>
 <style>
-  body { font-family: Segoe UI, sans-serif; background:#0b1220; color:#e8eefc; margin:0; padding:32px; }
-  .card { max-width:720px; background:#151d2e; border-radius:20px; padding:28px; }
-  .code { font-size:42px; letter-spacing:8px; font-weight:700; color:#7dd3fc; }
-  .ok { color:#4ade80; }
-  .muted { color:#94a3b8; font-size:13px; }
-  .credit { margin-top:22px; color:#64748b; font-size:12px; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; min-height:100%; background:#0b1220; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; color:#e8eefc; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .card { width:100%; max-width:820px; background:#151d2e; border:1px solid #1e293b; border-radius:20px; padding:28px 32px; box-shadow:0 20px 60px rgba(0,0,0,.35); }
+  .head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:18px; }
+  h1 { margin:0; font-size:26px; }
+  .phones { background:#0c4a6e; color:#7dd3fc; border-radius:999px; padding:5px 12px; font-size:13px; font-weight:700; }
+  .grid { display:flex; gap:32px; align-items:center; flex-wrap:wrap; }
+  .left { flex:1 1 320px; min-width:0; }
+  .right { flex:0 0 220px; text-align:center; margin:0 auto; }
+  .label { color:#94a3b8; font-size:13px; margin:0 0 6px; }
+  .code { font-family: Consolas, "Cascadia Mono", monospace; font-size:44px; letter-spacing:6px; font-weight:700; color:#7dd3fc; margin:0 0 6px; white-space:nowrap; }
+  .sub { color:#94a3b8; font-size:13px; margin:0 0 20px; }
+  .pills { display:flex; flex-direction:column; gap:8px; margin-bottom:22px; }
+  .pill { display:flex; align-items:center; gap:10px; background:#0f172a; border-radius:10px; padding:9px 12px; font-size:14px; }
+  .pill .k { color:#cbd5e1; flex:1; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#f59e0b; }
+  .dot.on { background:#22c55e; }
+  .ok { color:#4ade80; font-weight:600; }
+  .muted { color:#94a3b8; }
+  .qr { width:220px; height:220px; background:#fff; border-radius:14px; padding:10px; margin:0 auto; }
+  .qr svg { width:100%; height:100%; display:block; }
+  .qr-off { display:flex; align-items:center; justify-content:center; background:#0f172a; color:#94a3b8; font-size:13px; text-align:center; border:1px dashed #334155; }
+  .qrcap { font-size:13px; margin:10px 0 0; color:#cbd5e1; }
+  .danger { display:flex; align-items:center; gap:12px; flex-wrap:wrap; border-top:1px solid #1e293b; padding-top:16px; }
+  button { background:#1e293b; color:#e8eefc; border:1px solid #334155; border-radius:10px; padding:9px 14px; font-weight:700; cursor:pointer; }
+  button:hover { background:#7f1d1d; border-color:#ef4444; }
+  .small { color:#64748b; font-size:12px; }
+  .credit { margin:18px 0 0; color:#64748b; font-size:12px; }
   .credit a { color:#7dd3fc; text-decoration:none; }
-  button { background:#1e293b; color:#e8eefc; border:0; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; }
-  li { margin: 6px 0; }
+  code { color:#cbd5e1; }
 </style></head>
 <body><div class="card">
-  <h1>PC Remote</h1>
-  <p>Enter this code on the phone <b>once</b>. It stays the same after restarts.</p>
-  <p class="code">${shown}</p>
-  <p>Local Wi‑Fi: ${lanOk ? '<span class="ok">ready</span>' : '<span class="muted">no network yet</span>'}</p>
-  <p>Internet: ${netOk ? '<span class="ok">ready</span>' : '<span class="muted">starting…</span>'}</p>
-  <p>Screens: ${mons.length}</p>
-  <p>Connected phones: ${state.clients.size}</p>
-  <form method="POST" action="/revoke" onsubmit="return confirm('Phones will need this new code. Continue?')">
-    <button type="submit">Make a new lock code</button>
-  </form>
-  <p class="muted">Only do that if you want to kick every paired phone.</p>
+  <div class="head"><h1>PC Remote</h1><span class="phones">${state.clients.size} phone${state.clients.size === 1 ? "" : "s"} connected</span></div>
+  <div class="grid">
+    <div class="left">
+      <p class="label">Pair code</p>
+      <p class="code">${escapeHtml(shown)}</p>
+      <p class="sub">Enter it on the phone <b>once</b>, or scan the QR. It stays the same after restarts.</p>
+      <div class="pills">
+        ${pill("Local Wi‑Fi", lanOk, "ready", "no network yet")}
+        ${pill("Internet", netOk, "ready", "starting…")}
+        ${pill("Screens", mons.length > 0, String(mons.length), "0")}
+      </div>
+    </div>
+    <div class="right">${qrBlock}</div>
+  </div>
+  <div class="danger">
+    <form method="POST" action="/revoke" onsubmit="return confirm('Phones will need this new code. Continue?')">
+      <button type="submit">Make a new lock code</button>
+    </form>
+    <span class="small">Only do that if you want to kick every paired phone.</span>
+  </div>
   <p class="credit"><a href="${creditChannel()}" target="_blank" rel="noopener">${by}</a> · ${support}</p>
 </div></body></html>`;
 }
@@ -635,8 +706,10 @@ async function main() {
       res.end();
       return;
     }
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(dashboard());
+    void pairQrSvg().then((svg) => {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(dashboard(svg));
+    });
   });
   server.timeout = 0;
   server.requestTimeout = 0;

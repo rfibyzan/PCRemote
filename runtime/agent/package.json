@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "koffi": "^2.11.0",
+    "qrcode": "^1.5.4",
     "screenshot-desktop": "^1.15.1",
     "sharp": "^0.35.4",
     "tweetnacl": "^1.0.3",

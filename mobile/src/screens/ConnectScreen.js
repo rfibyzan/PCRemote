@@ -1,7 +1,8 @@
 /** Pairing / connection screen with detailed staged progress.
  * First pair: enter the code shown on the PC tray (only moment the phone
  * ever shows a code field). Once paired, the code is never displayed —
- * only the PC may show it. Manual host entry kept as last-resort fallback.
+ * only the PC may show it. Scan QR (or a pcremote://pair deep link from
+ * the phone camera) pairs in one step: code + the PC's LAN hosts.
  */
 import React, { useEffect, useRef, useState } from "react";
 import { Button, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
@@ -19,8 +20,24 @@ import {
   addListener,
 } from "../connection";
 import { normalizeCode } from "../protocol";
+import { formatCodeInput, fromParams } from "../pairqr";
+import QrScanner from "./QrScanner";
 
-export default function ConnectScreen({ onConnected }) {
+// First promise to resolve wins; rejects only when all of them failed.
+function firstOk(promises) {
+  return new Promise((resolve, reject) => {
+    let left = promises.length;
+    if (!left) reject(new Error("no hosts"));
+    for (const p of promises) {
+      p.then(resolve, () => {
+        left -= 1;
+        if (!left) reject(new Error("no host answered"));
+      });
+    }
+  });
+}
+
+export default function ConnectScreen({ onConnected, qrParams = null }) {
   const [code, setCode] = useState("");
   const [paired, setPaired] = useState(false);
   const [status, setStatus] = useState("idle");
@@ -30,8 +47,8 @@ export default function ConnectScreen({ onConnected }) {
   const [attempts, setAttempts] = useState(0);
   const [lastError, setLastError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [manual, setManual] = useState("");
-  const [showManual, setShowManual] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
+  const qrDone = useRef("");
   const savedRef = useRef("");
 
   function syncStatus(s) {
@@ -46,7 +63,11 @@ export default function ConnectScreen({ onConnected }) {
   useEffect(() => {
     boot().then(() => {
       const s = getStatus();
-      if (s.code) {
+      const fromLink = qrParams ? fromParams(qrParams) : null;
+      if (fromLink) {
+        qrDone.current = `${qrParams.c}|${qrParams.h}`;
+        void pairFromQr(fromLink);
+      } else if (s.code) {
         savedRef.current = s.code;
         setPaired(true);
         // Already paired: look for the PC immediately (original behavior).
@@ -90,28 +111,46 @@ export default function ConnectScreen({ onConnected }) {
       if (m.includes("cancelled")) {
         setDetail("Dibatalkan.");
       } else {
-        setDetail("PC tidak ketemu.");
+        setDetail("PC tidak ketemu. Coba scan QR di layar PC.");
         setLastError(m);
-        setShowManual(true);
       }
     } finally {
       setBusy(false);
     }
   }
 
-  async function connectManual() {
-    const h = manual.trim();
-    if (!h) return;
+  // A second deep link while this screen is open (app already running).
+  useEffect(() => {
+    if (!qrParams) return;
+    const key = `${qrParams.c}|${qrParams.h}`;
+    if (qrDone.current === key) return;
+    const r = fromParams(qrParams);
+    if (!r) return;
+    qrDone.current = key;
+    void pairFromQr(r);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrParams?.c, qrParams?.h]);
+
+  // QR result: save the code, try the LAN hosts from the QR directly (fast,
+  // same Wi-Fi), otherwise fall back to normal discovery (internet too).
+  async function pairFromQr(r) {
+    setScanOpen(false);
+    setCode(formatCodeInput(r.code));
+    setLastError("");
+    if (!r.hosts.length) return pairAndConnect(r.code);
     setBusy(true);
+    setDetail("QR terbaca, menghubungkan…");
+    await setLockCode(r.code);
     try {
-      const url = await probeHost(h);
+      const url = await firstOk(r.hosts.map((h) => probeHost(h.host, h.port)));
       connect(url);
-      setDetail(`Menghubungkan manual ke ${h}…`);
-    } catch (e) {
-      setLastError(`manual gagal: ${String(e?.message || e)} (pastikan IP:port benar + satu Wi-Fi + firewall allow)`);
+      return;
+    } catch {
+      // not on the same Wi-Fi: discovery below
     } finally {
       setBusy(false);
     }
+    return pairAndConnect(r.code);
   }
 
   return (
@@ -126,10 +165,14 @@ export default function ConnectScreen({ onConnected }) {
         <TextInput
           style={styles.input}
           value={code}
-          onChangeText={setCode}
+          onChangeText={(t) => setCode(formatCodeInput(t))}
           placeholder="ABCD 2345"
           placeholderTextColor={COLORS.muted}
-          autoCapitalize="characters"
+          autoCapitalize="none"
+          autoCorrect={false}
+          spellCheck={false}
+          autoComplete="off"
+          keyboardType="visible-password"
           maxLength={9}
         />
       )}
@@ -164,25 +207,10 @@ export default function ConnectScreen({ onConnected }) {
           <Text style={styles.retryText}>Coba lagi sekarang</Text>
         </Pressable>
       )}
-      <Pressable onPress={() => setShowManual((s) => !s)} style={styles.manualToggle}>
-        <Text style={styles.manualToggleText}>{showManual ? "Sembunyikan host manual ▾" : "Host manual ▸"}</Text>
+      <Pressable onPress={() => setScanOpen(true)} style={styles.scan}>
+        <Text style={styles.scanText}>▣  Scan QR di layar PC</Text>
       </Pressable>
-      {showManual && (
-        <View style={styles.manualRow}>
-          <TextInput
-            style={styles.manualInput}
-            value={manual}
-            onChangeText={setManual}
-            placeholder="192.168.1.10"
-            placeholderTextColor={COLORS.muted}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <Pressable onPress={connectManual} style={styles.go}>
-            <Text style={styles.goText}>Go</Text>
-          </Pressable>
-        </View>
-      )}
+      <QrScanner visible={scanOpen} onClose={() => setScanOpen(false)} onResult={pairFromQr} />
       {paired && (
         <Pressable
           onPress={() => {
@@ -214,12 +242,8 @@ const styles = StyleSheet.create({
   error: { color: COLORS.danger, textAlign: "center", fontSize: 12 },
   retry: { backgroundColor: "#0c4a6e", borderRadius: 10, padding: 12, alignItems: "center" },
   retryText: { color: "#e8eefc", fontWeight: "800" },
-  manualToggle: { alignItems: "center", padding: 6 },
-  manualToggleText: { color: COLORS.muted, fontWeight: "700" },
-  manualRow: { flexDirection: "row", gap: 8 },
-  manualInput: { flex: 1, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, padding: 12 },
-  go: { backgroundColor: "#0c4a6e", borderRadius: 10, padding: 12, justifyContent: "center" },
-  goText: { color: "#e8eefc", fontWeight: "800" },
+  scan: { borderWidth: 1, borderColor: "#38bdf8", borderRadius: 12, padding: 12, alignItems: "center" },
+  scanText: { color: "#7dd3fc", fontWeight: "800" },
   unpair: { marginTop: 12, alignItems: "center", padding: 10 },
   unpairText: { color: COLORS.danger, fontWeight: "700" },
 });
