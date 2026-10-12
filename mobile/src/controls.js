@@ -418,8 +418,16 @@ export function ConnDot() {
   const glyph = st.connected ? "●" : st.status === "reconnecting" ? "↻" : "○";
   // Tap: Perangkat screen (current PC, log out, recent PCs, connection log).
   return (
-    <Pressable onPress={() => router.push("/devices")} hitSlop={10} accessibilityLabel="Perangkat dan log koneksi">
+    <Pressable
+      onPress={() => router.push("/devices")}
+      hitSlop={8}
+      style={({ pressed }) => [styles.connPill, pressed && styles.connPillPressed]}
+      accessibilityLabel="Perangkat dan log koneksi"
+    >
       <Text style={[styles.connDot, { color }]}>{glyph}</Text>
+      <Text style={styles.connLabel} numberOfLines={1}>
+        {st.pcName ? st.pcName.slice(0, 12) : "Perangkat"}
+      </Text>
     </Pressable>
   );
 }
@@ -443,5 +451,8 @@ const styles = StyleSheet.create({
   modalTextActive: { color: COLORS.text },
   wideBtn: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 14 },
   wideText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
-  connDot: { fontSize: 12, fontWeight: "800" },
+  connDot: { fontSize: 14, fontWeight: "800" },
+  connPill: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: COLORS.chip, borderRadius: 999, height: 30, paddingHorizontal: 12, maxWidth: 140 },
+  connPillPressed: { backgroundColor: "#0c4a6e" },
+  connLabel: { color: COLORS.text, fontSize: 13, fontWeight: "800" },
 });
