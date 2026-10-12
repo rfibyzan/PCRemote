@@ -36,7 +36,7 @@ export default function DevicesScreen({ onBack, onConnected, onLoggedOut }) {
   return (
     <ScrollView style={styles.scroll} contentContainerStyle={styles.root}>
       <View style={styles.head}>
-        <Pressable onPress={onBack} hitSlop={10}>
+        <Pressable onPress={onBack} hitSlop={10} style={styles.backBtn}>
           <Text style={styles.back}>‹ Kembali</Text>
         </Pressable>
         <Text style={styles.title}>Perangkat</Text>
@@ -102,17 +102,18 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: COLORS.bg },
   root: { padding: 16, paddingTop: 44, gap: 14 },
   head: { flexDirection: "row", alignItems: "center", gap: 14 },
-  back: { color: COLORS.accent, fontWeight: "800", fontSize: 15 },
+  backBtn: { backgroundColor: COLORS.chip, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16 },
+  back: { color: COLORS.accent, fontWeight: "800", fontSize: 16 },
   title: { color: COLORS.text, fontSize: 22, fontWeight: "800" },
   card: { backgroundColor: COLORS.card, borderRadius: 14, padding: 14, gap: 8 },
   pcRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   dot: { fontSize: 14 },
   pcName: { color: COLORS.text, fontWeight: "800", fontSize: 16 },
   meta: { color: COLORS.muted, fontSize: 12 },
-  row: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
-  btn: { backgroundColor: COLORS.chip, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
-  btnText: { color: COLORS.text, fontWeight: "800" },
+  row: { flexDirection: "row", gap: 10, flexWrap: "wrap" },
+  btn: { flexGrow: 1, alignItems: "center", backgroundColor: COLORS.chip, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 18 },
+  btnText: { color: COLORS.text, fontWeight: "800", fontSize: 15 },
   btnDanger: { borderWidth: 1, borderColor: "#7f1d1d", backgroundColor: "transparent" },
-  btnDangerText: { color: COLORS.danger, fontWeight: "800" },
+  btnDangerText: { color: COLORS.danger, fontWeight: "800", fontSize: 15 },
   small: { color: "#64748b", fontSize: 11 },
 });
