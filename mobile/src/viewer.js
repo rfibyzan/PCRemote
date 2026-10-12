@@ -117,6 +117,23 @@ export function setCommittedCrop(c) {
   if (c) rememberCrop(c);
 }
 
+// Touch shield for controls drawn over the viewer. A view that has a gesture
+// handler becomes the touch target for gesture-handler, so a touch on the
+// slider / buttons / minimap never reaches the viewer's Look pan or pinch
+// underneath (without it, Look's one-finger pan stole every slider drag).
+// The Manual gesture never activates, so the RN touch events and Pressables
+// inside keep working exactly as before.
+function Block({ children, ...props }) {
+  const g = useMemo(() => Gesture.Manual(), []);
+  return (
+    <GestureDetector gesture={g}>
+      <View collapsable={false} {...props}>
+        {children}
+      </View>
+    </GestureDetector>
+  );
+}
+
 export default function ViewerPanel({ title = "", touchpad = true, actions = true, onTap = null, children = null }) {
   // Layout C: header row + viewer (flex: 1) + fixed CONTROL_H area. The
   // control area is identical on PAD / TYPE / WIN, so the viewer is too.
@@ -557,7 +574,26 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const pinching = useSharedValue(false);
   const lastF = useSharedValue({ x: 0, y: 0 });
   const pinchEndAt = useSharedValue(0);
-  const panS = useSharedValue({ tx: 0, ty: 0, ox: 0, oy: 0, held: false, mixed: false });
+  const panS = useSharedValue({ tx: 0, ty: 0, ox: 0, oy: 0, lx: 0, ly: 0, held: false, mixed: false });
+  // Reticle offset from the view centre (px). In reticle mode the finger
+  // moves the AIM like a trackpad: the camera follows it, and once the
+  // camera hits the monitor edge the + itself walks on toward the edge, so
+  // corners are reachable at any zoom.
+  const retOn = useSharedValue(false);
+  const retX = useSharedValue(0);
+  const retY = useSharedValue(0);
+  const retRef = useRef({ x: 0, y: 0 });
+  const jsRet = useRef((x, y) => {
+    retRef.current = { x, y };
+  }).current;
+  useEffect(() => {
+    retOn.value = reticle && lookOn;
+    retX.value = 0;
+    retY.value = 0;
+    retRef.current = { x: 0, y: 0 };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reticle, lookOn]);
+  const retStyle = useAnimatedStyle(() => ({ transform: [{ translateX: retX.value }, { translateY: retY.value }] }));
 
   const lookGesture = useMemo(() => {
     // Release: clamp scale, fling with the finger's velocity inside the edges
@@ -653,7 +689,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       .onStart((e) => {
         cancelAnimation(camX);
         cancelAnimation(camY);
-        panS.value = { tx: camX.value, ty: camY.value, ox: e.translationX, oy: e.translationY, held: pinching.value, mixed: pinching.value };
+        panS.value = { tx: camX.value, ty: camY.value, ox: e.translationX, oy: e.translationY, lx: e.translationX, ly: e.translationY, held: pinching.value, mixed: pinching.value };
       })
       .onUpdate((e) => {
         if (pinching.value || e.numberOfPointers !== 1) {
@@ -661,7 +697,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           return;
         }
         if (panS.value.held) {
-          panS.value = { tx: camX.value, ty: camY.value, ox: e.translationX, oy: e.translationY, held: false, mixed: true };
+          panS.value = { tx: camX.value, ty: camY.value, ox: e.translationX, oy: e.translationY, lx: e.translationX, ly: e.translationY, held: false, mixed: true };
           return;
         }
         const st = panS.value;
@@ -669,6 +705,30 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         const vh = vhS.value;
         const fit = fitCanvas(vw, vh, aspectS.value);
         const { mx, my } = maxPan(camS.value, fit.bw, fit.bh, vw, vh);
+        if (retOn.value) {
+          // Aim mode: finger delta moves the aim. Virtual camera v = t - r;
+          // the camera takes what it can, the + takes the rest.
+          const dx = e.translationX - st.lx;
+          const dy = e.translationY - st.ly;
+          panS.value = { ...st, lx: e.translationX, ly: e.translationY };
+          const vX = camX.value - retX.value - dx;
+          const vY = camY.value - retY.value - dy;
+          const tX = Math.max(-mx, Math.min(mx, vX));
+          const tY = Math.max(-my, Math.min(my, vY));
+          const limX = Math.max(0, vw / 2 - 2);
+          const limY = Math.max(0, vh / 2 - 2);
+          camX.value = tX;
+          camY.value = tY;
+          retX.value = Math.max(-limX, Math.min(limX, tX - vX));
+          retY.value = Math.max(-limY, Math.min(limY, tY - vY));
+          const now = Date.now();
+          if (now - lastSyncS.value > 80) {
+            lastSyncS.value = now;
+            runOnJS(jsRet)(retX.value, retY.value);
+            runOnJS(jsMove)(camS.value, camX.value, camY.value);
+          }
+          return;
+        }
         camX.value = rubber(st.tx + e.translationX - st.ox, mx, vw);
         camY.value = rubber(st.ty + e.translationY - st.oy, my, vh);
         const now = Date.now();
@@ -679,6 +739,11 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       })
       .onEnd((e) => {
         if (pinching.value) return; // the pinch settles the camera itself
+        if (retOn.value) {
+          runOnJS(jsRet)(retX.value, retY.value);
+          settle(0, 0);
+          return;
+        }
         const recent = Date.now() - pinchEndAt.value < 250;
         if (panS.value.mixed || recent) settle(0, 0);
         else settle(e.velocityX, e.velocityY);
@@ -788,9 +853,9 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   function clickAtReticle(btn) {
     const g = geom();
     if (!g) return noteBlocked();
-    const m = mapToMonitor(g.vw / 2, g.vh / 2);
-    if (!m) return noteBlocked();
-    send(msg.abs(m.x, m.y, btn || clickBtnRef.current));
+    const r = retRef.current;
+    const v = viewToMonitor(g.vw / 2 + r.x, g.vh / 2 + r.y, camRef.current, g.fit, g.vw, g.vh);
+    send(msg.abs(clamp01(v.x), clamp01(v.y), btn || clickBtnRef.current));
   }
 
   function onViewerTouchStart(e) {
@@ -1157,7 +1222,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // or click button changes, instead of a text line that pushed the viewer.
   const btnName = clickBtn === "right" ? "klik kanan" : clickBtn === "middle" ? "klik tengah" : "klik";
   const hintText = reticle
-    ? "Geser = arahkan + · tap = " + btnName + " · 2 jari = zoom"
+    ? "Geser = gerakkan + (sampai ujung layar) · tap = " + btnName + " · 2 jari = zoom"
     : looking
       ? "Look: geser = lihat · 2 jari = zoom · tap 2x = zoom · Click untuk klik"
       : "Click: 1 jari = " + btnName + " / drag · 2 jari = geser / zoom";
@@ -1188,16 +1253,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         <ConnDot />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.topScroll} contentContainerStyle={styles.topScrollContent}>
         <MonitorChips monitors={monitors} current={current} onPick={onPick} row />
-        <View style={styles.modes}>
-          {["Click", "Look"].map((m) => (
-            <Pressable key={m} onPress={() => setSel({ mode: m })} style={[styles.subTab, mode === m && styles.subTabActive]}>
-              <Text style={[styles.subText, mode === m && styles.subTextActive]}>{m}</Text>
-            </Pressable>
-          ))}
-          <Pressable onPress={() => setSel({ bar: !bar })} style={[styles.subTab, bar && styles.subTabActive]}>
-            <Text style={[styles.subText, bar && styles.subTextActive]}>Bar</Text>
-          </Pressable>
-        </View>
         </ScrollView>
         <Pressable
           onPress={() => setStreamOpen((v) => !v)}
@@ -1248,7 +1303,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             the slider or a tap on a button never pans the camera. */}
           {camTools && (
             <View style={[styles.zoomSlider, { opacity: zoomed || sliderHot ? 1 : 0.45 }]} pointerEvents="box-none">
-              <View
+              <Block
                 style={styles.zTouch}
                 onLayout={(e) => {
                   const h = Math.round(e.nativeEvent.layout.height);
@@ -1278,14 +1333,14 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                 >
                   <Text style={styles.zKnobText}>{effZoom.toFixed(1)}x</Text>
                 </View>
-              </View>
+              </Block>
             </View>
           )}
-          {camTools && (
-            <View style={[styles.lookBar, bar && styles.shiftForBar]} pointerEvents="box-none">
+          <View style={[styles.lookBar, bar && styles.shiftForBar]} pointerEvents="box-none">
+            {camTools && (zoomed || !looking || reticle) && (
               <View style={styles.lookBottom} pointerEvents="box-none">
                 {zoomed && (
-                  <View
+                  <Block
                     style={[styles.minimap, { width: MINI_W, height: miniH }]}
                     onLayout={(e) => {
                       miniRef.current = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height };
@@ -1309,10 +1364,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                         },
                       ]}
                     />
-                  </View>
+                  </Block>
                 )}
                 {(!looking || reticle) && (
-                  <View style={styles.clickSegInline}>
+                  <Block style={styles.clickSegInline}>
                     {CLICK_BTNS.map((b) => (
                       <Pressable
                         key={b.id}
@@ -1323,45 +1378,53 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                         <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
                       </Pressable>
                     ))}
-                  </View>
+                  </Block>
                 )}
                 {reticle && (
-                  <Pressable onPress={() => clickAtReticle()} style={styles.aimBtn} hitSlop={4}>
-                    <Text style={styles.aimText}>Klik</Text>
-                  </Pressable>
+                  <Block>
+                    <Pressable onPress={() => clickAtReticle()} style={styles.aimBtn} hitSlop={4}>
+                      <Text style={styles.aimText}>Klik</Text>
+                    </Pressable>
+                  </Block>
                 )}
-                <View style={styles.zoomRow}>
+              </View>
+            )}
+            {/* Mode row at the bottom: Click | Look, Bar, and the zoom presets. */}
+            <View style={styles.lookBottom} pointerEvents="box-none">
+              <Block style={styles.modeSeg}>
+                {["Click", "Look"].map((m) => (
+                  <Pressable key={m} onPress={() => setSel({ mode: m })} hitSlop={3} style={[styles.modeBtn, mode === m && styles.modeBtnOn]}>
+                    <Text style={[styles.modeText, mode === m && styles.modeTextOn]}>{m}</Text>
+                  </Pressable>
+                ))}
+              </Block>
+              <Block style={styles.modeSeg}>
+                <Pressable onPress={() => setSel({ bar: !bar })} hitSlop={3} style={[styles.modeBtn, bar && styles.modeBtnOn]}>
+                  <Text style={[styles.modeText, bar && styles.modeTextOn]}>Bar</Text>
+                </Pressable>
+              </Block>
+              {camTools && (
+                <Block style={styles.zoomRow}>
                   <Pressable onPress={resetCrop} style={styles.zoomBtn}><Text style={styles.zoomText}>Fit</Text></Pressable>
                   <Pressable onPress={() => zoomTo(2)} style={styles.zoomBtn}><Text style={styles.zoomText}>2x</Text></Pressable>
-                  <Pressable onPress={() => zoomTo(4)} style={styles.zoomBtn}><Text style={styles.zoomText}>4x</Text></Pressable>
-                </View>
-              </View>
+                </Block>
+              )}
             </View>
-          )}
+          </View>
           {camTools && reticle && (
-            <View pointerEvents="none" style={styles.reticle}>
+            <Reanimated.View pointerEvents="none" style={[styles.reticle, retStyle]}>
               <View style={[styles.retLine, { width: 2, height: 18, top: 0, left: 19 }]} />
               <View style={[styles.retLine, { width: 2, height: 18, bottom: 0, left: 19 }]} />
               <View style={[styles.retLine, { height: 2, width: 18, left: 0, top: 19 }]} />
               <View style={[styles.retLine, { height: 2, width: 18, right: 0, top: 19 }]} />
               <View style={styles.retDot} />
-            </View>
+            </Reanimated.View>
           )}
           {camTools && (
-            <View style={[styles.toolRow, bar && styles.shiftForBar]}>
+            <Block style={[styles.toolRow, bar && styles.shiftForBar]}>
               <Pressable onPress={toggleFull} style={[styles.toolBtn, full && styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Layar penuh">
                 <Text style={[styles.toolText, full && styles.toolTextOn]}>{full ? "✕" : "⛶"}</Text>
               </Pressable>
-              {full && (
-                <Pressable
-                  onPress={() => setSel({ mode: looking ? "Click" : "Look" })}
-                  style={[styles.toolBtn, styles.toolMode, !looking && styles.toolBtnOn]}
-                  hitSlop={4}
-                  accessibilityLabel="Ganti mode Click / Look"
-                >
-                  <Text style={[styles.toolText, styles.toolModeText, !looking && styles.toolTextOn]}>{mode}</Text>
-                </Pressable>
-              )}
               <Pressable onPress={() => setReticle((v) => !v)} style={[styles.toolBtn, reticle && styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Bidik presisi">
                 <Text style={[styles.toolText, reticle && styles.toolTextOn]}>⊕</Text>
               </Pressable>
@@ -1371,7 +1434,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                   <Text style={styles.sharpText}>{sharp ? "tajam" : "memuat"}</Text>
                 </View>
               )}
-            </View>
+            </Block>
           )}
         <View style={[styles.overlayTop, bar && styles.shiftForBar]} pointerEvents="none">
           {hintOn && !streamOpen && (
@@ -1396,20 +1459,22 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           )}
         </View>
         {!streamOpen && (
-          <Pressable onPress={() => setStreamOpen(true)} style={styles.fpsPill} hitSlop={4} accessibilityLabel="Buka pengaturan stream">
-            <StreamStats />
-          </Pressable>
+          <Block style={styles.fpsPill}>
+            <Pressable onPress={() => setStreamOpen(true)} hitSlop={4} accessibilityLabel="Buka pengaturan stream">
+              <StreamStats />
+            </Pressable>
+          </Block>
         )}
         {streamOpen && (
           <>
             <Pressable style={StyleSheet.absoluteFill} onPress={() => setStreamOpen(false)} accessibilityLabel="Tutup pengaturan stream" />
-            <View style={styles.streamPop} onTouchStart={armStreamTimer}>
+            <Block style={styles.streamPop} onTouchStart={armStreamTimer}>
               <StreamControls compact />
-            </View>
+            </Block>
           </>
         )}
         {bar && (
-          <View style={styles.bar}>
+          <Block style={styles.bar}>
             <Pressable onPress={() => send(msg.scroll(0, 240))} style={styles.barBtn}>
               <Text style={styles.barText}>▲</Text>
             </Pressable>
@@ -1419,7 +1484,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             <Pressable onPress={() => send(msg.scroll(0, -240))} style={styles.barBtn}>
               <Text style={styles.barText}>▼</Text>
             </Pressable>
-          </View>
+          </Block>
         )}
       </View>
       {!full && (
@@ -1513,8 +1578,11 @@ const styles = StyleSheet.create({
   zKnob: { position: "absolute", right: 0, width: 40, height: 26, borderRadius: 13, backgroundColor: "rgba(250,204,21,0.95)", alignItems: "center", justifyContent: "center" },
   zKnobText: { color: "#1c1400", fontSize: 10, fontWeight: "900" },
   toolRow: { position: "absolute", left: 6, top: 6, flexDirection: "row", alignItems: "center", gap: 4 },
-  toolMode: { width: "auto", minWidth: 30, paddingHorizontal: 9 },
-  toolModeText: { fontSize: 12, fontWeight: "700" },
+  modeSeg: { flexDirection: "row", gap: 3, backgroundColor: "rgba(15,23,42,0.75)", borderRadius: 999, padding: 3 },
+  modeBtn: { height: 26, paddingHorizontal: 8, borderRadius: 999, alignItems: "center", justifyContent: "center" },
+  modeBtnOn: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: "#38bdf8" },
+  modeText: { color: "#cbd5e1", fontWeight: "800", fontSize: 12 },
+  modeTextOn: { color: "#7dd3fc" },
   toolBtn: { width: 30, height: 26, borderRadius: 999, backgroundColor: "rgba(15,23,42,0.8)", alignItems: "center", justifyContent: "center" },
   toolBtnOn: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: "#38bdf8" },
   toolText: { color: "#e2e8f0", fontSize: 13, fontWeight: "800" },
@@ -1530,7 +1598,7 @@ const styles = StyleSheet.create({
   retDot: { position: "absolute", left: 17, top: 17, width: 6, height: 6, borderRadius: 3, backgroundColor: "#ef4444" },
   viewerBoxFull: { marginHorizontal: 0, marginBottom: 0 },
   zoomRow: { flexDirection: "row", gap: 6, justifyContent: "center" },
-  lookBottom: { flexDirection: "row", gap: 6, alignItems: "flex-end", paddingRight: 56 },
+  lookBottom: { flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "flex-end", paddingRight: 56 },
   zoomRowScroll: { flexGrow: 1, alignItems: "center" },
   zoomBadge: { backgroundColor: "rgba(124,45,18,0.9)", borderRadius: 8, paddingVertical: 4, paddingHorizontal: 12 },
   zoomBadgeText: { color: "#fed7aa", fontWeight: "800", fontSize: 12 },
