@@ -313,7 +313,7 @@ export function StreamControls({ compact }) {
  */
 const sel = {
   source: undefined, // undefined = not yet known, follow agent hello
-  mode: "Click",
+  mode: "Look", // app start = Look: a stray first touch never clicks the PC
   bar: false,
   clickBtn: "left",
   crop: { x: 0, y: 0, w: 1, h: 1 },
