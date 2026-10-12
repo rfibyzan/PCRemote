@@ -86,6 +86,12 @@ function _isFull(c) {
  * underneath as a backdrop, so a pan past the sharp region shows slightly
  * older pixels instead of black while the new region is on its way.
  */
+// Newest whole-monitor frame of a monitor (minimap thumbnail in the viewer).
+export function getLastFullFrame(monKey) {
+  const k = monKey === undefined || monKey === null ? "all" : String(monKey);
+  return _lastFullByMon[k] || _lastByMon[k]?.uri || null;
+}
+
 export function ScreenView({ style, imageStyle, onFrame, monKey, placed = false, resolveCrop = null }) {
   const keyFor = (k) => (k === undefined || k === null ? "all" : String(k));
   const [uris, setUris] = useState(() => [_lastByMon[keyFor(monKey)]?.uri || null, null]);
