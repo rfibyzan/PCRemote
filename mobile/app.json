@@ -37,6 +37,15 @@
     "plugins": [
       "expo-secure-store",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "PC Remote memakai kamera hanya untuk scan QR pairing di layar PC.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
         "expo-screen-orientation",
         {
           "initialOrientation": "DEFAULT"
