@@ -110,18 +110,18 @@ const styles = StyleSheet.create({
   logBox: { backgroundColor: "#0f172a", borderRadius: 12, padding: 10, gap: 4 },
   logHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 2 },
   logTitle: { color: COLORS.muted, fontSize: 12, fontWeight: "800", flex: 1, letterSpacing: 1, textTransform: "uppercase" },
-  logBtn: { color: COLORS.accent, fontSize: 12, fontWeight: "800" },
+  logBtn: { color: COLORS.accent, fontSize: 13, fontWeight: "800", paddingVertical: 6, paddingHorizontal: 4 },
   logLine: { fontSize: 11, fontFamily: "monospace", paddingVertical: 1 },
   logTime: { color: "#64748b" },
   logEmpty: { color: "#64748b", fontSize: 12 },
   sectionTitle: panelStylesTitle(),
   recentBox: { gap: 6 },
   recentRow: { flexDirection: "row", alignItems: "center", backgroundColor: COLORS.card, borderRadius: 12 },
-  recentMain: { flex: 1, paddingVertical: 10, paddingHorizontal: 12 },
+  recentMain: { flex: 1, paddingVertical: 14, paddingHorizontal: 14 },
   recentName: { color: COLORS.text, fontWeight: "800", fontSize: 14 },
   recentMeta: { color: COLORS.muted, fontSize: 12, marginTop: 2 },
-  recentX: { paddingHorizontal: 14, paddingVertical: 12 },
-  recentXText: { color: COLORS.danger, fontWeight: "800", fontSize: 14 },
+  recentX: { paddingHorizontal: 18, paddingVertical: 16, borderLeftWidth: 1, borderLeftColor: "#1e293b" },
+  recentXText: { color: COLORS.danger, fontWeight: "800", fontSize: 18 },
 });
 
 function panelStylesTitle() {
