@@ -1,8 +1,10 @@
 /** Universal viewer panel: Click / Look / Bar + screen + zoom + source chips.
  * Used by PAD, TYPE and WIN so the mode behavior is identical everywhere.
- * One mode (Click and Look merged): ONE finger = the PC mouse (L/R/M
- * selector sets the button; tap = abs click, drag = drag, auto-pan at the
- * edge while zoomed). TWO fingers = the camera (src/camera.js): pan + pinch
+ * Two modes, Look (default at app start, so a stray first touch never clicks
+ * the PC) and Click. LOOK: one finger pans the camera, double tap zooms, no
+ * PC input at all. CLICK: ONE finger = the PC mouse (L/R/M selector sets the
+ * button; tap = abs click, drag = drag, auto-pan at the edge while zoomed).
+ * In both, TWO fingers = the camera (src/camera.js): pan + pinch
  * on the UI thread (react-native-gesture-handler + Reanimated), so the view
  * follows the fingers even while the JS thread is busy decoding frames.
  * Reticle (⊕): one finger pans the camera, a tap / Klik clicks under the +.
@@ -121,6 +123,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
   const shared = useSel();
   const bar = shared.bar;
+  const mode = shared.mode === "Click" ? "Click" : "Look";
+  const looking = mode === "Look";
   const clickBtn = shared.clickBtn;
   const crop = shared.crop;
   const { monitors, current, camError, pick } = useMonitorSource();
@@ -233,6 +237,14 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
 
   // Held-button safety: socket close / new hello / click-button switch must
   // never leave a DOWN without UP on the PC.
+  // Switching mode mid-drag finishes the drag so no button stays down.
+  useEffect(() => {
+    if (looking && vTouch.current) {
+      cancelOneFinger(vTouch.current);
+      vTouch.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [looking]);
   const prevClickBtn = useRef(clickBtn);
   useEffect(() => {
     if (prevClickBtn.current !== clickBtn && dragRef.current) releaseHoldSilent();
@@ -539,7 +551,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // Two-finger camera works everywhere except the webcam source. One-finger
   // pan only in reticle mode (otherwise one finger is the PC mouse).
   const lookOn = current !== "cam";
-  const panOn = lookOn && reticle;
+  const panOn = lookOn && (reticle || looking);
   const startS = useSharedValue({ s: 1, tx: 0, ty: 0, fx: 0, fy: 0, k0: 1, n: 2 });
   const decayLeft = useSharedValue(0);
   const pinching = useSharedValue(false);
@@ -672,8 +684,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         else settle(e.velocityX, e.velocityY);
       });
 
-    // Double-tap zoom only in reticle mode: in the normal mode a double tap
-    // is a PC double-click (word select).
+    // Double-tap zoom in Look / reticle: in Click mode a double tap is a PC
+    // double-click (word select).
     const doubleTapG = Gesture.Tap()
       .enabled(panOn)
       .numberOfTaps(2)
@@ -783,6 +795,11 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
 
   function onViewerTouchStart(e) {
     if (current === "cam") return;
+    // Look: one finger belongs to the camera, never to the PC mouse.
+    if (looking && !reticle) {
+      vTouch.current = null;
+      return;
+    }
     const touches = e.nativeEvent.touches || [];
     if (touches.length > 1) {
       // A second finger: this is a pinch, cancel the one-finger action.
@@ -1141,13 +1158,15 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const btnName = clickBtn === "right" ? "klik kanan" : clickBtn === "middle" ? "klik tengah" : "klik";
   const hintText = reticle
     ? "Geser = arahkan + · tap = " + btnName + " · 2 jari = zoom"
-    : "1 jari = " + btnName + " / drag · 2 jari = geser / zoom";
+    : looking
+      ? "Look: geser = lihat · 2 jari = zoom · tap 2x = zoom · Click untuk klik"
+      : "Click: 1 jari = " + btnName + " / drag · 2 jari = geser / zoom";
   const [hintOn, setHintOn] = useState(true);
   useEffect(() => {
     setHintOn(true);
     const t = setTimeout(() => setHintOn(false), 3500);
     return () => clearTimeout(t);
-  }, [reticle, clickBtn]);
+  }, [reticle, clickBtn, looking]);
   // Minimap / badge / slider read the JS camera mirror (~10 Hz while moving).
   const g0 = geom();
   const vis = g0 ? visibleRect(camRef.current, g0.fit, g0.vw, g0.vh) : { x: 0, y: 0, w: 1, h: 1 };
@@ -1170,6 +1189,11 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.topScroll} contentContainerStyle={styles.topScrollContent}>
         <MonitorChips monitors={monitors} current={current} onPick={onPick} row />
         <View style={styles.modes}>
+          {["Click", "Look"].map((m) => (
+            <Pressable key={m} onPress={() => setSel({ mode: m })} style={[styles.subTab, mode === m && styles.subTabActive]}>
+              <Text style={[styles.subText, mode === m && styles.subTextActive]}>{m}</Text>
+            </Pressable>
+          ))}
           <Pressable onPress={() => setSel({ bar: !bar })} style={[styles.subTab, bar && styles.subTabActive]}>
             <Text style={[styles.subText, bar && styles.subTextActive]}>Bar</Text>
           </Pressable>
@@ -1287,18 +1311,20 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                     />
                   </View>
                 )}
-                <View style={styles.clickSegInline}>
-                  {CLICK_BTNS.map((b) => (
-                    <Pressable
-                      key={b.id}
-                      onPress={() => setSel({ clickBtn: b.id })}
-                      hitSlop={4}
-                      style={[styles.clickSegBtn, clickBtn === b.id && styles.clickBtnActive]}
-                    >
-                      <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
-                    </Pressable>
-                  ))}
-                </View>
+                {(!looking || reticle) && (
+                  <View style={styles.clickSegInline}>
+                    {CLICK_BTNS.map((b) => (
+                      <Pressable
+                        key={b.id}
+                        onPress={() => setSel({ clickBtn: b.id })}
+                        hitSlop={4}
+                        style={[styles.clickSegBtn, clickBtn === b.id && styles.clickBtnActive]}
+                      >
+                        <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
                 {reticle && (
                   <Pressable onPress={() => clickAtReticle()} style={styles.aimBtn} hitSlop={4}>
                     <Text style={styles.aimText}>Klik</Text>
@@ -1326,6 +1352,16 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
               <Pressable onPress={toggleFull} style={[styles.toolBtn, full && styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Layar penuh">
                 <Text style={[styles.toolText, full && styles.toolTextOn]}>{full ? "✕" : "⛶"}</Text>
               </Pressable>
+              {full && (
+                <Pressable
+                  onPress={() => setSel({ mode: looking ? "Click" : "Look" })}
+                  style={[styles.toolBtn, styles.toolMode, !looking && styles.toolBtnOn]}
+                  hitSlop={4}
+                  accessibilityLabel="Ganti mode Click / Look"
+                >
+                  <Text style={[styles.toolText, styles.toolModeText, !looking && styles.toolTextOn]}>{mode}</Text>
+                </Pressable>
+              )}
               <Pressable onPress={() => setReticle((v) => !v)} style={[styles.toolBtn, reticle && styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Bidik presisi">
                 <Text style={[styles.toolText, reticle && styles.toolTextOn]}>⊕</Text>
               </Pressable>
@@ -1477,6 +1513,8 @@ const styles = StyleSheet.create({
   zKnob: { position: "absolute", right: 0, width: 40, height: 26, borderRadius: 13, backgroundColor: "rgba(250,204,21,0.95)", alignItems: "center", justifyContent: "center" },
   zKnobText: { color: "#1c1400", fontSize: 10, fontWeight: "900" },
   toolRow: { position: "absolute", left: 6, top: 6, flexDirection: "row", alignItems: "center", gap: 4 },
+  toolMode: { width: "auto", minWidth: 30, paddingHorizontal: 9 },
+  toolModeText: { fontSize: 12, fontWeight: "700" },
   toolBtn: { width: 30, height: 26, borderRadius: 999, backgroundColor: "rgba(15,23,42,0.8)", alignItems: "center", justifyContent: "center" },
   toolBtnOn: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: "#38bdf8" },
   toolText: { color: "#e2e8f0", fontSize: 13, fontWeight: "800" },
