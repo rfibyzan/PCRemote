@@ -154,7 +154,9 @@ export function bytesToBase64(bytes) {
 
 // ---- Message builders (names/shapes match runtime/agent/src/index.js) ----
 export const msg = {
-  auth: (token) => ({ t: "auth", token }),
+  // device = { id, name, model, os, app } so the PC dashboard can list and
+  // disconnect this phone. Old agents ignore the extra field.
+  auth: (token, device) => (device ? { t: "auth", token, device } : { t: "auth", token }),
   screen: (on) => ({ t: "screen", on: Boolean(on) }),
   move: (dx, dy) => ({ t: "move", dx, dy }),
   click: (btn, down = true, up = true) => ({ t: "click", btn, down, up }),
