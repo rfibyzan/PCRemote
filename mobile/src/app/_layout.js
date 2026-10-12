@@ -10,6 +10,7 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="connect" />
         <Stack.Screen name="pair" />
+        <Stack.Screen name="devices" />
       </Stack>
     </GestureHandlerRootView>
   );
