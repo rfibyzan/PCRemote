@@ -1,16 +1,19 @@
 /** Universal viewer panel: Click / Look / Bar + screen + zoom + source chips.
  * Used by PAD, TYPE and WIN so the mode behavior is identical everywhere.
- * CLICK: L/R/M selector sets the tap+drag button, tap = abs click, drag = drag.
- * LOOK: camera model (src/camera.js). Pan, pinch, fling and double-tap run
+ * One mode (Click and Look merged): ONE finger = the PC mouse (L/R/M
+ * selector sets the button; tap = abs click, drag = drag, auto-pan at the
+ * edge while zoomed). TWO fingers = the camera (src/camera.js): pan + pinch
  * on the UI thread (react-native-gesture-handler + Reanimated), so the view
  * follows the fingers even while the JS thread is busy decoding frames.
+ * Reticle (⊕): one finger pans the camera, a tap / Klik clicks under the +.
+ * Fullscreen (⛶): header, controls and tab bar hidden, landscape.
  * Frames are drawn on a whole-monitor canvas at the rect their header says
  * they cover; the PC is only asked for a (padded) region around the view, so
  * a new sharper region never moves the picture: no rebase, no jump.
  * BAR: scrollbar overlay. The camera is shared across PAD/TYPE/WIN.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, ScrollView, StyleSheet, Text, Vibration, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Reanimated, {
   cancelAnimation,
@@ -20,9 +23,11 @@ import Reanimated, {
   withDecay,
   withTiming,
 } from "react-native-reanimated";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useNavigation } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
-import { COLORS, MonitorChips, ScreenView } from "./components";
+import { COLORS, MonitorChips, ScreenView, getLastFullFrame } from "./components";
+import { applyOrientation } from "./orientation";
 import { ConnDot, StreamControls, StreamStats, getSel, setSel, useMonitorSource, useSel } from "./controls";
 import { trackFrameBytes } from "./cursor";
 import { msg } from "./protocol";
@@ -60,6 +65,18 @@ const STRETCH_REST = 1.7;
 // two-finger motion stays well under this per event; a finger lifting makes
 // the focal point snap by half the finger spacing.
 const FOCAL_JUMP = 36;
+
+// Zoom slider: log scale so 1x->2x, 2x->4x and 4x->8x get equal travel.
+const LOG_MAX = Math.log2(MAX_ZOOM);
+const ZOOM_TICKS = [1, 2, 4, 8].filter((z) => z <= MAX_ZOOM);
+// One-finger drag waits this long before starting a PC drag, so a second
+// finger landing (a pinch) cancels it instead of dragging on the PC.
+const DRAG_ARM_MS = 70;
+// Edge auto-pan while dragging zoomed in: band width (px) and top speed
+// (view px per 16 ms tick).
+const EDGE_BAND = 32;
+const EDGE_SPEED = 9;
+const TAB_BAR_STYLE = { backgroundColor: "#151d2e", borderTopColor: "#1e293b" };
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -103,7 +120,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // control area is identical on PAD / TYPE / WIN, so the viewer is too.
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
   const shared = useSel();
-  const sub = shared.mode;
   const bar = shared.bar;
   const clickBtn = shared.clickBtn;
   const crop = shared.crop;
@@ -140,6 +156,18 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // Zoom slider (Look, right edge): absolute 1x..MAX_ZOOM, centre-anchored.
   const [trackH, setTrackH] = useState(0);
   const trackHRef = useRef(0);
+  const sliderDrag = useRef(null);
+  const [sliderHot, setSliderHot] = useState(false);
+  const sliderHotTimer = useRef(null);
+  // Reticle: precise aim mode. Fullscreen: viewer only, landscape.
+  const [reticle, setReticle] = useState(false);
+  const [full, setFull] = useState(false);
+  const navigation = useNavigation();
+  // Newest frame matches the region asked for (sharp) or not yet (loading).
+  const [sharp, setSharp] = useState(true);
+  const sharpRef = useRef(true);
+  const edgeTimer = useRef(null);
+  const miniRef = useRef({ w: 0, h: 0 });
   // CAMERA (UI thread). s = zoom (1 = Fit), tx/ty = view px. JS keeps a
   // mirror (camRef) for tap mapping, region requests, minimap and badge.
   const camS = useSharedValue(1);
@@ -196,6 +224,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       if (tickTimer.current) clearTimeout(tickTimer.current);
       if (stallTimer.current) clearInterval(stallTimer.current);
       if (tapBlockedTimer.current) clearTimeout(tapBlockedTimer.current);
+      if (sliderHotTimer.current) clearTimeout(sliderHotTimer.current);
+      if (edgeTimer.current) clearInterval(edgeTimer.current);
       cropTimer.current = tickTimer.current = null;
       vTouch.current = null;
     };
@@ -285,6 +315,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           // best-effort
         }
         vTouch.current = null;
+        stopEdgePan();
+        setFull(false);
         if (cropTimer.current) {
           clearTimeout(cropTimer.current);
           cropTimer.current = null;
@@ -504,7 +536,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
 
   // ---- gestures (UI thread) ------------------------------------------------
 
-  const lookOn = sub === "Look" && current !== "cam";
+  // Two-finger camera works everywhere except the webcam source. One-finger
+  // pan only in reticle mode (otherwise one finger is the PC mouse).
+  const lookOn = current !== "cam";
+  const panOn = lookOn && reticle;
   const startS = useSharedValue({ s: 1, tx: 0, ty: 0, fx: 0, fy: 0, k0: 1, n: 2 });
   const decayLeft = useSharedValue(0);
   const pinching = useSharedValue(false);
@@ -600,7 +635,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     // pinch hands back to one finger, and never flings out of a pinch (the
     // leftover finger's velocity is not a throw).
     const panG = Gesture.Pan()
-      .enabled(lookOn)
+      .enabled(panOn)
       .maxPointers(1)
       .minDistance(2)
       .onStart((e) => {
@@ -637,8 +672,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         else settle(e.velocityX, e.velocityY);
       });
 
+    // Double-tap zoom only in reticle mode: in the normal mode a double tap
+    // is a PC double-click (word select).
     const doubleTapG = Gesture.Tap()
-      .enabled(lookOn)
+      .enabled(panOn)
       .numberOfTaps(2)
       .maxDuration(250)
       .maxDistance(24)
@@ -661,7 +698,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     return Gesture.Simultaneous(pinchG, panG, doubleTapG);
     // Shared values and the JS bridges are stable; only the mode matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lookOn]);
+  }, [lookOn, panOn]);
 
   // Canvas = whole monitor fitted into the view, moved by the camera.
   const canvasStyle = useAnimatedStyle(() => {
@@ -693,10 +730,65 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     return { x: t.pageX || 0, y: t.pageY || 0 };
   }
 
-  // ---- Click mode (raw touches; Look is owned by the gesture handler) -----
+  // ---- One finger = PC mouse (raw touches; two fingers = gesture handler) --
+
+  function stopEdgePan() {
+    if (edgeTimer.current) {
+      clearInterval(edgeTimer.current);
+      edgeTimer.current = null;
+      const c = camRef.current;
+      onCamRest(c.s, c.tx, c.ty);
+    }
+  }
+
+  // Dragging near the viewer edge while zoomed slides the camera that way,
+  // and keeps the PC drag under the (still) finger moving with it.
+  function updateEdgePan(st) {
+    const g = geom();
+    if (!g || camRef.current.s <= 1.01) return stopEdgePan();
+    const ex = st.px < EDGE_BAND ? -1 : st.px > g.vw - EDGE_BAND ? 1 : 0;
+    const ey = st.py < EDGE_BAND ? -1 : st.py > g.vh - EDGE_BAND ? 1 : 0;
+    st.edge = { x: ex, y: ey };
+    if (!ex && !ey) return stopEdgePan();
+    if (edgeTimer.current) return;
+    edgeTimer.current = setInterval(() => {
+      const t = vTouch.current;
+      const gg = geom();
+      if (!t || !t.dragging || !t.edge || !gg) return stopEdgePan();
+      const c = camRef.current;
+      // Moving the view right = canvas moves left.
+      const next = clampCam(
+        { s: c.s, tx: c.tx - t.edge.x * EDGE_SPEED, ty: c.ty - t.edge.y * EDGE_SPEED },
+        gg.fit.bw,
+        gg.fit.bh,
+        gg.vw,
+        gg.vh,
+      );
+      if (Math.abs(next.tx - c.tx) < 0.1 && Math.abs(next.ty - c.ty) < 0.1) return;
+      applyCamInstant(next);
+      requestRegion(true);
+      const m = mapToMonitor(t.px, t.py);
+      if (m) send(msg.drag("move", m.x, m.y, clickBtnRef.current));
+    }, 16);
+  }
+
+  // Centre of the view (reticle) mapped to the monitor.
+  function clickAtReticle(btn) {
+    const g = geom();
+    if (!g) return noteBlocked();
+    const m = mapToMonitor(g.vw / 2, g.vh / 2);
+    if (!m) return noteBlocked();
+    send(msg.abs(m.x, m.y, btn || clickBtnRef.current));
+  }
 
   function onViewerTouchStart(e) {
-    if (current === "cam" || sub === "Look") return;
+    if (current === "cam") return;
+    const touches = e.nativeEvent.touches || [];
+    if (touches.length > 1) {
+      // A second finger: this is a pinch, cancel the one-finger action.
+      if (vTouch.current) cancelOneFinger(vTouch.current);
+      return;
+    }
     const p = viewerLocal(e);
     // Double-tap detection for word select: a second quick tap near the last
     // one arms word-drag. Windows selects words on click, down+drag — which is
@@ -705,30 +797,43 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     const now = Date.now();
     const lt = tapRef.current;
     const doubleTap = lt.t && now - lt.t < 300 && Math.hypot(p.x - lt.x, p.y - lt.y) < 20;
-    vTouch.current = { x: p.x, y: p.y, t: now, moved: false, dragging: false, doubleTap: Boolean(doubleTap) };
+    vTouch.current = { x: p.x, y: p.y, t: now, moved: false, dragging: false, multi: false, doubleTap: Boolean(doubleTap) };
+  }
+
+  function cancelOneFinger(st) {
+    st.multi = true;
+    if (st.dragging) {
+      // Rare: the drag had already started. Finish it where it is so the PC
+      // button is never left down.
+      const m = mapToMonitor(st.px ?? st.x, st.py ?? st.y);
+      if (m) send(msg.drag("end", m.x, m.y, clickBtnRef.current));
+      st.dragging = false;
+    }
+    stopEdgePan();
   }
 
   function onViewerTouchMove(e) {
-    if (current === "cam" || sub === "Look") return;
-    const touches = e.nativeEvent.touches || [];
-    if (touches.length === 2) {
-      const t = touches[0];
-      const last = lastRef.current;
-      lastRef.current = { x: t.pageX, y: t.pageY };
-      if (last) send(msg.scroll((t.pageX - last.x) * 1.5, -(t.pageY - last.y) * 1.5));
-      return;
-    }
+    if (current === "cam") return;
     const st = vTouch.current;
     if (!st) return;
+    const touches = e.nativeEvent.touches || [];
+    if (touches.length > 1) {
+      if (!st.multi) cancelOneFinger(st);
+      return;
+    }
+    if (st.multi || reticle) return;
     const p = viewerLocal(e);
-    // Text-selection precision: 5px threshold in Click mode (was 8px — small
-    // text drags were misclassified as taps and the selection never started).
+    // Text-selection precision: 5px threshold (was 8px — small text drags
+    // were misclassified as taps and the selection never started).
     // Hold-button drags own the button: direct viewer drags are ignored while
     // Hold is active so two drag sources never fight over one button.
     if (dragRef.current) return;
     const dist = Math.hypot(p.x - st.x, p.y - st.y);
     if (dist > 5) st.moved = true;
+    st.px = p.x;
+    st.py = p.y;
     if (st.moved && !st.dragging) {
+      if (Date.now() - st.t < DRAG_ARM_MS) return;
       st.dragging = true;
       const m = mapToMonitor(st.x, st.y);
       if (!m) {
@@ -742,26 +847,32 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     if (st.dragging) {
       const m = mapToMonitor(p.x, p.y);
       if (!m) return;
-      st.px = p.x;
-      st.py = p.y;
       send(msg.drag("move", m.x, m.y, clickBtnRef.current));
+      updateEdgePan(st);
     }
   }
 
   function onViewerTouchEnd(e) {
-    if (current === "cam" || sub === "Look") {
+    if (current === "cam") {
       vTouch.current = null;
       return;
     }
     const st = vTouch.current;
+    const touchesLeft = e.nativeEvent.touches?.length || 0;
+    if (touchesLeft > 0) return;
     vTouch.current = null;
     lastRef.current = null;
-    if (!st) return;
+    stopEdgePan();
+    if (!st || st.multi) return;
     // While Hold owns the button, viewer taps/drags are suppressed entirely
     // (otherwise a tap would fire an extra click mid-selection).
     if (dragRef.current) return;
-    const touchesLeft = e.nativeEvent.touches?.length || 0;
-    if (touchesLeft > 0) return;
+    if (reticle) {
+      const p = viewerLocal(e);
+      const still = Math.hypot((p.x ?? st.x) - st.x, (p.y ?? st.y) - st.y) < 8;
+      if (still && Date.now() - st.t < 400) clickAtReticle();
+      return;
+    }
     if (st.dragging) {
       // End at the RELEASE point (last move), not the start point — ending at
       // start collapsed text selections back to a caret.
@@ -870,24 +981,110 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     barDrag.current = null;
   }
 
-  // Slider drag: absolute zoom around the view centre, live; rest on release.
-  function onSliderTouch(e) {
-    const t = e.nativeEvent.touches?.[0];
-    if (!t || typeof t.locationY !== "number") return;
-    const g = geom();
-    if (!g) return;
-    const h = trackHRef.current || 1;
-    const f = Math.max(0, Math.min(1, t.locationY / h));
-    const z = 1 + (1 - f) * (MAX_ZOOM - 1);
-    const n = camToNorm(camRef.current, g.fit, g.vw, g.vh);
+  // Zoom slider: RELATIVE drag on a log scale. Touching never jumps the
+  // zoom; sliding up one full track = 1x -> MAX_ZOOM. Zooms around the view
+  // centre, live. A light buzz when passing 1x / 2x / 4x / 8x, and a gentle
+  // snap onto a tick when released close to it.
+  function zoomFromLog(l, n, g) {
+    const z = Math.pow(2, Math.max(0, Math.min(LOG_MAX, l)));
     applyCamInstant(camFor(z, n.cx, n.cy, g.fit, g.vw, g.vh));
     requestRegion(true);
   }
 
+  function heatSlider(on) {
+    if (sliderHotTimer.current) clearTimeout(sliderHotTimer.current);
+    sliderHotTimer.current = null;
+    if (on) setSliderHot(true);
+    else sliderHotTimer.current = setTimeout(() => setSliderHot(false), 2500);
+  }
+
+  function onSliderStart(e) {
+    const t = e.nativeEvent.touches?.[0];
+    const g = geom();
+    if (!t || !g) return;
+    heatSlider(true);
+    const l0 = Math.log2(Math.max(1, camRef.current.s || 1));
+    sliderDrag.current = { y0: t.pageY, l0, lastTick: Math.round(l0 * 1000), n: camToNorm(camRef.current, g.fit, g.vw, g.vh) };
+  }
+
+  function onSliderMove(e) {
+    const t = e.nativeEvent.touches?.[0];
+    const st = sliderDrag.current;
+    const g = geom();
+    if (!t || !st || !g) return;
+    const h = trackHRef.current || 120;
+    const l = Math.max(0, Math.min(LOG_MAX, st.l0 + ((st.y0 - t.pageY) / h) * LOG_MAX));
+    // Buzz when crossing an integer power of two (a tick).
+    const prev = st.lastL ?? st.l0;
+    if (Math.floor(prev + 1e-6) !== Math.floor(l + 1e-6) || (l === 0 && prev > 0) || (l === LOG_MAX && prev < LOG_MAX)) {
+      try {
+        Vibration.vibrate(8);
+      } catch {
+        // haptics optional
+      }
+    }
+    st.lastL = l;
+    zoomFromLog(l, st.n, g);
+  }
+
   function onSliderEnd() {
+    const st = sliderDrag.current;
+    sliderDrag.current = null;
+    heatSlider(false);
+    const g = geom();
+    if (st && g && typeof st.lastL === "number") {
+      const near = Math.round(st.lastL);
+      if (Math.abs(st.lastL - near) < 0.12) {
+        animateCamTo(camFor(Math.pow(2, near), st.n.cx, st.n.cy, g.fit, g.vw, g.vh));
+        return;
+      }
+    }
     const c = camRef.current;
     onCamRest(c.s, c.tx, c.ty);
   }
+
+  // Minimap: tap or drag to put that point of the monitor in the centre.
+  function onMiniTouch(e, end) {
+    const g = geom();
+    const t = e.nativeEvent.touches?.[0] || e.nativeEvent;
+    const { w, h } = miniRef.current;
+    if (!g || !w || !h || typeof t.locationX !== "number") return;
+    heatSlider(true);
+    const cx = clamp01(t.locationX / w);
+    const cy = clamp01(t.locationY / h);
+    applyCamInstant(camFor(camRef.current.s, cx, cy, g.fit, g.vw, g.vh));
+    requestRegion(true);
+    if (end) {
+      heatSlider(false);
+      const c = camRef.current;
+      onCamRest(c.s, c.tx, c.ty);
+    }
+  }
+
+  function toggleFull() {
+    setFull((v) => !v);
+  }
+
+  // Fullscreen: hide the tab bar + status bar and turn landscape; restore on
+  // exit. PAD / TYPE / WIN are all portrait tabs.
+  const fullMounted = useRef(false);
+  useEffect(() => {
+    // First run = mount: the tab's own focus lock already decided.
+    if (!fullMounted.current) {
+      fullMounted.current = true;
+      return;
+    }
+    try {
+      navigation?.setOptions?.({ tabBarStyle: full ? { display: "none" } : TAB_BAR_STYLE });
+    } catch {
+      // not inside a tab navigator
+    }
+    // Only the focused tab may lock: a blur that exits fullscreen must not
+    // override the next tab's own lock (GAME = landscape).
+    if (full || navigation?.isFocused?.() !== false) applyOrientation(full ? "landscape" : "portrait");
+    // navigation is stable for the screen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [full]);
 
   function onFrame(f) {
     // Dropped frames still carry fresh cursor/size metadata, but they were
@@ -909,6 +1106,20 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     if (stalled) setStalled(false);
     if (f?._dropped) return;
     trackFrameBytes(f?.jpeg?.length);
+    // Sharp = the newest shown frame is the region we last asked for.
+    const want = lastSentCrop || { x: 0, y: 0, w: 1, h: 1 };
+    let got = null;
+    try {
+      got = snapCrop(f?.crop);
+    } catch {
+      got = null;
+    }
+    const ok = !!got && Math.abs(got.x - want.x) < 0.003 && Math.abs(got.y - want.y) < 0.003 &&
+      Math.abs(got.w - want.w) < 0.003 && Math.abs(got.h - want.h) < 0.003;
+    if (ok !== sharpRef.current) {
+      sharpRef.current = ok;
+      setSharp(ok);
+    }
   }
 
   // Stream settings popover (preset / Q / fps): opened from the gear or the
@@ -927,45 +1138,38 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
 
   // Gesture hint: shown as a small overlay for a few seconds after the mode
   // or click button changes, instead of a text line that pushed the viewer.
-  const hintText =
-    sub === "Look"
-      ? "Geser = pan · pinch = zoom · 2x tap = zoom"
-      : clickBtn === "right"
-        ? "Tap = klik kanan · drag = drag kanan"
-        : clickBtn === "middle"
-          ? "Tap = klik tengah · drag = drag tengah"
-          : "Tap = klik · 2x tap = kata · drag = pilih";
+  const btnName = clickBtn === "right" ? "klik kanan" : clickBtn === "middle" ? "klik tengah" : "klik";
+  const hintText = reticle
+    ? "Geser = arahkan + · tap = " + btnName + " · 2 jari = zoom"
+    : "1 jari = " + btnName + " / drag · 2 jari = geser / zoom";
   const [hintOn, setHintOn] = useState(true);
   useEffect(() => {
     setHintOn(true);
     const t = setTimeout(() => setHintOn(false), 3500);
     return () => clearTimeout(t);
-  }, [sub, clickBtn]);
+  }, [reticle, clickBtn]);
   // Minimap / badge / slider read the JS camera mirror (~10 Hz while moving).
   const g0 = geom();
   const vis = g0 ? visibleRect(camRef.current, g0.fit, g0.vw, g0.vh) : { x: 0, y: 0, w: 1, h: 1 };
   const effZoom = camRef.current.s || 1;
-  const sliderFrac = Math.max(0, Math.min(1, (effZoom - 1) / (MAX_ZOOM - 1)));
-
-  // The camera stays where it is across Click/Look: zoom in with Look, then
-  // switch to Click and tap precisely on the zoomed picture.
-  function changeSub(s) {
-    setSel({ mode: s });
-  }
+  const sliderFrac = Math.max(0, Math.min(1, Math.log2(Math.max(1, effZoom)) / LOG_MAX));
+  const zoomed = effZoom > 1.02;
+  const camTools = current !== "cam";
+  const miniAspect = monitorAspect() || 16 / 9;
+  const MINI_W = full ? 120 : 104;
+  const miniH = Math.round(Math.max(36, Math.min(90, MINI_W / miniAspect)));
+  const thumb = zoomed ? getLastFullFrame(current) : null;
 
   return (
     <View style={styles.root}>
+      {full && <StatusBar hidden />}
+      {!full && (
       <View style={styles.topRow}>
         {!!title && <Text style={styles.title}>{title}</Text>}
         <ConnDot />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.topScroll} contentContainerStyle={styles.topScrollContent}>
         <MonitorChips monitors={monitors} current={current} onPick={onPick} row />
         <View style={styles.modes}>
-          {["Click", "Look"].map((s) => (
-            <Pressable key={s} onPress={() => changeSub(s)} style={[styles.subTab, sub === s && styles.subTabActive]}>
-              <Text style={[styles.subText, sub === s && styles.subTextActive]}>{s}</Text>
-            </Pressable>
-          ))}
           <Pressable onPress={() => setSel({ bar: !bar })} style={[styles.subTab, bar && styles.subTabActive]}>
             <Text style={[styles.subText, bar && styles.subTextActive]}>Bar</Text>
           </Pressable>
@@ -980,7 +1184,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           <Text style={[styles.gearText, streamOpen && styles.subTextActive]}>⚙</Text>
         </Pressable>
       </View>
-      <View style={styles.viewerBox}>
+      )}
+      <View style={[styles.viewerBox, full && styles.viewerBoxFull]}>
         <GestureDetector gesture={lookGesture}>
         <View
           ref={wrapRef}
@@ -1017,10 +1222,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         </GestureDetector>
         {/* Look controls sit beside (not inside) the gesture view so a drag on
             the slider or a tap on a button never pans the camera. */}
-          {sub === "Look" && (
-            <View style={styles.zoomSlider} pointerEvents="box-none">
+          {camTools && (
+            <View style={[styles.zoomSlider, { opacity: zoomed || sliderHot ? 1 : 0.45 }]} pointerEvents="box-none">
               <View
-                style={styles.zTrack}
+                style={styles.zTouch}
                 onLayout={(e) => {
                   const h = Math.round(e.nativeEvent.layout.height);
                   if (h && h !== trackHRef.current) {
@@ -1028,52 +1233,112 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                     setTrackH(h);
                   }
                 }}
-                onTouchStart={onSliderTouch}
-                onTouchMove={onSliderTouch}
+                onTouchStart={onSliderStart}
+                onTouchMove={onSliderMove}
                 onTouchEnd={onSliderEnd}
+                onTouchCancel={onSliderEnd}
               >
+                <View style={styles.zTrack} pointerEvents="none" />
+                {ZOOM_TICKS.map((z) => (
+                  <View
+                    key={z}
+                    pointerEvents="none"
+                    style={[styles.zTick, { top: (1 - Math.log2(z) / LOG_MAX) * Math.max(0, trackH || 120) - 7 }]}
+                  >
+                    <Text style={styles.zTickText}>{z}x</Text>
+                  </View>
+                ))}
                 <View
                   pointerEvents="none"
-                  style={[styles.zKnob, { top: (1 - sliderFrac) * Math.max(0, (trackH || 120) - 26) }]}
-                />
+                  style={[styles.zKnob, { top: (1 - sliderFrac) * Math.max(0, trackH || 120) - 13 }]}
+                >
+                  <Text style={styles.zKnobText}>{effZoom.toFixed(1)}x</Text>
+                </View>
               </View>
             </View>
           )}
-          {sub === "Look" && (
-            <View style={styles.lookBar} pointerEvents="box-none">
-              <View style={styles.zoomRow} pointerEvents="none">
-                <View style={styles.zoomBadge}>
-                  <Text style={styles.zoomBadgeText}>ZOOM {effZoom.toFixed(1)}x</Text>
-                </View>
-              </View>
+          {camTools && (
+            <View style={[styles.lookBar, bar && styles.shiftForBar]} pointerEvents="box-none">
               <View style={styles.lookBottom} pointerEvents="box-none">
-                <View style={styles.minimap} pointerEvents="none">
+                {zoomed && (
                   <View
-                    style={[
-                      styles.viewport,
-                      {
-                        left: `${(vis.x * 100).toFixed(1)}%`,
-                        top: `${(vis.y * 100).toFixed(1)}%`,
-                        width: `${(vis.w * 100).toFixed(1)}%`,
-                        height: `${(vis.h * 100).toFixed(1)}%`,
-                      },
-                    ]}
-                  />
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.zoomRowScroll}>
-                  <View style={styles.zoomRow}>
-                    <Pressable onPress={resetCrop} style={styles.zoomBtn}><Text style={styles.zoomText}>Fit</Text></Pressable>
-                    <Pressable onPress={() => zoomTo(2)} style={styles.zoomBtn}><Text style={styles.zoomText}>2x</Text></Pressable>
-                    <Pressable onPress={() => zoomTo(4)} style={styles.zoomBtn}><Text style={styles.zoomText}>4x</Text></Pressable>
-                    <Pressable onPress={() => zoomTo(effZoom * 1.25)} style={styles.zoomBtn}><Text style={styles.zoomText}>+</Text></Pressable>
-                    <Pressable onPress={() => zoomTo(effZoom / 1.25)} style={styles.zoomBtn}><Text style={styles.zoomText}>−</Text></Pressable>
+                    style={[styles.minimap, { width: MINI_W, height: miniH }]}
+                    onLayout={(e) => {
+                      miniRef.current = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height };
+                    }}
+                    onTouchStart={(e) => onMiniTouch(e, false)}
+                    onTouchMove={(e) => onMiniTouch(e, false)}
+                    onTouchEnd={(e) => onMiniTouch(e, true)}
+                  >
+                    {!!thumb && (
+                      <Image source={{ uri: thumb }} style={StyleSheet.absoluteFill} resizeMode="stretch" fadeDuration={0} pointerEvents="none" />
+                    )}
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        styles.viewport,
+                        {
+                          left: `${(vis.x * 100).toFixed(1)}%`,
+                          top: `${(vis.y * 100).toFixed(1)}%`,
+                          width: `${(vis.w * 100).toFixed(1)}%`,
+                          height: `${(vis.h * 100).toFixed(1)}%`,
+                        },
+                      ]}
+                    />
                   </View>
-                </ScrollView>
+                )}
+                <View style={styles.clickSegInline}>
+                  {CLICK_BTNS.map((b) => (
+                    <Pressable
+                      key={b.id}
+                      onPress={() => setSel({ clickBtn: b.id })}
+                      hitSlop={4}
+                      style={[styles.clickSegBtn, clickBtn === b.id && styles.clickBtnActive]}
+                    >
+                      <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                {reticle && (
+                  <Pressable onPress={() => clickAtReticle()} style={styles.aimBtn} hitSlop={4}>
+                    <Text style={styles.aimText}>Klik</Text>
+                  </Pressable>
+                )}
+                <View style={styles.zoomRow}>
+                  <Pressable onPress={resetCrop} style={styles.zoomBtn}><Text style={styles.zoomText}>Fit</Text></Pressable>
+                  <Pressable onPress={() => zoomTo(2)} style={styles.zoomBtn}><Text style={styles.zoomText}>2x</Text></Pressable>
+                  <Pressable onPress={() => zoomTo(4)} style={styles.zoomBtn}><Text style={styles.zoomText}>4x</Text></Pressable>
+                </View>
               </View>
+            </View>
+          )}
+          {camTools && reticle && (
+            <View pointerEvents="none" style={styles.reticle}>
+              <View style={[styles.retLine, { width: 2, height: 18, top: 0, left: 19 }]} />
+              <View style={[styles.retLine, { width: 2, height: 18, bottom: 0, left: 19 }]} />
+              <View style={[styles.retLine, { height: 2, width: 18, left: 0, top: 19 }]} />
+              <View style={[styles.retLine, { height: 2, width: 18, right: 0, top: 19 }]} />
+              <View style={styles.retDot} />
+            </View>
+          )}
+          {camTools && (
+            <View style={[styles.toolRow, bar && styles.shiftForBar]}>
+              <Pressable onPress={toggleFull} style={[styles.toolBtn, full && styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Layar penuh">
+                <Text style={[styles.toolText, full && styles.toolTextOn]}>{full ? "✕" : "⛶"}</Text>
+              </Pressable>
+              <Pressable onPress={() => setReticle((v) => !v)} style={[styles.toolBtn, reticle && styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Bidik presisi">
+                <Text style={[styles.toolText, reticle && styles.toolTextOn]}>⊕</Text>
+              </Pressable>
+              {zoomed && (
+                <View style={styles.sharpPill} pointerEvents="none">
+                  <View style={[styles.sharpDot, { backgroundColor: sharp ? "#22c55e" : "#f59e0b" }]} />
+                  <Text style={styles.sharpText}>{sharp ? "tajam" : "memuat"}</Text>
+                </View>
+              )}
             </View>
           )}
         <View style={[styles.overlayTop, bar && styles.shiftForBar]} pointerEvents="none">
-          {hintOn && sub === "Click" && !streamOpen && (
+          {hintOn && !streamOpen && (
             <View style={styles.hintPill}>
               <Text style={styles.hint}>{hintText}</Text>
             </View>
@@ -1094,20 +1359,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             </View>
           )}
         </View>
-        {sub === "Click" && (
-          <View style={[styles.clickSeg, bar && styles.shiftForBar]}>
-            {CLICK_BTNS.map((b) => (
-              <Pressable
-                key={b.id}
-                onPress={() => setSel({ clickBtn: b.id })}
-                hitSlop={4}
-                style={[styles.clickSegBtn, clickBtn === b.id && styles.clickBtnActive]}
-              >
-                <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
-              </Pressable>
-            ))}
-          </View>
-        )}
         {!streamOpen && (
           <Pressable onPress={() => setStreamOpen(true)} style={styles.fpsPill} hitSlop={4} accessibilityLabel="Buka pengaturan stream">
             <StreamStats />
@@ -1135,6 +1386,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           </View>
         )}
       </View>
+      {!full && (
       <View style={styles.controls}>
       {actions && (
         <View style={styles.btnRow}>
@@ -1167,6 +1419,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       )}
       {children}
       </View>
+      )}
     </View>
   );
 }
@@ -1216,17 +1469,36 @@ const styles = StyleSheet.create({
     backgroundColor: "transparent",
   },
   lookBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: 6, gap: 6 },
-  zoomSlider: { position: "absolute", right: 4, top: 56, bottom: 118, width: 36, alignItems: "center" },
-  zTrack: { flex: 1, width: 10, borderRadius: 5, backgroundColor: "rgba(30,41,59,0.7)" },
-  zKnob: { position: "absolute", left: -8, width: 26, height: 26, borderRadius: 13, backgroundColor: "rgba(250,204,21,0.9)" },
+  zoomSlider: { position: "absolute", right: 2, top: 40, bottom: 56, width: 56, alignItems: "center" },
+  zTouch: { flex: 1, width: 56, alignItems: "center" },
+  zTrack: { position: "absolute", top: 0, bottom: 0, right: 14, width: 8, borderRadius: 4, backgroundColor: "rgba(30,41,59,0.75)" },
+  zTick: { position: "absolute", left: 0, height: 14, paddingHorizontal: 4, borderRadius: 7, backgroundColor: "rgba(2,6,23,0.7)", justifyContent: "center" },
+  zTickText: { color: "#cbd5e1", fontSize: 8, fontWeight: "800" },
+  zKnob: { position: "absolute", right: 0, width: 40, height: 26, borderRadius: 13, backgroundColor: "rgba(250,204,21,0.95)", alignItems: "center", justifyContent: "center" },
+  zKnobText: { color: "#1c1400", fontSize: 10, fontWeight: "900" },
+  toolRow: { position: "absolute", left: 6, top: 6, flexDirection: "row", alignItems: "center", gap: 4 },
+  toolBtn: { width: 30, height: 26, borderRadius: 999, backgroundColor: "rgba(15,23,42,0.8)", alignItems: "center", justifyContent: "center" },
+  toolBtnOn: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: "#38bdf8" },
+  toolText: { color: "#e2e8f0", fontSize: 13, fontWeight: "800" },
+  toolTextOn: { color: "#7dd3fc" },
+  sharpPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(15,23,42,0.7)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 7 },
+  sharpDot: { width: 7, height: 7, borderRadius: 4 },
+  sharpText: { color: "#cbd5e1", fontSize: 9, fontWeight: "800" },
+  clickSegInline: { flexDirection: "row", gap: 3, backgroundColor: "rgba(15,23,42,0.7)", borderRadius: 999, padding: 3 },
+  aimBtn: { backgroundColor: "#38bdf8", borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
+  aimText: { color: "#02101f", fontWeight: "900", fontSize: 12 },
+  reticle: { position: "absolute", left: "50%", top: "50%", width: 40, height: 40, marginLeft: -20, marginTop: -20 },
+  retLine: { position: "absolute", backgroundColor: "#fff", borderRadius: 1, shadowColor: "#000", shadowOpacity: 0.8, shadowRadius: 2, elevation: 2 },
+  retDot: { position: "absolute", left: 17, top: 17, width: 6, height: 6, borderRadius: 3, backgroundColor: "#ef4444" },
+  viewerBoxFull: { marginHorizontal: 0, marginBottom: 0 },
   zoomRow: { flexDirection: "row", gap: 6, justifyContent: "center" },
-  lookBottom: { flexDirection: "row", gap: 6, alignItems: "flex-end" },
+  lookBottom: { flexDirection: "row", gap: 6, alignItems: "flex-end", paddingRight: 56 },
   zoomRowScroll: { flexGrow: 1, alignItems: "center" },
   zoomBadge: { backgroundColor: "rgba(124,45,18,0.9)", borderRadius: 8, paddingVertical: 4, paddingHorizontal: 12 },
   zoomBadgeText: { color: "#fed7aa", fontWeight: "800", fontSize: 12 },
   zoomBtn: { backgroundColor: "rgba(30,41,59,0.85)", borderRadius: 8, paddingVertical: 6, paddingHorizontal: 9 },
   zoomText: { color: COLORS.text, fontWeight: "800", fontSize: 11 },
-  minimap: { width: 96, height: 60, backgroundColor: "rgba(15,23,42,0.85)", borderRadius: 6, borderWidth: 1, borderColor: "#334155", overflow: "hidden" },
+  minimap: { backgroundColor: "rgba(15,23,42,0.85)", borderRadius: 6, borderWidth: 1, borderColor: "#334155", overflow: "hidden" },
   viewport: { position: "absolute", borderWidth: 2, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,0.15)" },
   bar: { position: "absolute", left: 0, top: 0, bottom: 0, width: 40, paddingVertical: 8, alignItems: "center", justifyContent: "space-between" },
   barBtn: { backgroundColor: "rgba(30,41,59,0.85)", borderRadius: 8, width: 32, height: 32, alignItems: "center", justifyContent: "center" },
