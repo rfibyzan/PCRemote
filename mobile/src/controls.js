@@ -5,6 +5,7 @@
 import React, { useEffect, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import * as SecureStore from "expo-secure-store";
+import { router } from "expo-router";
 import { COLORS } from "./components";
 import { STORE_QUALITY, msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
@@ -415,7 +416,12 @@ export function ConnDot() {
   }, []);
   const color = st.connected ? COLORS.ok : st.status === "reconnecting" ? "#facc15" : COLORS.muted;
   const glyph = st.connected ? "●" : st.status === "reconnecting" ? "↻" : "○";
-  return <Text style={[styles.connDot, { color }]}>{glyph}</Text>;
+  // Tap: Perangkat screen (current PC, log out, recent PCs, connection log).
+  return (
+    <Pressable onPress={() => router.push("/devices")} hitSlop={10} accessibilityLabel="Perangkat dan log koneksi">
+      <Text style={[styles.connDot, { color }]}>{glyph}</Text>
+    </Pressable>
+  );
 }
 
 const styles = StyleSheet.create({
