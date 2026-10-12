@@ -212,6 +212,8 @@ async function endGamepad(ws) {
   send(ws, { t: "gamepad", on: false });
 }
 
+const ORDERED_INPUT = new Set(["move", "click", "scroll", "abs", "drag", "key", "combo", "text", "media"]);
+
 async function handleCommand(ws, msg) {
   const mon = monitorFor(ws);
   switch (msg.t) {
@@ -226,16 +228,16 @@ async function handleCommand(ws, msg) {
       if (msg.dy) scroll(msg.dy);
       break;
     case "abs":
-      if (msg.click) tapAbsOnMonitor(mon, msg.x, msg.y, msg.click);
+      if (msg.click) await tapAbsOnMonitor(mon, msg.x, msg.y, msg.click);
       else moveAbsOnMonitor(mon, msg.x, msg.y);
       break;
     case "drag":
       if (msg.phase === "start") {
-        beginDragOnMonitor(mon, msg.x, msg.y, msg.btn || "left");
+        await beginDragOnMonitor(mon, msg.x, msg.y, msg.btn || "left");
       } else if (msg.phase === "move") {
         moveDragOnMonitor(mon, msg.x, msg.y);
       } else if (msg.phase === "end") {
-        endDragOnMonitor(mon, msg.x, msg.y, msg.btn || "left");
+        await endDragOnMonitor(mon, msg.x, msg.y, msg.btn || "left");
       }
       break;
     case "key":
@@ -692,10 +694,16 @@ async function main() {
         ws.wantsScreen = Boolean(msg.on);
         return;
       }
-      try {
-        await handleCommand(ws, msg);
-      } catch (err) {
-        send(ws, { t: "error", m: publicErr(err) });
+      // Input must reach Windows in the order it was sent. A tap now waits a
+      // frame between move and click, so without this chain the next message
+      // (a drag start, a key) would run in the middle of it.
+      const run = () =>
+        handleCommand(ws, msg).catch((err) => send(ws, { t: "error", m: publicErr(err) }));
+      if (ORDERED_INPUT.has(msg.t)) {
+        ws.inputChain = (ws.inputChain || Promise.resolve()).then(run);
+        await ws.inputChain;
+      } else {
+        await run();
       }
     });
     ws.on("close", () => {
