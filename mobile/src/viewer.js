@@ -528,13 +528,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     bumpTick(true);
   }
 
-  // Zoom to an absolute level around the current view centre.
-  function zoomTo(z) {
-    const g = geom();
-    if (!g) return;
-    const n = camToNorm(camRef.current, g.fit, g.vw, g.vh);
-    animateCamTo(camFor(z, n.cx, n.cy, g.fit, g.vw, g.vh));
-  }
 
   function resetCrop() {
     animateCamTo({ s: 1, tx: 0, ty: 0 });
@@ -1389,7 +1382,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                 )}
               </View>
             )}
-            {/* Mode row at the bottom: Click | Look, Bar, and the zoom presets. */}
+            {/* Mode row at the bottom: Click | Look, Bar, and Fit. */}
             <View style={styles.lookBottom} pointerEvents="box-none">
               <Block style={styles.modeSeg}>
                 {["Click", "Look"].map((m) => (
@@ -1406,7 +1399,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
               {camTools && (
                 <Block style={styles.zoomRow}>
                   <Pressable onPress={resetCrop} style={styles.zoomBtn}><Text style={styles.zoomText}>Fit</Text></Pressable>
-                  <Pressable onPress={() => zoomTo(2)} style={styles.zoomBtn}><Text style={styles.zoomText}>2x</Text></Pressable>
                 </Block>
               )}
             </View>
