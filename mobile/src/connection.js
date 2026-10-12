@@ -10,6 +10,10 @@
  */
 import * as SecureStore from "expo-secure-store";
 import React from "react";
+import { AppState } from "react-native";
+import { createConnLog, formatLog } from "./connlog";
+import { getDeviceInfo } from "./deviceinfo";
+import { newestAnnounce, parseRecent, removeRecent, upsertRecent } from "./recent";
 import {
   DEFAULT_PORT,
   NTFY_HOSTS,
@@ -25,6 +29,14 @@ import {
 } from "./protocol";
 
 const listeners = new Set();
+const STORE_RECENT = "pcremote.recent";
+
+/** Every connect step, timestamped (see connlog.js). */
+export const connLog = createConnLog(200);
+function log(text, level = "info") {
+  connLog.add(text, level);
+}
+const STATUS_LEVEL = { failed: "error", unreachable: "error", rejected: "error", blocked: "error", kicked: "warn", reconnecting: "warn", connected: "ok" };
 
 function emit(event) {
   for (const fn of [...listeners]) {
@@ -58,6 +70,9 @@ const state = {
   wantScreen: false,
   screenHandler: null,
   lastHosts: [],
+  recent: [],
+  device: null,
+  kicked: false,
   _pingTimer: null,
   _pongTimer: null,
   _manualClose: false,
@@ -79,6 +94,60 @@ async function loadStore() {
   } catch {
     state.lastHosts = [];
   }
+  try {
+    state.recent = parseRecent(await SecureStore.getItemAsync(STORE_RECENT));
+  } catch {
+    state.recent = [];
+  }
+  if (!state.device) {
+    try {
+      state.device = await getDeviceInfo();
+    } catch {
+      state.device = null;
+    }
+  }
+}
+
+async function saveRecent() {
+  try {
+    await SecureStore.setItemAsync(STORE_RECENT, JSON.stringify(state.recent));
+  } catch {
+    // best-effort
+  }
+  emit({ t: "recent", recent: [...state.recent] });
+}
+
+async function saveHosts() {
+  try {
+    await SecureStore.setItemAsync(STORE_HOSTS, JSON.stringify(state.lastHosts));
+  } catch {
+    // best-effort
+  }
+}
+
+export function getRecent() {
+  return [...state.recent];
+}
+
+/** Forget one PC from the recent list (and log out if it is the current one). */
+export async function forgetRecent(code) {
+  state.recent = removeRecent(state.recent, code);
+  await saveRecent();
+  if (code === state.code) await clearPairing();
+}
+
+/** Text for "Copy log": device + current status + every step. */
+export function connLogText() {
+  const d = state.device;
+  const head = [
+    `PCRemote log ${new Date().toISOString()}`,
+    d ? `HP: ${d.name} (${d.os}, app ${d.app || "?"})` : "",
+    `Status: ${state.status} · ${state.stage}${state.link ? ` · ${state.link}` : ""}${state.url ? ` · ${shortHost(state.url)}` : ""}`,
+    state.lastError ? `Error terakhir: ${state.lastError}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return formatLog(connLog.list(), head);
 }
 
 async function rememberHost(wsUrl) {
@@ -92,7 +161,15 @@ async function rememberHost(wsUrl) {
 }
 
 export async function setLockCode(code) {
-  state.code = normalizeCode(code);
+  const next = normalizeCode(code);
+  if (next && next !== state.code) {
+    // Another PC: its own remembered hosts, never the previous PC's (those
+    // answer /health fine and then reject the code).
+    const known = state.recent.find((r) => r.code === next);
+    state.lastHosts = known?.hosts ? [...known.hosts] : [];
+    await saveHosts();
+  }
+  state.code = next;
   try {
     if (state.code) await SecureStore.setItemAsync(STORE_LOCK, state.code);
     else await SecureStore.deleteItemAsync(STORE_LOCK);
@@ -115,7 +192,9 @@ export async function clearPairing() {
   }
   state.code = "";
   state.lastHosts = [];
+  state.hello = null;
   disconnect();
+  log("Log out dari PC (kode dihapus dari HP ini)", "warn");
   emit({ t: "code", code: "" });
 }
 
@@ -132,6 +211,9 @@ export function getStatus() {
     code: state.code,
     hello: state.hello,
     hosts: [...state.lastHosts],
+    kicked: state.kicked,
+    pcName: state.hello?.name || state.recent.find((r) => r.code === state.code)?.name || "",
+    device: state.device,
   };
 }
 
@@ -139,12 +221,14 @@ function setStatus(status, detail = "", stage = "") {
   state.status = status;
   if (detail !== undefined) state.detail = detail;
   if (stage) state.stage = stage;
+  if (detail) log(detail, STATUS_LEVEL[status] || "info");
   emit({ t: "status", ...getStatus() });
 }
 
 function setProgress(stage, message) {
   state.stage = stage;
   state.detail = message;
+  log(message, stage === "failed" ? "error" : "info");
   emit({ t: "progress", ...getStatus() });
 }
 
@@ -234,6 +318,7 @@ function shortHost(wsUrl) {
 export function connect(url, opts = {}) {
   disconnect(true);
   state._manualClose = false;
+  state.kicked = false;
   state.url = url;
   state.link = detectLink(url);
   state.attempts = opts.attempt || 0;
@@ -262,7 +347,7 @@ export function connect(url, opts = {}) {
     // connected) only arrives AFTER auth. Using send() here deadlocks
     // pairing — the socket always closes via the auth timeout.
     try {
-      ws.send(JSON.stringify(msg.auth(state.code)));
+      ws.send(JSON.stringify(msg.auth(state.code, state.device || undefined)));
     } catch (e) {
       state.lastError = `gagal-kirim-auth: ${String(e?.message || e)}`;
     }
@@ -297,7 +382,9 @@ export function connect(url, opts = {}) {
       const reason = ev?.reason || ev?.code ? `code=${ev?.code}` : "closed";
       state.lastError = `socket-tutup (${reason})`;
       emit({ t: "close", reason });
-      if (state._manualClose) {
+      if (state.kicked) {
+        // The PC disconnected us on purpose: wait for the user.
+      } else if (state._manualClose) {
         setStatus("idle", "Terputus (manual).", "idle");
       } else {
         setStatus(
@@ -370,82 +457,49 @@ function stopPing() {
   }
 }
 
-/** Auto-reconnect with backoff after an unexpected drop (not manual). */
+/** Auto-reconnect after an unexpected drop (not manual / kicked / wrong
+ * code). Never gives up while the user wants the PC: backoff caps at 15 s,
+ * and every 3rd try re-discovers the PC first (fresh ntfy announce + LAN),
+ * because the tunnel URL changes when cloudflared restarts and the LAN IP
+ * can change with DHCP. Returning to the app retries at once (AppState). */
 function scheduleReconnect(reason) {
-  if (state._manualClose || !state.url || state._reTimer) return;
+  if (state._manualClose || state.kicked || !state.url || state._reTimer) return;
   const tries = (state._reTries = (state._reTries || 0) + 1);
   state.attempts = tries;
-  if (tries > MAX_RETRIES) {
-    const hint = /1006/.test(String(reason || state.lastError))
-      ? " (1006 = putus abnormal: biasanya tunnel mati/restart, agent tidak jalan, atau kode beda — cek tray PC + kode sama, lalu Connect ulang untuk cari URL baru)"
-      : "";
-    setStatus(
-      "failed",
-      `Gagal ${MAX_RETRIES}x (${reason || state.lastError})${hint}. Cek PC menyala + kode sama, lalu tekan Coba lagi.`,
-      "failed",
-    );
-    emit({ t: "failed", reason, ...getStatus() });
-    return;
+  const delay = Math.min(15000, Math.round(1500 * Math.pow(1.5, Math.min(tries - 1, 8))));
+  const label = tries > MAX_RETRIES ? `percobaan ${tries}` : `${tries}/${MAX_RETRIES}`;
+  if (tries > MAX_RETRIES && tries === MAX_RETRIES + 1) {
+    const hint = /1006/.test(String(reason || state.lastError)) ? " 1006 biasanya = tunnel restart / agent mati / beda jaringan." : "";
+    log(`Sudah ${MAX_RETRIES}x gagal (${reason || state.lastError}).${hint} Terus mencoba tiap 15 dtk. Cek PCRemote.exe di PC.`, "error");
   }
-  const delay = Math.min(15000, Math.round(2000 * Math.pow(1.5, Math.min(tries, 8))));
-  // Stale-URL recovery: cloudflared quick tunnels get a NEW random URL on
-  // every restart, so hammering the same URL 10x is pointless when the PC
-  // re-announced elsewhere. On tries 3 and 6, re-discover first (fresh ntfy
-  // announce + LAN recheck) instead of redialing the dead URL. Bounded by
-  // _rediscoveries (max 2): without this, resetting _reTries on every
-  // rediscovery that returns the SAME dead URL loops forever and MAX_RETRIES
-  // is never reached (stuck "reconnecting" with a resetting counter).
-  const shouldRediscover =
-    state.link === "remote" && (tries === 3 || tries === 6) && state.code && (state._rediscoveries || 0) < 2;
-  if (shouldRediscover) {
-    setStatus(
-      "reconnecting",
-      `Mencoba lagi ${tries}/${MAX_RETRIES} — URL tunnel mungkin basi, mencari ulang PC…`,
-      "polling-announce",
-    );
+  if (state.code && tries % 3 === 0) {
+    setStatus("reconnecting", `Mencoba lagi ${label} — mencari ulang alamat PC…`, "polling-announce");
     state._reTimer = setTimeout(async () => {
       state._reTimer = null;
-      if (state._manualClose || state.connected) return;
+      if (state._manualClose || state.kicked || state.connected) return;
+      let next = state.url;
       try {
-        const fresh = await findPC(() => {});
-        if (state._manualClose || state.connected) return;
-        if (fresh && fresh !== state.url) {
-          // Genuinely new URL: fresh attempt series against the new address.
-          state._rediscoveries = (state._rediscoveries || 0) + 1;
-          state._reTries = 0;
-          state.attempts = 0;
-          connect(fresh);
-        } else {
-          // Same (still dead) URL or nothing new: keep counting so MAX still trips.
-          state._rediscoveries = (state._rediscoveries || 0) + 1;
-          if (!state._manualClose && !state.connected && state.url) {
-            connect(state.url, { attempt: tries });
-          }
-        }
-      } catch {
-        // Rediscovery found nothing new: keep hammering the old URL; the
-        // next rediscover (or MAX) will handle it.
-        if (!state._manualClose && !state.connected && state.url) {
-          connect(state.url, { attempt: tries });
-        }
+        const fresh = await findPC(() => {}, { quiet: true });
+        if (fresh) next = fresh;
+        if (fresh && fresh !== state.url) log(`Alamat baru ditemukan: ${shortHost(fresh)}`, "ok");
+      } catch (e) {
+        log(`Cari ulang gagal: ${String(e?.message || e)}`, "warn");
       }
+      if (!state._manualClose && !state.kicked && !state.connected) connect(next, { attempt: tries });
     }, delay);
     return;
   }
-  setStatus(
-    "reconnecting",
-    `Mencoba lagi ${tries}/${MAX_RETRIES} dalam ${Math.round(delay / 1000)}s (${reason || state.lastError})…`,
-    "ws-connecting",
-  );
+  setStatus("reconnecting", `Mencoba lagi ${label} dalam ${Math.round(delay / 1000)} dtk (${reason || state.lastError})…`, "ws-connecting");
   state._reTimer = setTimeout(() => {
     state._reTimer = null;
-    if (!state._manualClose && !state.connected && state.url) {
+    if (!state._manualClose && !state.kicked && !state.connected && state.url) {
       connect(state.url, { attempt: tries });
     }
   }, delay);
 }
 
 export function retryConnect() {
+  state.kicked = false;
   if (state._reTimer) {
     clearTimeout(state._reTimer);
     state._reTimer = null;
@@ -472,25 +526,60 @@ addListener((event) => {
     state.attempts = 0;
     state.connected = true;
     state.lastError = "";
-    setStatus("connected", `Terhubung via ${state.link || "wifi"}.`, "connected");
-    rememberHost(state.url);
+    setStatus("connected", `Terhubung ke ${event.hello?.name || "PC"} via ${state.link || "wifi"} (${shortHost(state.url)}).`, "connected");
+    rememberHost(state.url).then(() => {
+      state.recent = upsertRecent(state.recent, {
+        code: state.code,
+        name: event.hello?.name || "PC",
+        hosts: state.lastHosts,
+        link: state.link,
+      });
+      return saveRecent();
+    });
     startPing();
+  }
+  if (event.t === "kicked") {
+    state.kicked = true;
+    state.lastError = String(event.m || "Diputus dari PC");
+    disconnect(true);
+    setStatus("kicked", "Diputus dari dashboard PC. Tekan Connect untuk menyambung lagi.", "idle");
   }
   if (event.t === "error") {
     const m = String(event.m || "");
+    // While connected, most errors are one failed command (webcam busy, a
+    // key the PC refused): log it, keep the session. Only auth-type errors
+    // end it. (Before, ANY error dropped the connection.)
+    if (state.connected && !/bad token|blocked|lock code|credit/i.test(m)) {
+      log(`PC: ${m || "error"}`, "warn");
+      return;
+    }
     state.lastError = m || "ditolak-agent";
-    disconnect();
-    setStatus("rejected", `Ditolak PC: ${m || "token salah"}. Cek kode di tray PC.`, "auth");
+    disconnect(true);
+    if (/^blocked/i.test(m)) {
+      state.kicked = true;
+      setStatus("blocked", "HP ini diblokir di dashboard PC. Buka blokir di PC (Recent phones), lalu Connect.", "auth");
+    } else if (/bad token|lock code/i.test(m)) {
+      setStatus("rejected", "Kode ditolak PC: kode di PC sudah berubah. Scan QR baru di layar PC.", "auth");
+    } else {
+      setStatus("rejected", `Ditolak PC: ${m || "token salah"}.`, "auth");
+    }
   }
   if (event.t === "close" && state.connected) {
     stopPing();
   }
 });
 
+/** "Putuskan" on the phone: stop and stay stopped until Connect. */
+export function disconnectByUser() {
+  disconnect(true);
+  setStatus("stopped", "Diputus dari HP. Tekan Connect untuk menyambung lagi.", "idle");
+}
+
 export function disconnect(silent) {
   state._manualClose = true;
   state._connectGen += 1;
   const ws = state.ws;
+  const was = state.connected;
   state.ws = null;
   state.connected = false;
   stopPing();
@@ -509,6 +598,9 @@ export function disconnect(silent) {
       // already closed
     }
   }
+  // Tabs leave for the connect screen on "close"; a manual / kicked
+  // disconnect skips onclose (generation bump), so say it here.
+  if (was) emit({ t: "close", reason: "manual" });
   if (!silent) setStatus("idle", "", "idle");
 }
 
@@ -537,161 +629,153 @@ async function checkHealth(httpBase, ms) {
   return health;
 }
 
+// First promise to resolve wins; rejects only when every one failed.
+function firstOk(promises) {
+  return new Promise((resolve, reject) => {
+    let left = promises.length;
+    if (!left) reject(new Error("empty"));
+    for (const p of promises) {
+      p.then(resolve, () => {
+        left -= 1;
+        if (!left) reject(new Error("none answered"));
+      });
+    }
+  });
+}
+
 /**
- * Find the PC: remembered hosts first (fast, validated), then the encrypted
- * ntfy internet announce (all candidates validated), never blind-connect.
- * Returns a ws:// URL or throws with a detailed reason.
+ * Find the PC, validated, never blind:
+ * 1. remembered hosts of THIS PC, all probed at once (/health, 2 s);
+ * 2. encrypted ntfy announce from all boards at once, newest wins:
+ *    its LAN addresses (parallel /health), then its tunnel (/health over
+ *    https, so a dead old tunnel URL is never picked).
+ * Returns a ws(s):// URL or throws with the reason. Every step is logged.
  */
-export async function findPC(onProgress) {
+export async function findPC(onProgress, opts = {}) {
   await loadStore();
   const gen = ++state._findGen;
   const rawProgress = onProgress || (() => {});
   const progress = (stage, message) => {
     if (gen !== state._findGen) throw new Error("cancelled");
-    setProgress(stage, message);
+    if (opts.quiet) log(message);
+    else setProgress(stage, message);
     try {
       rawProgress(message);
     } catch {
       // UI progress must not break discovery
     }
-    emit({ t: "progress", ...getStatus() });
+    if (!opts.quiet) emit({ t: "progress", ...getStatus() });
   };
   const throwIfCancelled = () => {
     if (gen !== state._findGen) throw new Error("cancelled");
   };
+  const t0 = Date.now();
+  const took = () => `${((Date.now() - t0) / 1000).toFixed(1)} dtk`;
 
-  // 1. Remembered hosts (validated via /health, per-host progress).
+  // 1. Remembered hosts, in parallel.
   if (state.lastHosts.length) {
-    let i = 0;
-    for (const http of state.lastHosts) {
-      i += 1;
+    progress("checking-saved", `Cek ${state.lastHosts.length} alamat tersimpan: ${state.lastHosts.map((h) => shortHost(h)).join(", ")}`);
+    try {
+      const http = await firstOk(state.lastHosts.map((h) => checkHealth(h, 2000).then(() => h)));
       throwIfCancelled();
-      progress("checking-saved", `Cek tersimpan ${i}/${state.lastHosts.length}: ${http}…`);
+      progress("checking-saved", `Ketemu di alamat tersimpan ${shortHost(http)} (${took()})`);
+      return httpToWs(http);
+    } catch (e) {
+      if (String(e?.message).includes("cancelled")) throw e;
+      progress("checking-saved", "Alamat tersimpan tidak menjawab (PC pindah jaringan / IP berubah).");
+    }
+  }
+
+  if (!state.code) {
+    progress("failed", "Belum ada kode pair. Scan QR di layar PC.");
+    throw new Error("no-code");
+  }
+
+  // 2. Internet announce (works on mobile data too).
+  progress("polling-announce", `Mencari PC via internet (${NTFY_HOSTS.length} server sekaligus)…`);
+  const ann = await pollAnnounce();
+  throwIfCancelled();
+  if (!ann) {
+    progress(
+      "failed",
+      "PC tidak mengumumkan alamat 10 menit terakhir. Pastikan PCRemote.exe jalan dan Internet di dashboard 'ready', lalu tekan Connect.",
+    );
+    throw new Error("not-found: no announce in 10 min");
+  }
+  const age = Math.max(0, Math.round((Date.now() - (Number(ann.ts) || Date.now())) / 1000));
+  progress(
+    "probing-candidate",
+    `Announce ${ann.name || "PC"} (${age} dtk lalu): ${Array.isArray(ann.lan) ? ann.lan.length : 0} LAN, tunnel ${ann.tunnel ? "ada" : "belum ada"}`,
+  );
+
+  const lans = (Array.isArray(ann.lan) ? ann.lan : []).map((l) => `http://${l}`);
+  if (lans.length) {
+    progress("probing-candidate", `Uji LAN: ${lans.map(shortHost).join(", ")}`);
+    try {
+      const http = await firstOk(lans.map((h) => checkHealth(h, 2500).then(() => h)));
+      throwIfCancelled();
+      progress("probing-candidate", `Ketemu via Wi-Fi ${shortHost(http)} (${took()})`);
+      return httpToWs(http);
+    } catch (e) {
+      if (String(e?.message).includes("cancelled")) throw e;
+      progress("probing-candidate", "LAN tidak terjangkau (beda Wi-Fi / data seluler / AP isolation), coba internet…");
+    }
+  }
+
+  if (ann.tunnel) {
+    const host = shortHost(ann.tunnel);
+    for (let i = 1; i <= 2; i += 1) {
+      throwIfCancelled();
+      progress("probing-candidate", `Uji tunnel ${host}${i > 1 ? " (ulang)" : ""}…`);
       try {
-        await checkHealth(http, 1500);
-        progress("checking-saved", `Ketemu di tersimpan: ${http}`);
-        return httpToWs(http);
-      } catch {
-        // try next
+        await checkHealth(wsToHttp(ann.tunnel).replace(/\/$/, ""), 7000);
+        progress("probing-candidate", `Tunnel OK (${took()})`);
+        return ann.tunnel;
+      } catch (e) {
+        progress("probing-candidate", `Tunnel belum menjawab: ${String(e?.name === "AbortError" ? "timeout 7 dtk" : e?.message || e)}`);
       }
     }
-  } else {
-    progress("checking-saved", "Belum ada host tersimpan, lanjut ke internet…");
+    // The ws upgrade can still work when /health is slow at the edge.
+    progress("probing-candidate", "Coba langsung WebSocket ke tunnel…");
+    return ann.tunnel;
   }
 
-  // 2. ntfy internet announce (works on mobile data too). Collect ALL
-  // candidates (tunnel + lan), validate each. LAN first: on the same Wi-Fi
-  // it is always more reliable than the tunnel (no Cloudflare in the path);
-  // tunnel is for mobile-data / off-LAN only.
-  if (state.code) {
-    progress("polling-announce", "Mencari PC via internet (ntfy)…");
-    const candidates = await pollAnnounceCandidates((m) => progress("polling-announce", m));
-    throwIfCancelled();
-    if (candidates.length) {
-      const lans = candidates.filter((c) => c.kind !== "tunnel");
-      const tunnels = candidates.filter((c) => c.kind === "tunnel");
-      let i = 0;
-      for (const c of lans) {
-        i += 1;
-        throwIfCancelled();
-        progress("probing-candidate", `Uji LAN ${i}/${lans.length}: ${c.label}…`);
-        try {
-          await checkHealth(c.http, 2000);
-          progress("probing-candidate", `Ketemu via LAN: ${c.http}`);
-          return httpToWs(c.http);
-        } catch {
-          // try next candidate
-        }
-      }
-      let j = 0;
-      for (const c of tunnels) {
-        j += 1;
-        throwIfCancelled();
-        progress("probing-candidate", `Uji tunnel ${j}/${tunnels.length}: ${c.label}…`);
-        try {
-          // Tunnel ws can't be health-checked via /health over http the way
-          // LAN can; a bare https GET only proves the edge is alive.
-          // If that fails, still keep it as last resort (don't drop).
-          const ok = await probeTunnelHttp(c.url).catch(() => false);
-          if (ok) {
-            progress("probing-candidate", `Tunnel OK: ${c.url}`);
-            return c.url;
-          }
-          // keep tunnel as fallback, continue checking the rest
-          continue;
-        } catch {
-          // try next candidate
-        }
-      }
-      // Last resort: first tunnel even if http probe failed (ws may work).
-      if (tunnels.length) {
-        progress("probing-candidate", `Coba tunnel walau probe gagal: ${tunnels[0].url}`);
-        return tunnels[0].url;
-      }
-    } else {
-      progress("polling-announce", "Tidak ada announce 10 menit terakhir.");
-    }
-  } else {
-    progress("polling-announce", "Belum ada kode pair, lewati internet.");
-  }
-
-  // 3. Manual host remains (UI offers entry via probeHost).
-  progress("failed", "PC tidak ketemu. Nyalakan PC Remote di komputer / masukkan host manual.");
-  throw new Error("not-found: no validated candidate (saved empty/mati, ntfy kosong/kedaluwarsa)");
+  progress("failed", "Internet PC belum siap (tunnel belum ada) dan LAN tidak terjangkau. Sambungkan HP ke Wi-Fi yang sama atau tunggu Internet 'ready' di PC.");
+  throw new Error("not-found: no reachable candidate");
 }
 
-async function probeTunnelHttp(tunnelWs) {
-  const http = wsToHttp(tunnelWs).replace(/\/$/, "");
-  // Cloudflared tunnel root usually 404/200 but reachable; just need TCP+TLS.
-  const res = await fetchTimeout(http, 5000, { method: "GET" });
-  // Any http response (even 404) means tunnel alive.
-  return res.status < 600;
-}
-
-async function pollAnnounceCandidates(onNote) {
+/** Poll every ntfy board at once; the newest decryptable announce wins. */
+async function pollAnnounce() {
   const room = roomIdForCode(state.code);
   const key = keyForCode(state.code);
   const topic = `${NTFY_PREFIX}${room}`;
-  const out = [];
-  const seen = new Set();
-  let board = 0;
-  for (const host of NTFY_HOSTS) {
-    board += 1;
-    try {
-      if (onNote) onNote(`Poll ${host} (${board}/${NTFY_HOSTS.length})…`);
-      const res = await fetchTimeout(`${host}/${topic}/json?since=10m&poll=1`, 9000);
-      const text = await res.text();
-      for (const line of text.split(/\r?\n/)) {
-        if (!line.trim()) continue;
-        let event;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (event.topic !== topic || !event.message) continue;
-        const body = decryptAnnounce(event.message, key);
-        if (!body) continue;
-        if (body.tunnel && !seen.has(body.tunnel)) {
-          seen.add(body.tunnel);
-          out.push({ kind: "tunnel", url: body.tunnel, label: `tunnel ${body.tunnel.slice(0, 40)}…` });
-        }
-        if (Array.isArray(body.lan)) {
-          for (const lan of body.lan) {
-            const http = `http://${lan}`;
-            if (!seen.has(http)) {
-              seen.add(http);
-              out.push({ kind: "lan", http, label: `lan ${lan}` });
-            }
+  const results = await Promise.all(
+    NTFY_HOSTS.map(async (host) => {
+      try {
+        const res = await fetchTimeout(`${host}/${topic}/json?since=10m&poll=1`, 8000);
+        const text = await res.text();
+        const bodies = [];
+        for (const line of text.split(/\r?\n/)) {
+          if (!line.trim()) continue;
+          let event;
+          try {
+            event = JSON.parse(line);
+          } catch {
+            continue;
           }
+          if (event.topic !== topic || !event.message) continue;
+          const body = decryptAnnounce(event.message, key);
+          if (body) bodies.push(body);
         }
+        log(`ntfy ${host.replace(/^https:\/\//, "")}: ${bodies.length} announce`);
+        return newestAnnounce(bodies);
+      } catch (e) {
+        log(`ntfy ${host.replace(/^https:\/\//, "")}: gagal (${e?.name === "AbortError" ? "timeout" : String(e?.message || e)})`, "warn");
+        return null;
       }
-      if (out.length) break; // first board with data wins (freshest)
-    } catch {
-      // try next board
-    }
-  }
-  return out;
+    }),
+  );
+  return newestAnnounce(results);
 }
 
 /** Direct-probe one host:port for the agent /health endpoint. */
@@ -704,9 +788,44 @@ export async function probeHost(host, port = DEFAULT_PORT) {
   return httpToWs(base);
 }
 
+let appStateSub = null;
 export async function boot() {
   await loadStore();
+  if (!appStateSub) {
+    // Back in the app with a dropped link: retry now instead of waiting
+    // out the backoff (Android pauses timers in the background).
+    appStateSub = AppState.addEventListener("change", (s) => {
+      if (s !== "active" || state.connected || state.kicked || state._manualClose || !state.url) return;
+      log("Aplikasi aktif lagi, menyambung ulang sekarang…");
+      retryConnect();
+    });
+  }
   emit({ t: "code", code: state.code });
+}
+
+/** Pair with a code (typed, QR, or a recent PC) and connect. QR hosts are
+ * tried first in parallel; otherwise normal discovery. */
+export async function connectToCode(code, { hosts = [], onProgress } = {}) {
+  const clean = normalizeCode(code);
+  if (clean.length < 8) throw new Error("bad-code");
+  await loadStore();
+  await setLockCode(clean);
+  state.kicked = false;
+  log(`Mulai konek${state.recent.find((r) => r.code === clean)?.name ? ` ke ${state.recent.find((r) => r.code === clean).name}` : ""} (HP: ${state.device?.name || "?"})`);
+  if (hosts.length) {
+    const list = hosts.map((h) => `http://${h.host}:${h.port || DEFAULT_PORT}`);
+    setProgress("probing-candidate", `QR: uji ${list.map(shortHost).join(", ")}`);
+    try {
+      const http = await firstOk(list.map((h) => checkHealth(h, 2500).then(() => h)));
+      setProgress("probing-candidate", `QR: ketemu ${shortHost(http)}`);
+      connect(httpToWs(http));
+      return;
+    } catch {
+      setProgress("probing-candidate", "QR: alamat LAN tidak terjangkau, cari lewat internet…");
+    }
+  }
+  const url = await findPC(onProgress);
+  connect(url);
 }
 
 /** React hook: true once the agent hello (auth accepted) arrives. */
