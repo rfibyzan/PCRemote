@@ -14,6 +14,7 @@ export const NTFY_PREFIX = "pcremote";
 export const STORE_LOCK = "pcremote.lock";
 export const STORE_QUALITY = "pcremote.quality";
 export const STORE_HOSTS = "pcremote.hosts";
+export const STORE_SCROLL = "pcremote.scroll";
 
 // Final bottom navigation: PAD | TYPE | GAME | WIN.
 // Q and Webcam tabs were removed; their functionality lives on via
