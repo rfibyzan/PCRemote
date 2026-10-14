@@ -12,7 +12,7 @@
  * Frames are drawn on a whole-monitor canvas at the rect their header says
  * they cover; the PC is only asked for a (padded) region around the view, so
  * a new sharper region never moves the picture: no rebase, no jump.
- * BAR: scrollbar overlay. The camera is shared across PAD/TYPE/WIN.
+ * BAR: scroll strip (scrollbar.js; natural direction by default, ⚙ toggle). The camera is shared across PAD/TYPE/WIN.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Text, Vibration, View } from "react-native";
@@ -32,6 +32,7 @@ import { COLORS, MonitorChips, ScreenView, getLastFullFrame } from "./components
 import { applyOrientation } from "./orientation";
 import { ConnDot, StreamControls, StreamStats, getSel, setSel, useMonitorSource, useSel } from "./controls";
 import { trackFrameBytes } from "./cursor";
+import { BAR_W, BarScroll, ScrollSettings, sendSwipeScroll } from "./scrollbar";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD } from "./tablayout";
@@ -171,7 +172,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const lastRef = useRef(null);
   const dragRef = useRef(false);
   const vTouch = useRef(null);
-  const barDrag = useRef(null);
   // Last completed tap (for double/triple-tap word/line select).
   const tapRef = useRef({ t: 0, x: 0, y: 0 });
   // Zoom slider (Look, right edge): absolute 1x..MAX_ZOOM, centre-anchored.
@@ -998,7 +998,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     const dy = (t.pageY - last.y) * 1.5;
     lastRef.current = { x: t.pageX, y: t.pageY };
     if (touches.length === 2) {
-      send(msg.scroll(dx, -dy));
+      // Direction/speed follow the ⚙ scroll setting (natural by default).
+      sendSwipeScroll(dx, dy);
       return;
     }
     send(msg.move(dx, dy));
@@ -1035,25 +1036,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         // teardown is best-effort
       }
     }
-  }
-
-  function onBarStart(e) {
-    const t = e.nativeEvent.touches?.[0];
-    barDrag.current = { y: t ? t.pageY : 0 };
-  }
-
-  function onBarMove(e) {
-    const st = barDrag.current;
-    if (!st) return;
-    const t = e.nativeEvent.touches?.[0];
-    if (!t) return;
-    const dy = t.pageY - st.y;
-    st.y = t.pageY;
-    if (dy) send(msg.scroll(0, Math.round(-dy * 5)));
-  }
-
-  function onBarEnd() {
-    barDrag.current = null;
   }
 
   // Zoom slider: RELATIVE drag on a log scale. Touching never jumps the
@@ -1462,20 +1444,13 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             <Pressable style={StyleSheet.absoluteFill} onPress={() => setStreamOpen(false)} accessibilityLabel="Tutup pengaturan stream" />
             <Block style={styles.streamPop} onTouchStart={armStreamTimer}>
               <StreamControls compact />
+              <ScrollSettings />
             </Block>
           </>
         )}
         {bar && (
           <Block style={styles.bar}>
-            <Pressable onPress={() => send(msg.scroll(0, 240))} style={styles.barBtn}>
-              <Text style={styles.barText}>▲</Text>
-            </Pressable>
-            <View style={styles.barTrack} onTouchStart={onBarStart} onTouchMove={onBarMove} onTouchEnd={onBarEnd}>
-              <View style={styles.barThumb} />
-            </View>
-            <Pressable onPress={() => send(msg.scroll(0, -240))} style={styles.barBtn}>
-              <Text style={styles.barText}>▼</Text>
-            </Pressable>
+            <BarScroll />
           </Block>
         )}
       </View>
@@ -1529,7 +1504,7 @@ const styles = StyleSheet.create({
   streamPop: { position: "absolute", top: 4, left: 0, right: 0 },
   clickSeg: { position: "absolute", left: 6, bottom: 6, flexDirection: "row", gap: 4, backgroundColor: "rgba(15,23,42,0.7)", borderRadius: 999, padding: 3 },
   clickSegBtn: { width: 34, height: 26, borderRadius: 999, backgroundColor: "rgba(30,41,59,0.9)", alignItems: "center", justifyContent: "center" },
-  shiftForBar: { left: 46 },
+  shiftForBar: { left: BAR_W + 4 },
   controls: { height: CONTROL_H, paddingHorizontal: 8, paddingBottom: CONTROL_PAD, gap: CONTROL_GAP, overflow: "hidden" },
   modes: { flexDirection: "row", alignItems: "center", gap: 4 },
   subTab: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10 },
@@ -1598,11 +1573,7 @@ const styles = StyleSheet.create({
   zoomText: { color: COLORS.text, fontWeight: "800", fontSize: 11 },
   minimap: { backgroundColor: "rgba(15,23,42,0.85)", borderRadius: 6, borderWidth: 1, borderColor: "#334155", overflow: "hidden" },
   viewport: { position: "absolute", borderWidth: 2, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,0.15)" },
-  bar: { position: "absolute", left: 0, top: 0, bottom: 0, width: 40, paddingVertical: 8, alignItems: "center", justifyContent: "space-between" },
-  barBtn: { backgroundColor: "rgba(30,41,59,0.85)", borderRadius: 8, width: 32, height: 32, alignItems: "center", justifyContent: "center" },
-  barText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
-  barTrack: { flex: 1, width: 14, marginVertical: 6, borderRadius: 7, backgroundColor: "rgba(30,41,59,0.6)", alignItems: "center", justifyContent: "center" },
-  barThumb: { width: 14, height: 44, borderRadius: 7, backgroundColor: "rgba(125,211,252,0.7)" },
+  bar: { position: "absolute", left: 0, top: 0, bottom: 0, width: BAR_W },
   error: { color: COLORS.danger, paddingHorizontal: 8, textAlign: "center", fontSize: 12 },
   btnRow: { flexDirection: "row", gap: 6, height: 34 },
   btn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, alignItems: "center", justifyContent: "center" },
