@@ -24,7 +24,8 @@ Implemented with Expo Router Tabs; `Game` hides the tab bar (fullscreen).
 - One shared WebSocket per app session; `auth` → `hello`; 25 s `ping`.
 
 ## PAD (protected behavior)
-Touchpad (`move` rel ×1.5, 2-finger `scroll`), Left/Mid/Right tap,
+Touchpad (`move` rel ×1.5, 2-finger `scroll`; scroll direction + speed follow
+the ⚙ "Scroll" setting, natural by default, see src/scrollbar.js), Left/Mid/Right tap,
 Hold (down-only) + release for drag, `Click` vs `Look` hint texts,
 live screen + monitor chips (`monitor`).
 
