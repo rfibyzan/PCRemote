@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,9 +11,17 @@ import { fileURLToPath } from "node:url";
  * skips elevated programs listed under HKCU\…\Run. So:
  *   1. a Scheduled Task "PCRemote" (no trigger, RunLevel Highest, interactive
  *      token of the current user) launches the exe already elevated, no UAC;
- *   2. HKCU\…\Run "PC Remote" = schtasks.exe /run /tn "PCRemote" fires it at
- *      log-on. That Run value is what Task Manager's Startup tab lists, and
- *      disabling it there writes Explorer\StartupApproved\Run "PC Remote".
+ *   2. HKCU\…\Run "PC Remote" fires it at log-on. That Run value is what
+ *      Task Manager's Startup tab lists, and disabling it there writes
+ *      Explorer\StartupApproved\Run "PC Remote".
+ *   3. The Run value points at PCRemoteStart.exe, a tiny non-elevated helper
+ *      (runtime/agent/autostart/PCRemoteStart.cs) that just runs
+ *      `schtasks /run /tn "PCRemote"` hidden. Task Manager names the entry
+ *      after the target's FileDescription, so with the helper it reads
+ *      "PC Remote" (our icon) instead of "Task Scheduler Configuration Tool".
+ *      The helper is compiled on this PC with the csc.exe every Windows 10/11
+ *      ships in .NET Framework 4.x; if that fails the Run value falls back to
+ *      schtasks.exe directly (works the same, only the name differs).
  *
  * Pure helpers (exported for autostart_test.js) are platform-independent;
  * the side-effect functions only touch Windows and use execFile (no shell).
@@ -28,6 +36,8 @@ export const APPROVED_ENABLED_HEX = "02" + "00".repeat(11);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const agentDir = path.resolve(here, "..");
+
+export const HELPER_NAME = "PCRemoteStart.exe";
 
 function xmlEscape(v) {
   return String(v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[ch]);
@@ -94,9 +104,64 @@ export function regPath(env = process.env) {
   return path.win32.join(root, "System32", "reg.exe");
 }
 
-/** The HKCU Run command Task Manager lists. */
+/** The HKCU Run command Task Manager lists (fallback form, no helper). */
 export function buildRunCommand(schtasks = "C:\\Windows\\System32\\schtasks.exe") {
   return `"${schtasks}" /run /tn "${TASK_NAME}"`;
+}
+
+/** The HKCU Run command when PCRemoteStart.exe is available. */
+export function buildHelperRunCommand(helperExe) {
+  return `"${helperExe}"`;
+}
+
+/** Which kind of Run value this is: "helper" (PCRemoteStart.exe), "schtasks"
+ * (the fallback / pre-helper form), "other" (something else), "" (none). */
+export function classifyRunValue(data) {
+  const v = String(data || "").trim();
+  if (!v) return "";
+  const m = v.match(/^"([^"]*)"/) || v.match(/^(\S+)/);
+  const file = path.win32.basename(m ? m[1] : v).toLowerCase();
+  if (file === HELPER_NAME.toLowerCase()) return "helper";
+  if (file === "schtasks.exe" || file === "schtasks") {
+    const tn = v.match(/\/tn\s+"?([^"]+?)"?\s*$/i);
+    return tn && tn[1].toLowerCase() === TASK_NAME.toLowerCase() ? "schtasks" : "other";
+  }
+  return "other";
+}
+
+/** csc.exe from .NET Framework 4.x, 64-bit first. */
+export function cscCandidates(env = process.env) {
+  const root = env.SystemRoot || env.SYSTEMROOT || env.windir || env.WINDIR || "C:\\Windows";
+  return ["Framework64", "Framework"].map((fw) => path.win32.join(root, "Microsoft.NET", fw, "v4.0.30319", "csc.exe"));
+}
+
+export function findCsc(env = process.env, exists = existsSync) {
+  return cscCandidates(env).find((p) => exists(p)) || "";
+}
+
+/** Source, icon and output of the helper. They live together in
+ * runtime\agent\autostart: next to the sources (so the mtime check is
+ * simple), inside the folder the release zip already ships, and writable by
+ * the elevated agent. `p` is injectable so tests can use path.win32. */
+export function helperPaths(dir = agentDir, p = path) {
+  const base = p.join(dir, "autostart");
+  return { dir: base, src: p.join(base, "PCRemoteStart.cs"), ico: p.join(base, "PCRemoteStart.ico"), exe: p.join(base, HELPER_NAME) };
+}
+
+/** csc command line (argv for execFile, no shell). C# 5, winexe = no console,
+ * default manifest = asInvoker. The icon is optional. */
+export function cscArgs({ src, ico, out }) {
+  const a = ["/nologo", "/noconfig", "/target:winexe", "/platform:anycpu", "/optimize+", "/r:System.dll", `/out:${out}`];
+  if (ico) a.push(`/win32icon:${ico}`);
+  a.push(src);
+  return a;
+}
+
+/** Rebuild when the exe is missing or older than its source or icon. mtimes
+ * in ms; 0/undefined = file missing. */
+export function helperNeedsBuild({ exeMtime, srcMtime, icoMtime }) {
+  if (!exeMtime) return true;
+  return exeMtime < (srcMtime || 0) || exeMtime < (icoMtime || 0);
 }
 
 /** reg.exe prints REG_BINARY as one hex string. A missing value counts as
@@ -133,16 +198,26 @@ function samePath(a, b) {
 
 /** Combine the probes into what the dashboard shows. "on" needs all three:
  * the task, the Run value, and not switched off in Task Manager. */
-export function computeAutostart({ exePath, taskExists, taskCommand, runValue, approvedHex }) {
+/** Combine the probes into what the dashboard shows. "on" needs all three:
+ * the task, the Run value (helper or schtasks form), and not switched off in
+ * Task Manager. `upgrade` (internal) = on, but the Run value is not the helper
+ * form, so a repair would rename the Task Manager entry. `helperNote` becomes
+ * `note`, a soft line the dashboard shows while on the schtasks fallback. */
+export function computeAutostart({ exePath, taskExists, taskCommand, runValue, approvedHex, helperNote }) {
   if (!exePath) return { available: false, on: false, reason: "PCRemote.exe tidak ditemukan di folder ini" };
   const approved = parseStartupApproved(approvedHex);
-  const hasRun = Boolean(runValue);
+  const runKind = classifyRunValue(runValue);
+  const hasRun = Boolean(runKind);
   const on = Boolean(taskExists) && hasRun && !approved.disabled;
   const out = { available: true, on };
   if (hasRun && approved.disabled) out.reason = "Dimatikan di Task Manager › Startup";
   else if (taskExists && !hasRun) out.reason = "Entri Startup hilang";
   else if (hasRun && !taskExists) out.reason = "Task Scheduler \"PCRemote\" hilang";
   if (on && taskCommand && !samePath(taskCommand, exePath)) out.stale = true;
+  if (on && runKind !== "helper") {
+    out.upgrade = true;
+    if (helperNote) out.note = helperNote;
+  }
   return out;
 }
 
@@ -181,6 +256,84 @@ function failText(r) {
   return t ? t.slice(0, 200) : `exit ${r.code}`;
 }
 
+let helperError = "";
+
+function mtimeOf(file) {
+  try {
+    return statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/** Short reason for the schtasks fallback, or "" when the helper is usable. */
+function helperNoteFor(err) {
+  return err ? `Nama di Task Manager: schtasks (${err})` : "";
+}
+
+/** True when the helper exists or could be compiled here (cheap, sync). */
+export function helperBuildable() {
+  if (process.platform !== "win32") return false;
+  const h = helperPaths();
+  return existsSync(h.exe) || (existsSync(h.src) && Boolean(findCsc()));
+}
+
+/** Make sure PCRemoteStart.exe is present and current; returns its path or
+ * "" (and remembers why in helperError). Never throws. */
+export async function ensureHelper() {
+  if (process.platform !== "win32") return "";
+  const h = helperPaths();
+  const srcMtime = mtimeOf(h.src);
+  const icoMtime = mtimeOf(h.ico);
+  const exeMtime = mtimeOf(h.exe);
+  if (!srcMtime) {
+    helperError = exeMtime ? "" : "sumber helper tidak ada";
+    return exeMtime ? h.exe : "";
+  }
+  if (!helperNeedsBuild({ exeMtime, srcMtime, icoMtime })) {
+    helperError = "";
+    return h.exe;
+  }
+  const csc = findCsc();
+  if (!csc) {
+    // An older helper still works (only the name/icon might be stale).
+    helperError = exeMtime ? "" : "csc tidak ada";
+    return exeMtime ? h.exe : "";
+  }
+  try {
+    mkdirSync(h.dir, { recursive: true });
+  } catch {
+    // folder exists or cannot be made; csc reports the real error
+  }
+  const tmpOut = path.join(h.dir, `PCRemoteStart.${process.pid}.tmp.exe`);
+  const r = await run(csc, cscArgs({ src: h.src, ico: icoMtime ? h.ico : "", out: tmpOut }));
+  if (!r.ok || !existsSync(tmpOut)) {
+    try {
+      unlinkSync(tmpOut);
+    } catch {
+      // nothing written
+    }
+    helperError = exeMtime ? "" : "kompilasi gagal";
+    if (r.stdout || r.stderr) console.log(`PCRemoteStart.exe build failed: ${failText(r)}`);
+    return exeMtime ? h.exe : "";
+  }
+  // Swap in the new exe. If the old one is locked (it only runs for a moment
+  // at log-on), keep the old one; it does the same job.
+  try {
+    renameSync(tmpOut, h.exe);
+  } catch {
+    try {
+      unlinkSync(tmpOut);
+    } catch {
+      // ignore
+    }
+    helperError = existsSync(h.exe) ? "" : "kompilasi gagal";
+    return existsSync(h.exe) ? h.exe : "";
+  }
+  helperError = "";
+  return h.exe;
+}
+
 export async function getAutostart() {
   if (process.platform !== "win32") return { available: false, on: false, reason: "Hanya di Windows" };
   const exePath = findExe();
@@ -199,6 +352,7 @@ export async function getAutostart() {
     taskCommand: task.ok ? parseTaskCommand(task.stdout) : "",
     runValue: runVal?.data || "",
     approvedHex: appr?.data || "",
+    helperNote: helperNoteFor(helperError || (helperBuildable() ? "" : "csc tidak ada")),
   });
 }
 
@@ -220,7 +374,9 @@ export async function setAutostart(on) {
         // temp file already gone
       }
     }
-    const runSet = await run(reg, ["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", buildRunCommand(schtasksPath()), "/f"]);
+    const helper = await ensureHelper();
+    const runCmd = helper ? buildHelperRunCommand(helper) : buildRunCommand(schtasksPath());
+    const runSet = await run(reg, ["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", runCmd, "/f"]);
     if (!runSet.ok) throw new Error(`Registry Run: ${failText(runSet)}`);
     const appr = await run(reg, ["add", APPROVED_KEY, "/v", RUN_VALUE, "/t", "REG_BINARY", "/d", APPROVED_ENABLED_HEX, "/f"]);
     if (!appr.ok) throw new Error(`StartupApproved: ${failText(appr)}`);
@@ -260,7 +416,7 @@ export function createAutostartCache(maxAgeMs = 5000) {
   return {
     get() {
       if (process.platform === "win32" && Date.now() - at > maxAgeMs) void refresh();
-      const { stale, ...pub } = value;
+      const { stale, upgrade, ...pub } = value;
       return pub;
     },
     raw: () => value,
