@@ -76,3 +76,4 @@ Dashboard → **Mulai otomatis** toggle. It creates a Task Scheduler task
 log-on. That entry shows in Task Manager › Startup; disabling it there turns
 the dashboard toggle off too. Turning the toggle off removes the Run value,
 its StartupApproved flag and the task.
+The Run value points at `runtime\agent\autostart\PCRemoteStart.exe`, a tiny non-elevated helper (built on first use from `PCRemoteStart.cs` with the .NET Framework `csc.exe` Windows already has) that starts the task hidden, so Task Manager lists it as **PC Remote** with our icon; if it can't be built, the Run value falls back to `schtasks.exe` directly.
