@@ -15,8 +15,10 @@
  * BAR: scroll strip (scrollbar.js; natural direction by default, ⚙ toggle). The camera is shared across PAD/TYPE/WIN.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Text, Vibration, View } from "react-native";
+import { Image, Pressable, ScrollView, StyleSheet, Vibration, View } from "react-native";
+import Text from "./AppText";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Reanimated, {
   cancelAnimation,
   runOnJS,
@@ -35,7 +37,7 @@ import { trackFrameBytes } from "./cursor";
 import { BAR_W, BarScroll, ScrollSettings, sendSwipeScroll } from "./scrollbar";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
-import { CONTROL_H, CONTROL_GAP, CONTROL_PAD } from "./tablayout";
+import { CONTROL_H, CONTROL_GAP, CONTROL_PAD, TOOLBAR_H } from "./tablayout";
 import {
   MAX_ZOOM,
   camFor,
@@ -79,7 +81,7 @@ const DRAG_ARM_MS = 70;
 // (view px per 16 ms tick).
 const EDGE_BAND = 32;
 const EDGE_SPEED = 9;
-const TAB_BAR_STYLE = { backgroundColor: "#151d2e", borderTopColor: "#1e293b" };
+const TAB_BAR_STYLE = { backgroundColor: "#1c1c1f", borderTopColor: "#2c2c30" };
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -135,12 +137,46 @@ function Block({ children, ...props }) {
   );
 }
 
+// Toolbar under the viewer (Sill style): icon + small label buttons, scrolls
+// sideways when they don't fit; Lipat (fold) stays pinned at the right.
+function Toolbar({ items, fold, onFold }) {
+  return (
+    <View style={styles.toolbar}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tbScroll} contentContainerStyle={styles.tbContent}>
+        {items.filter(Boolean).map((it) => (
+          <Pressable
+            key={it.id}
+            onPress={it.onPress}
+            hitSlop={2}
+            accessibilityLabel={it.label}
+            style={({ pressed }) => [styles.tbBtn, it.on && styles.tbBtnOn, pressed && styles.tbBtnPressed]}
+          >
+            <MaterialCommunityIcons name={it.icon} size={19} color={it.on ? "#ffffff" : COLORS.text} />
+            <Text style={[styles.tbLabel, it.on && styles.tbLabelOn]}>{it.label}</Text>
+          </Pressable>
+        ))}
+      </ScrollView>
+      <Pressable
+        onPress={onFold}
+        hitSlop={2}
+        accessibilityLabel={fold ? "Buka kontrol" : "Lipat kontrol"}
+        style={({ pressed }) => [styles.tbBtn, pressed && styles.tbBtnPressed]}
+      >
+        <MaterialCommunityIcons name={fold ? "chevron-up" : "chevron-down"} size={22} color={COLORS.text} />
+        <Text style={styles.tbLabel}>{fold ? "Buka" : "Lipat"}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 export default function ViewerPanel({ title = "", touchpad = true, actions = true, onTap = null, children = null }) {
   // Layout C: header row + viewer (flex: 1) + fixed CONTROL_H area. The
   // control area is identical on PAD / TYPE / WIN, so the viewer is too.
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
   const shared = useSel();
   const bar = shared.bar;
+  // Lipat: hide the tab's control area so the stream gets that height too.
+  const fold = !!shared.fold;
   const mode = shared.mode === "Click" ? "Click" : "Look";
   const looking = mode === "Look";
   const clickBtn = shared.clickBtn;
@@ -1364,26 +1400,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                 )}
               </View>
             )}
-            {/* Mode row at the bottom: Click | Look, Bar, and Fit. */}
-            <View style={styles.lookBottom} pointerEvents="box-none">
-              <Block style={styles.modeSeg}>
-                {["Click", "Look"].map((m) => (
-                  <Pressable key={m} onPress={() => setSel({ mode: m })} hitSlop={3} style={[styles.modeBtn, mode === m && styles.modeBtnOn]}>
-                    <Text style={[styles.modeText, mode === m && styles.modeTextOn]}>{m}</Text>
-                  </Pressable>
-                ))}
-              </Block>
-              <Block style={styles.modeSeg}>
-                <Pressable onPress={() => setSel({ bar: !bar })} hitSlop={3} style={[styles.modeBtn, bar && styles.modeBtnOn]}>
-                  <Text style={[styles.modeText, bar && styles.modeTextOn]}>Bar</Text>
-                </Pressable>
-              </Block>
-              {camTools && (
-                <Block style={styles.zoomRow}>
-                  <Pressable onPress={resetCrop} style={styles.zoomBtn}><Text style={styles.zoomText}>Fit</Text></Pressable>
-                </Block>
-              )}
-            </View>
           </View>
           {camTools && reticle && (
             <Reanimated.View pointerEvents="none" style={[styles.reticle, retStyle]}>
@@ -1394,17 +1410,16 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
               <View style={styles.retDot} />
             </Reanimated.View>
           )}
-          {camTools && (
+          {(full || (camTools && zoomed)) && (
             <Block style={[styles.toolRow, bar && styles.shiftForBar]}>
-              <Pressable onPress={toggleFull} style={[styles.toolBtn, full && styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Layar penuh">
-                <Text style={[styles.toolText, full && styles.toolTextOn]}>{full ? "✕" : "⛶"}</Text>
-              </Pressable>
-              <Pressable onPress={() => setReticle((v) => !v)} style={[styles.toolBtn, reticle && styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Bidik presisi">
-                <Text style={[styles.toolText, reticle && styles.toolTextOn]}>⊕</Text>
-              </Pressable>
-              {zoomed && (
+              {full && (
+                <Pressable onPress={toggleFull} style={[styles.toolBtn, styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Keluar layar penuh">
+                  <Text style={[styles.toolText, styles.toolTextOn]}>✕</Text>
+                </Pressable>
+              )}
+              {camTools && zoomed && (
                 <View style={styles.sharpPill} pointerEvents="none">
-                  <View style={[styles.sharpDot, { backgroundColor: sharp ? "#22c55e" : "#f59e0b" }]} />
+                  <View style={[styles.sharpDot, { backgroundColor: sharp ? "#34c759" : "#ff9f0a" }]} />
                   <Text style={styles.sharpText}>{sharp ? "tajam" : "memuat"}</Text>
                 </View>
               )}
@@ -1455,6 +1470,20 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         )}
       </View>
       {!full && (
+        <Toolbar
+          items={[
+            { id: "click", icon: "cursor-default-click-outline", label: "Click", on: mode === "Click", onPress: () => setSel({ mode: "Click" }) },
+            { id: "look", icon: "eye-outline", label: "Look", on: mode === "Look", onPress: () => setSel({ mode: "Look" }) },
+            { id: "bar", icon: "gesture-swipe-vertical", label: "Bar", on: bar, onPress: () => setSel({ bar: !bar }) },
+            camTools && { id: "fit", icon: "fit-to-screen-outline", label: "Fit", onPress: resetCrop },
+            camTools && { id: "aim", icon: "crosshairs", label: "Bidik", on: reticle, onPress: () => setReticle((v) => !v) },
+            camTools && { id: "full", icon: "fullscreen", label: "Penuh", onPress: toggleFull },
+          ]}
+          fold={fold}
+          onFold={() => setSel({ fold: !fold })}
+        />
+      )}
+      {!full && !fold && (
       <View style={styles.controls}>
       {actions && (
         <View style={styles.btnRow}>
@@ -1500,28 +1529,36 @@ const styles = StyleSheet.create({
   topScrollContent: { flexDirection: "row", alignItems: "center", gap: 4 },
   gear: { backgroundColor: COLORS.chip, borderRadius: 999, width: 30, height: 28, alignItems: "center", justifyContent: "center" },
   gearText: { color: COLORS.muted, fontSize: 15, fontWeight: "800" },
-  fpsPill: { position: "absolute", top: 6, right: 6, maxWidth: "75%", backgroundColor: "rgba(15,23,42,0.8)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 8 },
+  fpsPill: { position: "absolute", top: 6, right: 6, maxWidth: "75%", backgroundColor: "rgba(22,22,24,0.8)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 8 },
   streamPop: { position: "absolute", top: 4, left: 0, right: 0 },
-  clickSeg: { position: "absolute", left: 6, bottom: 6, flexDirection: "row", gap: 4, backgroundColor: "rgba(15,23,42,0.7)", borderRadius: 999, padding: 3 },
-  clickSegBtn: { width: 34, height: 26, borderRadius: 999, backgroundColor: "rgba(30,41,59,0.9)", alignItems: "center", justifyContent: "center" },
+  clickSeg: { position: "absolute", left: 6, bottom: 6, flexDirection: "row", gap: 4, backgroundColor: "rgba(22,22,24,0.7)", borderRadius: 999, padding: 3 },
+  clickSegBtn: { width: 34, height: 26, borderRadius: 999, backgroundColor: "rgba(44,44,48,0.9)", alignItems: "center", justifyContent: "center" },
   shiftForBar: { left: BAR_W + 4 },
+  toolbar: { flexDirection: "row", alignItems: "center", gap: 6, height: TOOLBAR_H, paddingHorizontal: 8, marginBottom: 6 },
+  tbScroll: { flex: 1 },
+  tbContent: { flexDirection: "row", alignItems: "center", gap: 6 },
+  tbBtn: { minWidth: 48, height: TOOLBAR_H, paddingHorizontal: 6, borderRadius: 12, backgroundColor: COLORS.chip, alignItems: "center", justifyContent: "center", gap: 1 },
+  tbBtnOn: { backgroundColor: COLORS.fill },
+  tbBtnPressed: { opacity: 0.7 },
+  tbLabel: { color: COLORS.text, fontSize: 10, fontWeight: "500" },
+  tbLabelOn: { color: "#ffffff", fontWeight: "700" },
   controls: { height: CONTROL_H, paddingHorizontal: 8, paddingBottom: CONTROL_PAD, gap: CONTROL_GAP, overflow: "hidden" },
   modes: { flexDirection: "row", alignItems: "center", gap: 4 },
   subTab: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10 },
-  subTabActive: { backgroundColor: "#0c4a6e" },
+  subTabActive: { backgroundColor: "#5e5ce6" },
   subText: { color: COLORS.muted, fontWeight: "700" },
   subTextActive: { color: COLORS.text },
-  hint: { color: "#e2e8f0", fontSize: 11, fontWeight: "700" },
-  hintPill: { alignSelf: "flex-start", backgroundColor: "rgba(15,23,42,0.8)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+  hint: { color: "#e5e5ea", fontSize: 11, fontWeight: "700" },
+  hintPill: { alignSelf: "flex-start", backgroundColor: "rgba(22,22,24,0.8)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
   overlayTop: { position: "absolute", left: 6, right: 6, top: 32, gap: 4 },
   stalled: { backgroundColor: "rgba(127,29,29,0.9)", borderRadius: 8, padding: 8 },
-  stalledText: { color: "#e8eefc", fontSize: 12, fontWeight: "700", textAlign: "center" },
-  blocked: { backgroundColor: "rgba(30,41,59,0.9)", borderRadius: 8, padding: 6 },
+  stalledText: { color: "#f2f2f5", fontSize: 12, fontWeight: "700", textAlign: "center" },
+  blocked: { backgroundColor: "rgba(44,44,48,0.9)", borderRadius: 8, padding: 6 },
   blockedText: { color: COLORS.muted, fontSize: 11, fontWeight: "700", textAlign: "center" },
   clickBtn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  clickBtnActive: { backgroundColor: "#38bdf8" },
+  clickBtnActive: { backgroundColor: "#7c7aff" },
   clickText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
-  clickTextActive: { color: "#0b1220" },
+  clickTextActive: { color: "#ffffff" },
   viewerBox: { flex: 1, minHeight: 160, marginHorizontal: 8, marginBottom: 6, position: "relative" },
   viewerWrap: { flex: 1, borderRadius: 12, overflow: "hidden", backgroundColor: "#000" },
   canvasFill: { width: "100%", height: "100%" },
@@ -1533,46 +1570,38 @@ const styles = StyleSheet.create({
     height: RING,
     borderRadius: RING / 2,
     borderWidth: 2,
-    borderColor: "#38bdf8",
+    borderColor: "#7c7aff",
     backgroundColor: "transparent",
   },
   lookBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: 6, gap: 6 },
   zoomSlider: { position: "absolute", right: 2, top: 40, bottom: 56, width: 56, alignItems: "center" },
   zTouch: { flex: 1, width: 56, alignItems: "center" },
-  zTrack: { position: "absolute", top: 0, bottom: 0, right: 14, width: 8, borderRadius: 4, backgroundColor: "rgba(30,41,59,0.75)" },
-  zTick: { position: "absolute", left: 0, height: 14, paddingHorizontal: 4, borderRadius: 7, backgroundColor: "rgba(2,6,23,0.7)", justifyContent: "center" },
-  zTickText: { color: "#cbd5e1", fontSize: 8, fontWeight: "800" },
+  zTrack: { position: "absolute", top: 0, bottom: 0, right: 14, width: 8, borderRadius: 4, backgroundColor: "rgba(44,44,48,0.75)" },
+  zTick: { position: "absolute", left: 0, height: 14, paddingHorizontal: 4, borderRadius: 7, backgroundColor: "rgba(10,10,12,0.7)", justifyContent: "center" },
+  zTickText: { color: "#d1d1d6", fontSize: 8, fontWeight: "800" },
   zKnob: { position: "absolute", right: 0, width: 40, height: 26, borderRadius: 13, backgroundColor: "rgba(250,204,21,0.95)", alignItems: "center", justifyContent: "center" },
   zKnobText: { color: "#1c1400", fontSize: 10, fontWeight: "900" },
   toolRow: { position: "absolute", left: 6, top: 6, flexDirection: "row", alignItems: "center", gap: 4 },
-  modeSeg: { flexDirection: "row", gap: 3, backgroundColor: "rgba(15,23,42,0.75)", borderRadius: 999, padding: 3 },
-  modeBtn: { height: 26, paddingHorizontal: 8, borderRadius: 999, alignItems: "center", justifyContent: "center" },
-  modeBtnOn: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: "#38bdf8" },
-  modeText: { color: "#cbd5e1", fontWeight: "800", fontSize: 12 },
-  modeTextOn: { color: "#7dd3fc" },
-  toolBtn: { width: 30, height: 26, borderRadius: 999, backgroundColor: "rgba(15,23,42,0.8)", alignItems: "center", justifyContent: "center" },
-  toolBtnOn: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: "#38bdf8" },
-  toolText: { color: "#e2e8f0", fontSize: 13, fontWeight: "800" },
-  toolTextOn: { color: "#7dd3fc" },
-  sharpPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(15,23,42,0.7)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 7 },
+  toolBtn: { width: 30, height: 26, borderRadius: 999, backgroundColor: "rgba(22,22,24,0.8)", alignItems: "center", justifyContent: "center" },
+  toolBtnOn: { backgroundColor: "#5e5ce6", borderWidth: 1, borderColor: "#7c7aff" },
+  toolText: { color: "#e5e5ea", fontSize: 13, fontWeight: "800" },
+  toolTextOn: { color: "#a5a1ff" },
+  sharpPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(22,22,24,0.7)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 7 },
   sharpDot: { width: 7, height: 7, borderRadius: 4 },
-  sharpText: { color: "#cbd5e1", fontSize: 9, fontWeight: "800" },
-  clickSegInline: { flexDirection: "row", gap: 3, backgroundColor: "rgba(15,23,42,0.7)", borderRadius: 999, padding: 3 },
-  aimBtn: { backgroundColor: "#38bdf8", borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
-  aimText: { color: "#02101f", fontWeight: "900", fontSize: 12 },
+  sharpText: { color: "#d1d1d6", fontSize: 9, fontWeight: "800" },
+  clickSegInline: { flexDirection: "row", gap: 3, backgroundColor: "rgba(22,22,24,0.7)", borderRadius: 999, padding: 3 },
+  aimBtn: { backgroundColor: "#7c7aff", borderRadius: 999, paddingVertical: 6, paddingHorizontal: 12 },
+  aimText: { color: "#ffffff", fontWeight: "900", fontSize: 12 },
   reticle: { position: "absolute", left: "50%", top: "50%", width: 40, height: 40, marginLeft: -20, marginTop: -20 },
   retLine: { position: "absolute", backgroundColor: "#fff", borderRadius: 1, shadowColor: "#000", shadowOpacity: 0.8, shadowRadius: 2, elevation: 2 },
   retDot: { position: "absolute", left: 17, top: 17, width: 6, height: 6, borderRadius: 3, backgroundColor: "#ef4444" },
   viewerBoxFull: { marginHorizontal: 0, marginBottom: 0 },
-  zoomRow: { flexDirection: "row", gap: 6, justifyContent: "center" },
   lookBottom: { flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "flex-end", paddingRight: 56 },
   zoomRowScroll: { flexGrow: 1, alignItems: "center" },
   zoomBadge: { backgroundColor: "rgba(124,45,18,0.9)", borderRadius: 8, paddingVertical: 4, paddingHorizontal: 12 },
   zoomBadgeText: { color: "#fed7aa", fontWeight: "800", fontSize: 12 },
-  zoomBtn: { backgroundColor: "rgba(30,41,59,0.85)", borderRadius: 8, paddingVertical: 6, paddingHorizontal: 9 },
-  zoomText: { color: COLORS.text, fontWeight: "800", fontSize: 11 },
-  minimap: { backgroundColor: "rgba(15,23,42,0.85)", borderRadius: 6, borderWidth: 1, borderColor: "#334155", overflow: "hidden" },
-  viewport: { position: "absolute", borderWidth: 2, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,0.15)" },
+  minimap: { backgroundColor: "rgba(22,22,24,0.85)", borderRadius: 6, borderWidth: 1, borderColor: "#3a3a3e", overflow: "hidden" },
+  viewport: { position: "absolute", borderWidth: 2, borderColor: "#7c7aff", backgroundColor: "rgba(124,122,255,0.18)" },
   bar: { position: "absolute", left: 0, top: 0, bottom: 0, width: BAR_W },
   error: { color: COLORS.danger, paddingHorizontal: 8, textAlign: "center", fontSize: 12 },
   btnRow: { flexDirection: "row", gap: 6, height: 34 },

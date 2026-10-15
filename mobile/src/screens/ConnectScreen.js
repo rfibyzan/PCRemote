@@ -5,7 +5,8 @@
  * Recent PCs connect with one tap; Log out forgets the current PC.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import Text from "../AppText";
 import { COLORS } from "../components";
 import {
   addListener,
@@ -207,20 +208,20 @@ const styles = StyleSheet.create({
   input: { backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 12, padding: 14, fontSize: 20, letterSpacing: 3, textAlign: "center" },
   row: { flexDirection: "row", gap: 8, alignItems: "center" },
   flex: { flex: 1 },
-  primary: { flex: 1, backgroundColor: "#0284c7", borderRadius: 12, paddingVertical: 14, alignItems: "center" },
-  primaryBusy: { backgroundColor: "#0c4a6e" },
-  primaryOff: { backgroundColor: "#1e293b" },
+  primary: { flex: 1, backgroundColor: "#5e5ce6", borderRadius: 12, paddingVertical: 14, alignItems: "center" },
+  primaryBusy: { backgroundColor: "#5e5ce6" },
+  primaryOff: { backgroundColor: "#2c2c30" },
   primaryText: { color: "#fff", fontWeight: "800", fontSize: 15 },
   cancel: { backgroundColor: "#7f1d1d", borderRadius: 12, paddingVertical: 14, paddingHorizontal: 16 },
-  cancelText: { color: "#e8eefc", fontWeight: "800" },
+  cancelText: { color: "#f2f2f5", fontWeight: "800" },
   status: { textAlign: "center", fontSize: 12, fontWeight: "700" },
   message: { color: COLORS.accent, textAlign: "center" },
-  retry: { backgroundColor: "#0c4a6e", borderRadius: 10, padding: 12, alignItems: "center" },
-  retryText: { color: "#e8eefc", fontWeight: "800" },
-  scanBig: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: "#38bdf8", borderRadius: 14, paddingVertical: 18, alignItems: "center" },
-  scanBigText: { color: "#e0f2fe", fontWeight: "800", fontSize: 16 },
-  scan: { borderWidth: 1, borderColor: "#38bdf8", borderRadius: 12, padding: 12, alignItems: "center" },
-  scanText: { color: "#7dd3fc", fontWeight: "800" },
+  retry: { backgroundColor: "#5e5ce6", borderRadius: 10, padding: 12, alignItems: "center" },
+  retryText: { color: "#f2f2f5", fontWeight: "800" },
+  scanBig: { backgroundColor: "#5e5ce6", borderWidth: 1, borderColor: "#7c7aff", borderRadius: 14, paddingVertical: 18, alignItems: "center" },
+  scanBigText: { color: "#ffffff", fontWeight: "800", fontSize: 16 },
+  scan: { borderWidth: 1, borderColor: "#7c7aff", borderRadius: 12, padding: 12, alignItems: "center" },
+  scanText: { color: "#a5a1ff", fontWeight: "800" },
   logout: { borderWidth: 1, borderColor: "#7f1d1d", borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16 },
   logoutText: { color: COLORS.danger, fontWeight: "800" },
 });

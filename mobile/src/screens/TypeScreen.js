@@ -6,7 +6,8 @@
  * Protocol/functions preserved: key tap, down-only hold, combo chords, text.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import Text from "../AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { COLORS } from "../components";
 import ViewerPanel from "../viewer";
@@ -220,8 +221,8 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", gap: 5 },
   key: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 8, alignItems: "center", justifyContent: "center", minWidth: 0 },
   keyWide: { flex: 2 },
-  keyAccent: { backgroundColor: "#075985" },
-  keyActive: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: COLORS.accent },
+  keyAccent: { backgroundColor: "#4b49c9" },
+  keyActive: { backgroundColor: "#5e5ce6", borderWidth: 1, borderColor: COLORS.accent },
   keyPressed: { opacity: 0.6 },
   keyText: { color: COLORS.text, fontSize: 12, fontWeight: "700" },
   keyTextActive: { color: COLORS.accent },

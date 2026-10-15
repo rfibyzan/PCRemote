@@ -39,3 +39,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Optional local UI font (not redistributable): kept out of git, still sent
+# to EAS through .easignore. See assets/fonts/README.md.
+/assets/fonts/*.otf
+/assets/fonts/*.ttf

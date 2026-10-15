@@ -1,13 +1,14 @@
 /** Shared pieces of the connect + devices screens: the live connection log
  * (with Share/copy) and the recent-PC list. */
 import React, { useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
+import { Alert, Pressable, ScrollView, Share, StyleSheet, View } from "react-native";
+import Text from "../AppText";
 import { COLORS } from "../components";
 import { addListener, connLog, connLogText, getRecent } from "../connection";
 import { clockOf } from "../connlog";
 import { agoText } from "../recent";
 
-const LEVEL_COLOR = { error: COLORS.danger, warn: "#fbbf24", ok: COLORS.ok, info: "#cbd5e1" };
+const LEVEL_COLOR = { error: COLORS.danger, warn: "#fbbf24", ok: COLORS.ok, info: "#d1d1d6" };
 
 export function useConnLog() {
   const [items, setItems] = useState(connLog.list());
@@ -107,20 +108,20 @@ export const panelStyles = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
-  logBox: { backgroundColor: "#0f172a", borderRadius: 12, padding: 10, gap: 4 },
+  logBox: { backgroundColor: "#161618", borderRadius: 12, padding: 10, gap: 4 },
   logHead: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 2 },
   logTitle: { color: COLORS.muted, fontSize: 12, fontWeight: "800", flex: 1, letterSpacing: 1, textTransform: "uppercase" },
   logBtn: { color: COLORS.accent, fontSize: 13, fontWeight: "800", paddingVertical: 6, paddingHorizontal: 4 },
   logLine: { fontSize: 11, fontFamily: "monospace", paddingVertical: 1 },
-  logTime: { color: "#64748b" },
-  logEmpty: { color: "#64748b", fontSize: 12 },
+  logTime: { color: "#6e6e73" },
+  logEmpty: { color: "#6e6e73", fontSize: 12 },
   sectionTitle: panelStylesTitle(),
   recentBox: { gap: 6 },
   recentRow: { flexDirection: "row", alignItems: "center", backgroundColor: COLORS.card, borderRadius: 12 },
   recentMain: { flex: 1, paddingVertical: 14, paddingHorizontal: 14 },
   recentName: { color: COLORS.text, fontWeight: "800", fontSize: 14 },
   recentMeta: { color: COLORS.muted, fontSize: 12, marginTop: 2 },
-  recentX: { paddingHorizontal: 18, paddingVertical: 16, borderLeftWidth: 1, borderLeftColor: "#1e293b" },
+  recentX: { paddingHorizontal: 18, paddingVertical: 16, borderLeftWidth: 1, borderLeftColor: "#2c2c30" },
   recentXText: { color: COLORS.danger, fontWeight: "800", fontSize: 18 },
 });
 

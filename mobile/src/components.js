@@ -1,19 +1,23 @@
 /** Shared presentational components: monitor chips, screen views. */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, StyleSheet, View } from "react-native";
+import Text from "./AppText";
 import { useFocusEffect } from "expo-router";
 import { bytesToBase64 } from "./protocol";
 import { releaseScreenHandler, setScreenHandler } from "./connection";
 import { trackDropped, trackReceived } from "./cursor";
 
+// Neutral greys + one indigo accent (Sill-style, 2026-10-15).
 export const COLORS = {
-  bg: "#0b1220",
-  card: "#151d2e",
-  chip: "#1e293b",
-  accent: "#7dd3fc",
-  text: "#e8eefc",
-  muted: "#94a3b8",
-  ok: "#4ade80",
+  bg: "#0b0b0d",
+  card: "#1c1c1f",
+  chip: "#2c2c30",
+  fill: "#5e5ce6", // selected button / primary action background
+  line: "#3a3a3e",
+  accent: "#a5a1ff",
+  text: "#f2f2f5",
+  muted: "#8e8e93",
+  ok: "#34c759",
   danger: "#f87171",
 };
 
@@ -327,7 +331,7 @@ const styles = StyleSheet.create({
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 6, padding: 8 },
   chipsRow: { flexWrap: "nowrap", padding: 0 },
   chip: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 8 },
-  chipActive: { backgroundColor: "#0c4a6e" },
+  chipActive: { backgroundColor: "#5e5ce6" },
   chipText: { color: COLORS.muted, fontSize: 12, fontWeight: "700" },
   chipTextActive: { color: COLORS.text },
   canvas: { position: "relative", overflow: "hidden" },

@@ -3,7 +3,8 @@
  * persistence) shared by PAD / TYPE / GAME / WIN. No second quality system.
  */
 import React, { useEffect, useState } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, StyleSheet, View } from "react-native";
+import Text from "./AppText";
 import * as SecureStore from "expo-secure-store";
 import { router } from "expo-router";
 import { COLORS } from "./components";
@@ -319,6 +320,7 @@ const sel = {
   clickBtn: "left",
   crop: { x: 0, y: 0, w: 1, h: 1 },
   gameLock: false, // true while GAME owns the crop (Fit/restore transaction)
+  fold: false, // Lipat: PAD/TYPE/WIN control area hidden, viewer takes the space
 };
 const selListeners = new Set();
 
@@ -348,6 +350,7 @@ export function useSel() {
     mode: sel.mode,
     bar: sel.bar,
     clickBtn: sel.clickBtn,
+    fold: sel.fold,
     crop: { ...sel.crop },
   });
   useEffect(() => {
@@ -435,7 +438,7 @@ export function ConnDot() {
 const styles = StyleSheet.create({
   box: { backgroundColor: COLORS.card, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 6, gap: 4, marginHorizontal: 8, marginTop: 0, position: "relative" },
   presets: { flexDirection: "row", gap: 6, alignItems: "center" },
-  dropBtn: { backgroundColor: "#0c4a6e", borderRadius: 8, height: 30, justifyContent: "center", paddingHorizontal: 10 },
+  dropBtn: { backgroundColor: "#5e5ce6", borderRadius: 8, height: 30, justifyContent: "center", paddingHorizontal: 10 },
   dropText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
   stepper: { flex: 1, flexDirection: "row", backgroundColor: COLORS.chip, borderRadius: 8, height: 30, paddingHorizontal: 2, alignItems: "center", justifyContent: "space-between" },
   stepBtn: { borderRadius: 6, width: 28, height: 28, alignItems: "center", justifyContent: "center" },
@@ -446,13 +449,13 @@ const styles = StyleSheet.create({
   modalShade: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
   modalBox: { backgroundColor: COLORS.card, borderRadius: 14, padding: 8, gap: 4, minWidth: 200 },
   modalItem: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16, alignItems: "center" },
-  modalItemActive: { backgroundColor: "#0c4a6e" },
+  modalItemActive: { backgroundColor: "#5e5ce6" },
   modalText: { color: COLORS.muted, fontWeight: "800", fontSize: 14 },
   modalTextActive: { color: COLORS.text },
   wideBtn: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 14 },
   wideText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
   connDot: { fontSize: 14, fontWeight: "800" },
   connPill: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: COLORS.chip, borderRadius: 999, height: 30, paddingHorizontal: 12, maxWidth: 140 },
-  connPillPressed: { backgroundColor: "#0c4a6e" },
+  connPillPressed: { backgroundColor: "#5e5ce6" },
   connLabel: { color: COLORS.text, fontSize: 13, fontWeight: "800" },
 });

@@ -154,7 +154,7 @@ const styles = StyleSheet.create({
     height: RING,
     borderRadius: RING / 2,
     borderWidth: 2,
-    borderColor: "#38bdf8",
+    borderColor: "#7c7aff",
     backgroundColor: "transparent",
   },
 });

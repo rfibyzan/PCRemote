@@ -2,7 +2,8 @@
  * (one tap to switch), this phone's identity as the PC sees it, and the
  * full connection log. Opened from the connection dot in the header. */
 import React, { useEffect, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import Text from "../AppText";
 import { COLORS } from "../components";
 import { addListener, clearPairing, connectToCode, disconnectByUser, forgetRecent, getStatus } from "../connection";
 import { LogPanel, RecentList, panelStyles, useRecent } from "./ConnPanels";
@@ -115,5 +116,5 @@ const styles = StyleSheet.create({
   btnText: { color: COLORS.text, fontWeight: "800", fontSize: 15 },
   btnDanger: { borderWidth: 1, borderColor: "#7f1d1d", backgroundColor: "transparent" },
   btnDangerText: { color: COLORS.danger, fontWeight: "800", fontSize: 15 },
-  small: { color: "#64748b", fontSize: 11 },
+  small: { color: "#6e6e73", fontSize: 11 },
 });

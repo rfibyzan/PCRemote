@@ -13,7 +13,8 @@ for (const fixed of [[36], [28], [34]]) {
 }
 t("row never below 28 dp", rowHeight(9) === 28, rowHeight(9));
 const a = viewerHeight(820, 200), b = viewerHeight(820, 200);
-t("same window -> same viewer on every tab", a === b && a === 492, [a, b]);
+t("same window -> same viewer on every tab", a === b && a === 442, [a, b]);
+t("Lipat gives the stream the control area", viewerHeight(820, 200, true) - viewerHeight(820, 200) === 128, viewerHeight(820, 200, true));
 t("bad input is safe", viewerHeight(undefined, 10) === 0, viewerHeight(undefined, 10));
 console.log(`${ok}/${n} tablayout tests passed`);
 if (ok !== n) process.exit(1);

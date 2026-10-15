@@ -1,7 +1,8 @@
-import { Text } from "react-native";
+import Text from "../../AppText";
 import { Ionicons, MaterialCommunityIcons, MaterialIcons } from "@expo/vector-icons";
 import { Redirect, Tabs } from "expo-router";
 import { useIsConnected } from "../../connection";
+import { familyFor } from "../../fonts";
 
 /**
  * Final navigation: PAD | TYPE | GAME | WIN.
@@ -30,9 +31,10 @@ export default function TabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarStyle: { backgroundColor: "#151d2e", borderTopColor: "#1e293b" },
-        tabBarActiveTintColor: "#7dd3fc",
-        tabBarInactiveTintColor: "#94a3b8",
+        tabBarStyle: { backgroundColor: "#141416", borderTopColor: "#2c2c30" },
+        tabBarLabelStyle: familyFor("600") ? { fontFamily: familyFor("600") } : undefined,
+        tabBarActiveTintColor: "#a5a1ff",
+        tabBarInactiveTintColor: "#8e8e93",
       }}
     >
       <Tabs.Screen
