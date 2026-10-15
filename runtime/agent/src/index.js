@@ -38,7 +38,7 @@ import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam
 import { createGamepadSession } from "./gamepad.js";
 import { createVideoManager } from "./video.js";
 import { createDeviceStore, isLocalRequest, linkOf, sanitizeDevice } from "./devices.js";
-import { assertCredits, creditByline, creditChannel, creditSupport, creditsIntact } from "./credits.js";
+import { creditByline, PROJECT_URL } from "./credits.js";
 import { createAutostartCache, helperBuildable, setAutostart } from "./autostart.js";
 
 // Optional QR on the dashboard (`npm install` pulls "qrcode"). Without it the
@@ -471,13 +471,11 @@ async function handleCommand(ws, msg) {
 }
 
 function dashboard(qrSvg = "") {
-  assertCredits("dashboard");
   const mons = publicMonitors();
   const shown = displayCode(state.code);
   const lanOk = state.lan.length > 0;
   const netOk = Boolean(state.tunnel);
   const by = creditByline();
-  const support = creditSupport();
   const chip = (id, label, ok, okText, waitText) =>
     `<div class="chip"><span id="${id}-dot" class="dot ${ok ? "on" : ""}"></span><span class="k">${label}</span><span id="${id}" class="v">${ok ? okText : waitText}</span></div>`;
   const qrBlock = qrSvg
@@ -490,7 +488,8 @@ function dashboard(qrSvg = "") {
 <style>
   :root { --bg:#0e0e10; --card:#1c1c1e; --row:#262629; --line:#36363a; --txt:#f2f2f5; --mut:#8e8e93; --acc:#6e68f5; --accbg:#242246; --acctx:#c4c0ff; --grn:#34c759; --red:#ff453a; --redbg:#3a1e1e; }
   * { box-sizing: border-box; }
-  html, body { margin:0; min-height:100%; background:var(--bg); }
+  html { color-scheme: dark; }
+  html, body { margin:0; min-height:100%; background:var(--bg); overflow-x:hidden; }
   body { font-family: -apple-system, "SF Pro Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; color:var(--txt); padding:40px 20px 32px; -webkit-font-smoothing:antialiased; }
   .wrap { max-width:920px; margin:0 auto; }
   .head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:24px; }
@@ -633,7 +632,7 @@ function dashboard(qrSvg = "") {
     </div>
   </div>
 
-  <p class="credit"><a href="${creditChannel()}" target="_blank" rel="noopener">${by}</a> · ${support}</p>
+  <p class="credit"><a href="${PROJECT_URL}" target="_blank" rel="noopener">${by}</a></p>
 </div>
 <script>
 (function(){
@@ -859,9 +858,7 @@ function pushPointer(clients) {
 }
 
 async function screenLoop() {
-  let creditTick = 0;
   while (true) {
-    if (++creditTick % 240 === 0) assertCredits("screen");
     const live = [...state.clients].filter((ws) => ws.readyState === 1);
     const camClients = live.filter((ws) => ws.wantsCam);
     const screenClients = live.filter((ws) => ws.wantsScreen && !ws.wantsCam);
@@ -992,12 +989,11 @@ function printBanner() {
     [
       "==============================================",
       "  PC Remote agent is running",
-      `  ${creditByline()}`,
+      `  ${PROJECT_URL}`,
       "  Pair code:    open the tray dashboard",
       `  Dashboard:    open the tray icon`,
       `  Local Wi-Fi:  ${state.lan.length ? "ready" : "no network yet"}`,
       `  Internet:     ${state.tunnel ? "ready" : "starting"}`,
-      `  ${creditSupport()}`,
       "==============================================",
     ].join("\n"),
   );
@@ -1010,7 +1006,6 @@ function applyLock(lock) {
 }
 
 async function main() {
-  assertCredits("startup");
   applyLock(loadLock());
   state.lan = lanAddresses();
 
@@ -1159,11 +1154,6 @@ async function main() {
       if (!ws.authed) {
         const dev = sanitizeDevice(msg.device, ws.peer.ip);
         if (msg.t === "auth" && normalizeCode(msg.token) === state.code) {
-          if (!creditsIntact()) {
-            send(ws, { t: "error", m: "PC Remote credit seal broken" });
-            ws.close();
-            return;
-          }
           if (devices.isBlocked(dev.id)) {
             devices.log(`${dev.name} diblokir, koneksi ditolak (${LINK_LABEL[ws.peer.link]})`, "warn");
             send(ws, { t: "error", m: "blocked: HP ini diblokir di dashboard PC" });
