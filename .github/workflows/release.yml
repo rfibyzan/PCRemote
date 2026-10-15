@@ -1,0 +1,86 @@
+name: Release
+
+# Push a tag like v1.2.0 (or run it by hand from the Actions tab) and this
+# builds the ready-to-use Windows folder as a zip on GitHub Releases:
+#   PCRemote.exe, HOW-TO.txt, runtime/node.exe, runtime/ffmpeg.exe,
+#   runtime/cloudflared.exe, runtime/agent (with node_modules + version.txt).
+# If the repo secret EXPO_TOKEN exists, the preview APK is built on EAS and
+# attached too. Note: SF Pro is gitignored, so a CI-built APK uses Roboto.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v1.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Agent dependencies
+        working-directory: runtime/agent
+        run: |
+          npm install --omit=dev --no-audit --no-fund
+          node src/pointer_test.js
+      - name: Assemble folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = "dist/PCRemote"
+          New-Item -ItemType Directory -Force "$out/runtime" | Out-Null
+          Copy-Item PCRemote.exe, HOW-TO.txt $out
+          Copy-Item runtime/agent "$out/runtime/agent" -Recurse
+          Set-Content "$out/runtime/agent/version.txt" $env:TAG -NoNewline
+          # node.exe = the same Node version the dependencies were installed with
+          $v = node -p "process.version"
+          Invoke-WebRequest "https://nodejs.org/dist/$v/win-x64/node.exe" -OutFile "$out/runtime/node.exe"
+          Invoke-WebRequest "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "$out/runtime/cloudflared.exe"
+          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
+          Copy-Item (Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName "$out/runtime/ffmpeg.exe"
+          Compress-Archive -Path $out -DestinationPath "dist/PCRemote-$env:TAG-windows.zip"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: PC Remote ${{ env.TAG }}
+          generate_release_notes: true
+          files: dist/PCRemote-${{ env.TAG }}-windows.zip
+
+  apk:
+    runs-on: ubuntu-latest
+    needs: windows
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+        if: env.EXPO_TOKEN != ''
+      - uses: actions/setup-node@v4
+        if: env.EXPO_TOKEN != ''
+        with:
+          node-version: 22
+      - name: Build preview APK on EAS
+        if: env.EXPO_TOKEN != ''
+        run: |
+          npm ci
+          npx eas-cli@latest build --profile preview --platform android --non-interactive --wait --json > build.json
+          curl -L -o "PCRemote-$TAG.apk" "$(jq -r '.[0].artifacts.buildUrl' build.json)"
+      - uses: softprops/action-gh-release@v2
+        if: env.EXPO_TOKEN != ''
+        with:
+          tag_name: ${{ env.TAG }}
+          files: mobile/PCRemote-${{ env.TAG }}.apk
