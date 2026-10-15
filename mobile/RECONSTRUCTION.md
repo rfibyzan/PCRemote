@@ -51,8 +51,8 @@ media keys, workstation lock, clipboard get/set.
 crop). Last-valid-frame rendering: invalid data never blanks the view;
 stable component identity (no per-frame remount).
 
-## H.264 video (new, opt-in beta, JPEG stays default)
-- ⚙ "Video H.264 (beta)" (SecureStore `pcremote.video`). The focused viewer
+## H.264 video (default on; JPEG = fallback)
+- ⚙ "Video H.264" (SecureStore `pcremote.video`, default ON when nothing saved). The focused viewer
   sends `{t:"video", on, fps, kbps, width}` (presets: Low 1.5 / Mid 4 /
   High 8 Mbps); agent answers `{t:"videoState", on, encoder, w, h, reason?}`.
 - Binary `PV` frames: 16-byte header (mon, w/h, cursor, key flag, seq) + one
