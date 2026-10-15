@@ -32,6 +32,8 @@ import { StatusBar } from "expo-status-bar";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { COLORS, MonitorChips, ScreenView, getLastFullFrame } from "./components";
 import { applyOrientation } from "./orientation";
+import VideoLayer from "./videoview";
+import { VideoToggle, isVideoActive } from "./video";
 import { ConnDot, LagBanner, StreamControls, StreamStats, getSel, setSel, useMonitorSource, useSel } from "./controls";
 import { trackFrameBytes } from "./cursor";
 import { BAR_W, BarScroll, ScrollSettings, sendSwipeScroll } from "./scrollbar";
@@ -484,6 +486,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // the new region arrives, because frames are placed by their own crop.
   function requestRegion(moving) {
     if (getSel().gameLock) return;
+    // H.264 always streams the whole monitor: zoom only scales, no crops.
+    if (isVideoActive()) return;
     const g = geom();
     if (!g) return;
     const vis = visibleRect(camRef.current, g.fit, g.vw, g.vh);
@@ -1220,6 +1224,25 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     }
   }
 
+  // H.264 (beta): access-unit metadata keeps cursor, stall watchdog and
+  // meters alive exactly like JPEG frames do.
+  function onVideoPacket(p) {
+    if (p.w && p.h) frameSize.current = { w: p.w, h: p.h };
+    if (typeof p.cx === "number") feedCursor(p.cx, p.cy);
+    lastFrameAt.current = Date.now();
+    if (stalled) setStalled(false);
+    trackFrameBytes(p.bytes);
+    if (!sharpRef.current) {
+      sharpRef.current = true;
+      setSharp(true);
+    }
+  }
+
+  // Back on JPEG: ask for the region around the current view again.
+  function onVideoActive(on) {
+    if (!on) requestRegion(false);
+  }
+
   // Stream settings popover (preset / Q / fps): opened from the gear or the
   // fps pill, closes on outside tap or after a few idle seconds.
   const [streamOpen, setStreamOpen] = useState(false);
@@ -1311,6 +1334,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           {/* Camera canvas: whole monitor, frames placed at their own crop. */}
           <Reanimated.View style={canvasStyle} pointerEvents="none">
             <ScreenView style={styles.canvasFill} onFrame={onFrame} monKey={current} placed resolveCrop={snapCrop} />
+            <VideoLayer enabled={current !== "cam"} onPacket={onVideoPacket} onActive={onVideoActive} />
           </Reanimated.View>
           {!!cur && (
             <Reanimated.View
@@ -1485,6 +1509,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             <Block style={styles.streamPop} onTouchStart={armStreamTimer}>
               <StreamControls compact />
               <ScrollSettings />
+              <VideoToggle />
             </Block>
           </>
         )}
