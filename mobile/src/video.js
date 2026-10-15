@@ -1,7 +1,7 @@
 /**
- * Opt-in H.264 screen stream (beta). JPEG stays the default.
+ * H.264 screen stream, ON by default; JPEG is the fallback.
  *
- * Preference "Video H.264 (beta)" is persisted in SecureStore
+ * Preference "Video H.264" (default on; a saved choice wins) is persisted in SecureStore
  * (pcremote.video). The focused viewer owns the stream the same way it owns
  * JPEG frames: claimVideo(handler) on focus, releaseVideo(handler) on blur
  * (ownership-guarded, so tab B focusing before tab A blurs never turns B's
@@ -23,7 +23,7 @@ import { videoSupported } from "../modules/pcremote-video";
 export const STORE_VIDEO = "pcremote.video";
 
 const vs = {
-  pref: false,
+  pref: true, // H.264 by default; JPEG only as fallback or when switched off
   loaded: false,
   active: false, // agent confirmed: H.264 is flowing, JPEG paused
   encoder: "",
@@ -184,20 +184,20 @@ export function useVideo() {
   return s;
 }
 
-/** "Video H.264 (beta)" switch for the stream ⚙ popover. */
+/** "Video H.264" switch for the stream ⚙ popover. */
 export function VideoToggle() {
   const v = useVideo();
   const p = currentParams();
   let note;
   if (!v.supported) note = "Perlu build baru aplikasi (modul video belum ada di APK ini).";
-  else if (!v.pref) note = "Mati: pakai JPEG (default).";
+  else if (!v.pref) note = "Mati: pakai JPEG.";
   else if (v.active) note = `Aktif · ${v.encoder || "h264"} ${v.w}×${v.h} · ${fmtKbps(p.kbps)} · ${p.fps} fps`;
   else if (v.reason) note = `Kembali ke JPEG: ${v.reason}`;
   else note = `Menyalakan… (${fmtKbps(p.kbps)} · ${p.fps} fps)`;
   return (
     <View style={styles.set}>
       <View style={styles.row}>
-        <Text style={styles.label}>Video H.264 (beta)</Text>
+        <Text style={styles.label}>Video H.264</Text>
         <View style={styles.seg}>
           {[
             ["Mati", false],
