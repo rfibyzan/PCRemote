@@ -34,6 +34,20 @@ jobs:
         run: |
           npm install --omit=dev --no-audit --no-fund
           node src/pointer_test.js
+      # Prebuilt helper ships in runtime/agent/autostart; the agent still
+      # compiles it on the PC if it is missing or older than the source.
+      - name: Build PCRemoteStart.exe (autostart helper, in-box .NET Framework csc)
+        working-directory: runtime/agent
+        shell: pwsh
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
+          # Same arguments as cscArgs() in src/autostart.js
+          & $csc /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /out:autostart\PCRemoteStart.exe /win32icon:autostart\PCRemoteStart.ico autostart\PCRemoteStart.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vi = (Get-Item autostart\PCRemoteStart.exe).VersionInfo
+          $vi | Format-List FileDescription, CompanyName, ProductName, FileVersion
+          if ($vi.FileDescription -ne "PC Remote") { throw "FileDescription is '$($vi.FileDescription)'" }
       - name: Assemble folder
         shell: pwsh
         run: |
