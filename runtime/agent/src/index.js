@@ -26,8 +26,11 @@ import {
   setClipboard,
   tapAbsOnMonitor,
   typeText,
+  lastInjectTime,
 } from "./input.js";
-import { QUALITY, captureMonitor, cursorOnMonitor, encodeProfile, frameFingerprint, listMonitors } from "./monitors.js";
+import { QUALITY, captureMonitor, cursorOnMonitor, cursorPos as monCursorPos, cursorShape, encodeProfile, frameFingerprint, listMonitors } from "./monitors.js";
+import { createPresence, presenceStep } from "./pointerstate.js";
+import { agentVersion, checkForUpdate } from "./updates.js";
 import { hideConsole, startTray, claimSingleInstance } from "./tray.js";
 import { superviseTunnel } from "./tunnel.js";
 import { probeTunnel, wokeFromSleep } from "./keepalive.js";
@@ -515,9 +518,12 @@ function dashboard(qrSvg = "") {
   .credit { margin:18px 0 0; color:#64748b; font-size:12px; }
   .credit a { color:#7dd3fc; text-decoration:none; }
   code { color:#cbd5e1; }
+  .update { margin:0 0 14px; padding:10px 12px; border-radius:10px; background:#2e1065; border:1px solid #7c3aed; color:#ede9fe; font-size:13px; }
+  .update a { color:#c4b5fd; }
 </style></head>
 <body><div class="card">
   <div class="head"><h1>PC Remote<small>${escapeHtml(state.name)}</small></h1><span class="phones" id="count">${state.clients.size} phone${state.clients.size === 1 ? "" : "s"} connected</span></div>
+  ${state.update ? `<p class="update">Versi baru <b>${escapeHtml(state.update.tag)}</b> tersedia. <a href="${escapeHtml(state.update.url)}" target="_blank" rel="noopener">Download dari GitHub Releases</a></p>` : ""}
   <div class="grid">
     <div class="left">
       <p class="label">Pair code</p>
@@ -720,6 +726,26 @@ function flushStreamStats(ws, now) {
   ws.st = { since: now, sent: 0, same: 0, busy: 0, capMs: 0, caps: 0 };
 }
 
+// Pointer presence: cursor shape + "someone is using the PC mouse", pushed
+// as {t:"ptr", shape, local} only when it changes. Old phones ignore it.
+const presence = createPresence();
+function pushPointer(clients) {
+  let shape = "arrow";
+  let local = false;
+  try {
+    shape = cursorShape();
+    local = presenceStep(presence, monCursorPos(), Date.now(), lastInjectTime()).local;
+  } catch {
+    return;
+  }
+  const key = `${shape}:${local ? 1 : 0}`;
+  for (const ws of clients) {
+    if (ws.ptrKey === key) continue;
+    ws.ptrKey = key;
+    send(ws, { t: "ptr", shape, local });
+  }
+}
+
 async function screenLoop() {
   let creditTick = 0;
   while (true) {
@@ -732,6 +758,7 @@ async function screenLoop() {
       continue;
     }
     const started = Date.now();
+    if (screenClients.length) pushPointer(screenClients);
     if (camClients.length) {
       const frame = latestCamFrame();
       if (frame?.jpeg) {
@@ -1041,6 +1068,16 @@ async function main() {
 
   try {
     state.port = await listenOnFreePort(server, DEFAULT_PORT);
+    // Release builds check GitHub once at start and then twice a day.
+    const runUpdateCheck = () =>
+      checkForUpdate().then((u) => {
+        state.update = u;
+        if (u) console.log(`PC Remote ${u.tag} is available (running ${agentVersion()}): ${u.url}`);
+      });
+    if (agentVersion()) {
+      runUpdateCheck();
+      setInterval(runUpdateCheck, 12 * 60 * 60 * 1000).unref?.();
+    }
   } catch (err) {
     if (err.code === "EADDRINUSE") {
       console.log("PC Remote is already running.");

@@ -1,4 +1,5 @@
 import koffi from "koffi";
+import { CURSOR_IDS, shapeOf } from "./pointerstate.js";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -18,6 +19,13 @@ const RECT = koffi.struct("RECT", {
 const CursorPoint = koffi.struct("CursorPoint", {
   x: "int32",
   y: "int32",
+});
+
+const CURSORINFO = koffi.struct("CURSORINFO", {
+  cbSize: "uint32",
+  flags: "uint32",
+  hCursor: "void *",
+  ptScreenPos: CursorPoint,
 });
 
 const MONITORINFOEX = koffi.struct("MONITORINFOEXW", {
@@ -51,6 +59,8 @@ const EnumDisplayMonitors = user32.func(
 );
 const GetMonitorInfoW = user32.func("bool __stdcall GetMonitorInfoW(void *hMonitor, _Inout_ MONITORINFOEXW *lpmi)");
 const GetCursorPos = user32.func("bool __stdcall GetCursorPos(_Out_ CursorPoint *lpPoint)");
+const GetCursorInfo = user32.func("bool __stdcall GetCursorInfo(_Inout_ CURSORINFO *pci)");
+const LoadCursorW = user32.func("void * __stdcall LoadCursorW(void *hInstance, uintptr lpCursorName)");
 const GetDC = user32.func("void * __stdcall GetDC(void *hWnd)");
 const ReleaseDC = user32.func("int32 __stdcall ReleaseDC(void *hWnd, void *hdc)");
 const CreateCompatibleDC = gdi32.func("void * __stdcall CreateCompatibleDC(void *hdc)");
@@ -413,6 +423,34 @@ export function frameFingerprint(buf) {
   const step = Math.max(1, (buf.length / 1024) | 0);
   for (let i = 0; i < buf.length; i += step) h = Math.imul(h ^ buf[i], 16777619);
   return (h ^ buf.length) >>> 0;
+}
+
+// Standard system cursor handles are shared, so LoadCursor(NULL, IDC_x)
+// returns the same handle GetCursorInfo reports while that shape is showing.
+let cursorTable = null;
+function addr(p) {
+  try {
+    return p ? String(koffi.address(p)) : null;
+  } catch {
+    return null;
+  }
+}
+/** {visible, handle} of the current Windows cursor ("none" when hidden, e.g. games). */
+export function cursorShape() {
+  if (!cursorTable) {
+    cursorTable = new Map();
+    for (const [id, name] of Object.entries(CURSOR_IDS)) {
+      const a = addr(LoadCursorW(null, Number(id)));
+      if (a && !cursorTable.has(a)) cursorTable.set(a, name);
+    }
+  }
+  try {
+    const info = { cbSize: koffi.sizeof(CURSORINFO), flags: 0, hCursor: null, ptScreenPos: { x: 0, y: 0 } };
+    if (!GetCursorInfo(info)) return "arrow";
+    return shapeOf((info.flags & 1) === 1, addr(info.hCursor), cursorTable);
+  } catch {
+    return "arrow";
+  }
 }
 
 export function cursorOnMonitor(mon) {

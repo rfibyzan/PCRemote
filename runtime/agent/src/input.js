@@ -215,8 +215,16 @@ export function inputStructSize() {
   return INPUT_SIZE;
 }
 
+// Last time the agent injected input; pointer presence uses it to tell the
+// phone's own moves apart from someone using the PC's physical mouse.
+let lastInjectAt = 0;
+export function lastInjectTime() {
+  return lastInjectAt;
+}
+
 function sendInputs(items) {
   if (!items.length) return 0;
+  lastInjectAt = Date.now();
   return SendInput(items.length, items, INPUT_SIZE);
 }
 
@@ -302,6 +310,7 @@ function sendAbsolute(x, y) {
       MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_MOVE_NOCOALESCE,
     ),
   ]);
+  lastInjectAt = Date.now();
   SetCursorPos(tx, ty);
   lastPos = { x: tx, y: ty };
 }
