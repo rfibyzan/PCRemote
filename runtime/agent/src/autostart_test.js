@@ -1,4 +1,5 @@
 // Pure-logic tests for autostart.js. No koffi, no Windows: runs anywhere with `node src/autostart_test.js`.
+import path from "node:path";
 import {
   APPROVED_ENABLED_HEX,
   buildRunCommand,
@@ -101,7 +102,9 @@ check("computeAutostart combines task + Run + StartupApproved", () => {
 
 check("exe lookup: PCREMOTE_HOME, then ../../PCRemote.exe", () => {
   const c = exeCandidates({ PCREMOTE_HOME: "/r" }, "/r/runtime/agent");
-  assert(c[0].endsWith("PCRemote.exe") && c[c.length - 1] === "/r/PCRemote.exe", JSON.stringify(c));
+  // Platform paths: on Windows "/r" resolves to "<drive>:\\r", so compare with path itself.
+  const last = path.resolve("/r/runtime/agent", "..", "..", "PCRemote.exe");
+  assert(c[0] === path.join("/r", "PCRemote.exe") && c[c.length - 1] === last, JSON.stringify(c));
   assert(findExe({}, () => false) === "", "missing exe");
 });
 
