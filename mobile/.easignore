@@ -1,0 +1,80 @@
+# EAS upload rules. When this file exists EAS ignores every .gitignore,
+# so it repeats them all, then re-includes the local font files.
+
+# ---- from /.gitignore (paths relative to mobile/)
+# Deps & generated
+node_modules/
+.expo/
+.sentry-native/
+
+# Build outputs
+**/build/
+*.log
+
+# Large runtime binaries (download separately, see README.md)
+runtime/ffmpeg.exe
+runtime/node.exe
+runtime/cloudflared.exe
+
+# Secrets & signing
+.env
+*.keystore
+*.jks
+*.p12
+*.key
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- from mobile/.gitignore
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android
+
+# Optional local UI font (not redistributable): kept out of git, still sent
+# to EAS through .easignore. See assets/fonts/README.md.
+/assets/fonts/*.otf
+/assets/fonts/*.ttf
+
+# ---- local font (not in git, needed in the APK)
+!/assets/fonts/*.otf
