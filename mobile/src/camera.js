@@ -126,6 +126,17 @@ export function camFor(s, cx, cy, fit, vw, vh) {
   return clampCam({ s: sc, tx: -(cx - 0.5) * sc * fit.bw, ty: -(cy - 0.5) * sc * fit.bh }, fit.bw, fit.bh, vw, vh);
 }
 
+/**
+ * Camera that frames a monitor-normalized rect {x, y, w, h} (single-window
+ * stream): the whole rect fits the view, centred. Clamped like any camera.
+ */
+export function camForRect(r, fit, vw, vh) {
+  const w = Math.max(0.01, r.w);
+  const h = Math.max(0.01, r.h);
+  const s = Math.min(vw / (w * fit.bw), vh / (h * fit.bh));
+  return camFor(s, r.x + w / 2, r.y + h / 2, fit, vw, vh);
+}
+
 /** Resolution-independent camera (shared across tabs whose views differ). */
 export function camToNorm(cam, fit, vw, vh) {
   const c = viewToMonitor(vw / 2, vh / 2, cam, fit, vw, vh);
