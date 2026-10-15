@@ -1,6 +1,7 @@
 /** Q: stream quality presets + fine-tune arrows (existing agent backend). */
 import React, { useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
+import Text from "../AppText";
 import * as SecureStore from "expo-secure-store";
 import { COLORS } from "../components";
 import { STORE_QUALITY, msg } from "../protocol";
@@ -69,7 +70,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg, padding: 16, gap: 8 },
   title: { color: COLORS.text, fontSize: 18, fontWeight: "800", marginBottom: 4 },
   preset: { backgroundColor: COLORS.card, borderRadius: 12, padding: 14 },
-  presetActive: { backgroundColor: "#0c4a6e" },
+  presetActive: { backgroundColor: "#5e5ce6" },
   presetText: { color: COLORS.muted, fontWeight: "700", textTransform: "capitalize" },
   presetTextActive: { color: COLORS.text },
   stepRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: COLORS.card, borderRadius: 12, padding: 10 },
