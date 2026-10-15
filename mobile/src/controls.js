@@ -2,7 +2,7 @@
  * One centralized quality store (existing `quality` message + pcremote.quality
  * persistence) shared by PAD / TYPE / GAME / WIN. No second quality system.
  */
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Modal, Pressable, StyleSheet, View } from "react-native";
 import Text from "./AppText";
 import * as SecureStore from "expo-secure-store";
@@ -11,7 +11,7 @@ import { COLORS } from "./components";
 import { STORE_QUALITY, msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { useStreamStats } from "./cursor";
-import { diagnoseStream } from "./streamdiag";
+import { diagnoseStream, lagStep, lighterQuality } from "./streamdiag";
 
 export { diagnoseStream };
 
@@ -243,6 +243,44 @@ export function StreamStats() {
   );
 }
 
+/**
+ * Slow-link banner over the viewer (idea from Sill): shown when the PC keeps
+ * holding frames back because the network can't take them, with a one-tap
+ * lighter quality. ✕ hides it for a minute.
+ */
+export function LagBanner() {
+  const { pc } = useStreamStats();
+  const quality = useQuality();
+  const lagRef = useRef(null);
+  const atRef = useRef(0);
+  const [on, setOn] = useState(false);
+  const [muteUntil, setMuteUntil] = useState(0);
+  useEffect(() => {
+    // Step once per NEW PC sample (~2 s), not per 1 s meter tick.
+    if (pc && pc.at === atRef.current) return;
+    atRef.current = pc?.at || 0;
+    lagRef.current = lagStep(lagRef.current, pc);
+    setOn(lagRef.current.on);
+  }, [pc]);
+  if (!on || Date.now() < muteUntil) return null;
+  const next = lighterQuality(quality);
+  return (
+    <View style={styles.lag}>
+      <Text style={styles.lagText} numberOfLines={2}>
+        Koneksi lambat: frame tertahan di PC.
+      </Text>
+      {!!next && (
+        <Pressable onPress={() => applyQuality(next.q, next.qStep, next.fpsStep)} style={styles.lagBtn} hitSlop={4}>
+          <Text style={styles.lagBtnText}>Turunkan kualitas</Text>
+        </Pressable>
+      )}
+      <Pressable onPress={() => setMuteUntil(Date.now() + 60_000)} hitSlop={8} accessibilityLabel="Tutup">
+        <Text style={styles.lagX}>✕</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 export function StreamControls({ compact }) {
   const { q, qStep, fpsStep } = useQuality();
   const [pickOpen, setPickOpen] = useState(false);
@@ -454,6 +492,11 @@ const styles = StyleSheet.create({
   modalTextActive: { color: COLORS.text },
   wideBtn: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 6, paddingHorizontal: 14 },
   wideText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
+  lag: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(28,28,31,0.94)", borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,159,10,0.55)", paddingVertical: 6, paddingLeft: 10, paddingRight: 8 },
+  lagText: { flex: 1, color: COLORS.text, fontSize: 12, fontWeight: "500" },
+  lagBtn: { backgroundColor: COLORS.fill, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10 },
+  lagBtnText: { color: "#ffffff", fontSize: 11, fontWeight: "700" },
+  lagX: { color: COLORS.muted, fontSize: 14, fontWeight: "700" },
   connDot: { fontSize: 14, fontWeight: "800" },
   connPill: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: COLORS.chip, borderRadius: 999, height: 30, paddingHorizontal: 12, maxWidth: 140 },
   connPillPressed: { backgroundColor: "#5e5ce6" },
