@@ -190,6 +190,8 @@ export const msg = {
   clipboard: (s) => (s != null ? { t: "clipboard", s } : { t: "clipboard" }),
   gamepad: (state) => ({ t: "gamepad", state }),
   gamepadEnd: () => ({ t: "gamepadEnd" }),
+  // Opt-in H.264 stream (beta): p = {fps, kbps, width}. Old agents ignore it.
+  video: (on, p) => (on ? { t: "video", on: true, ...(p || {}) } : { t: "video", on: false }),
 };
 
 // Re-exported so bundlers keep a single copy of the crypto helpers.

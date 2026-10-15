@@ -12,27 +12,51 @@ import { STORE_QUALITY, msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { useStreamStats } from "./cursor";
 import { diagnoseStream, lagStep, lighterQuality } from "./streamdiag";
+import { BASE_Q, clampFpsStep, clampQStep, fpsValue, qValue, qualityView } from "./videoproto";
 
 export { diagnoseStream };
 
-// Preset mapping onto the EXISTING agent backend:
-// Low = lite (Q18/6fps), Mid = low (Q26/13fps), High = high (Q40/22fps).
+// Preset mapping: Low = lite, Mid = low, High = high. The numbers per codec
+// (JPEG Q/fps, H.264 bitrate/fps/width) live in videoproto.js (pure, tested).
 const PRESET_Q = { Low: "lite", Mid: "low", High: "high" };
-const BASE_Q = { lite: 18, low: 26, med: 26, high: 40, super: 40 };
-const BASE_FPS = { lite: 6, low: 13, med: 13, high: 22, super: 22 };
 const Q_TO_PRESET = { lite: "Low", low: "Mid", med: "Mid", high: "High", super: "High" };
+export { qValue, fpsValue };
 
-function clampQStep(v) {
-  return Math.max(-5, Math.min(8, Math.round(Number(v) || 0)));
+// Which codec the steppers describe: true while H.264 is confirmed flowing
+// (video.js calls setVideoCodecActive), false for JPEG and JPEG fallback.
+// Own listener set: quality listeners re-send {t:"video"}, a codec flip must not.
+const codecState = { video: false };
+const codecListeners = new Set();
+export function setVideoCodecActive(on) {
+  const v = Boolean(on);
+  if (codecState.video === v) return;
+  codecState.video = v;
+  for (const fn of [...codecListeners]) {
+    try {
+      fn(v);
+    } catch {
+      // ignore
+    }
+  }
 }
-function clampFpsStep(v) {
-  return Math.max(-5, Math.min(10, Math.round(Number(v) || 0)));
+function useVideoCodec() {
+  const [v, setV] = useState(codecState.video);
+  useEffect(() => {
+    const fn = (n) => setV(n);
+    codecListeners.add(fn);
+    setV(codecState.video);
+    return () => codecListeners.delete(fn);
+  }, []);
+  return v;
 }
-export function qValue(q, qStep) {
-  return Math.max(18, Math.min(92, Math.round((BASE_Q[q] ?? 26) + clampQStep(qStep) * 8)));
-}
-export function fpsValue(q, fpsStep) {
-  return Math.max(1, Math.min(30, Math.round((BASE_FPS[q] ?? 13) + clampFpsStep(fpsStep) * 2)));
+function useLink() {
+  const [link, setLink] = useState(() => getStatus().link || "");
+  useEffect(() => {
+    return addListener((e) => {
+      if (e.t === "status" || e.t === "progress" || e.t === "hello") setLink(getStatus().link || "");
+    });
+  }, []);
+  return link;
 }
 
 /**
@@ -199,6 +223,12 @@ addListener((event) => {
   }
 });
 
+/** Subscribe to quality changes outside React (src/video.js). */
+export function addQualityListener(fn) {
+  qListeners.add(fn);
+  return () => qListeners.delete(fn);
+}
+
 export function useQuality() {
   const [s, setS] = useState({ q: qState.q, qStep: qState.qStep, fpsStep: qState.fpsStep });
   useEffect(() => {
@@ -284,19 +314,16 @@ export function LagBanner() {
 export function StreamControls({ compact }) {
   const { q, qStep, fpsStep } = useQuality();
   const [pickOpen, setPickOpen] = useState(false);
+  const video = useVideoCodec();
+  const link = useLink();
   const label = presetLabel(q, qStep, fpsStep);
-
-  // Steppers apply only when the COMPUTED value actually changes, so the
-  // internal step counter can never run past the display/backend max/min
-  // (no phantom extra clicks to come back down from 30fps / Q92).
-  function stepQ(d) {
-    const n = qStep + d;
-    if (qValue(q, n) !== qValue(q, qStep)) applyQuality(q, n, fpsStep);
-  }
-  function stepFps(d) {
-    const n = fpsStep + d;
-    if (fpsValue(q, n) !== fpsValue(q, fpsStep)) applyQuality(q, qStep, n);
-  }
+  // Values + limits for the ACTIVE codec (H.264: bitrate/fps up to 60, capped
+  // on internet links; JPEG: Q/fps up to 30). A step applies only when the
+  // shown value changes, so the counter never runs past a limit (no phantom
+  // clicks); qualityView returns null at a limit and the button disables.
+  const view = qualityView({ q, qStep, fpsStep }, { video, link });
+  const stepQ = (n) => n != null && applyQuality(q, n, fpsStep);
+  const stepFps = (n) => n != null && applyQuality(q, qStep, n);
 
   // Always-visible compact panel: one control row + one stats line.
   return (
@@ -306,20 +333,29 @@ export function StreamControls({ compact }) {
           <Text style={styles.dropText}>{label} ▾</Text>
         </Pressable>
         <View style={styles.stepper}>
-          <Pressable onPress={() => stepQ(-1)} style={styles.stepBtn} hitSlop={4}>
+          <Pressable onPress={() => stepQ(view.qDown)} disabled={view.qDown == null} style={[styles.stepBtn, view.qDown == null && styles.stepBtnOff]} hitSlop={4}>
             <Text style={styles.stepBtnText}>−</Text>
           </Pressable>
-          <Text style={styles.stepValue}>Q{qValue(q, qStep)}</Text>
-          <Pressable onPress={() => stepQ(1)} style={styles.stepBtn} hitSlop={4}>
+          <View style={styles.stepMid} accessibilityLabel={view.video ? `Bitrate ${view.qText}` : `Kualitas ${view.qText}`}>
+            {!!view.qCaption && (
+              <Text style={styles.stepCaption} numberOfLines={1}>
+                {view.qCaption}
+              </Text>
+            )}
+            <Text style={styles.stepValue} numberOfLines={1}>
+              {view.qText}
+            </Text>
+          </View>
+          <Pressable onPress={() => stepQ(view.qUp)} disabled={view.qUp == null} style={[styles.stepBtn, view.qUp == null && styles.stepBtnOff]} hitSlop={4}>
             <Text style={styles.stepBtnText}>+</Text>
           </Pressable>
         </View>
         <View style={styles.stepper}>
-          <Pressable onPress={() => stepFps(-1)} style={styles.stepBtn} hitSlop={4}>
+          <Pressable onPress={() => stepFps(view.fpsDown)} disabled={view.fpsDown == null} style={[styles.stepBtn, view.fpsDown == null && styles.stepBtnOff]} hitSlop={4}>
             <Text style={styles.stepBtnText}>−</Text>
           </Pressable>
-          <Text style={styles.stepValue}>{fpsValue(q, fpsStep)} fps</Text>
-          <Pressable onPress={() => stepFps(1)} style={styles.stepBtn} hitSlop={4}>
+          <Text style={styles.stepValue}>{view.fpsText}</Text>
+          <Pressable onPress={() => stepFps(view.fpsUp)} disabled={view.fpsUp == null} style={[styles.stepBtn, view.fpsUp == null && styles.stepBtnOff]} hitSlop={4}>
             <Text style={styles.stepBtnText}>+</Text>
           </Pressable>
         </View>
@@ -483,6 +519,9 @@ const styles = StyleSheet.create({
   stepper: { flex: 1, flexDirection: "row", backgroundColor: COLORS.chip, borderRadius: 8, height: 30, paddingHorizontal: 2, alignItems: "center", justifyContent: "space-between" },
   stepBtn: { borderRadius: 6, width: 28, height: 28, alignItems: "center", justifyContent: "center" },
   stepBtnText: { color: COLORS.text, fontSize: 16, fontWeight: "800" },
+  stepBtnOff: { opacity: 0.3 },
+  stepMid: { flex: 1, alignItems: "center", justifyContent: "center" },
+  stepCaption: { color: COLORS.muted, fontWeight: "700", fontSize: 8, lineHeight: 10 },
   stepValue: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
   stats: { color: COLORS.muted, fontSize: 11, fontWeight: "700", textAlign: "center" },
   statsWarn: { color: "#fbbf24" },

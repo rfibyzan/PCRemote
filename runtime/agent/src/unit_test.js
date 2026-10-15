@@ -10,7 +10,7 @@ import { pcKeysFromMobileKey, sameKeySet } from "./keypress.js";
 import { tunnelBackoffMs, wokeFromSleep } from "./keepalive.js";
 import { lanAddresses } from "./lan.js";
 import { QUALITY, applyCrop, applyTune, encodeProfile, frameFingerprint, resolveDestWidth } from "./monitors.js";
-import { assertCredits, CREDIT_DC, CREDIT_NAME, CREDIT_YT, creditByline, creditsIntact } from "./credits.js";
+import { creditByline, PROJECT_URL } from "./credits.js";
 import { CAM_QUALITY, captureIds, parseDshowList, rankCameras } from "./webcam.js";
 import { clamp, cursorOnRect, expandNorm, imageRect, mapPageToNorm, placeCrop, regionStillUsable, visibleNorm } from "./viewmap.js";
 
@@ -305,8 +305,7 @@ function testTrayAndShortcuts() {
   assert(startBat.includes("goto retry"), "start.bat restarts after a crash");
   const tray = readFileSync(path.join(root, "tray.ps1"), "utf8");
   assert(tray.includes("Close PC Remote"), "tray has close item");
-  assert(tray.includes("YouTube · Asphalt Cake"), "tray links the channel");
-  assert(tray.includes("PC Remote · Asphalt Cake"), "tray tooltip credits the author");
+  assert(tray.includes("github.com/rfibyzan/PCRemote"), "tray links the GitHub repo");
   const installPath = path.join(root, "install-startup.ps1");
   const launcherPath = path.join(root, "scripts", "PCRemoteLauncher.cs");
   const manifestPath = path.join(root, "scripts", "PCRemote.exe.manifest");
@@ -320,7 +319,6 @@ function testTrayAndShortcuts() {
   assert(install.includes("Start PC Remote"), "installer writes a desktop shortcut");
   const launcher = readFileSync(launcherPath, "utf8");
   assert(launcher.includes("NotifyIcon"), "launcher owns the tray icon");
-  assert(launcher.includes("YouTube · Asphalt Cake"), "launcher menu credits the channel");
   assert(launcher.includes("PCRemote.Launcher"), "launcher is single-instance");
   assert(launcher.includes("Unblock-File"), "launcher unblocks downloaded files");
   assert(launcher.includes("StopOtherInstances"), "launcher replaces an old instance");
@@ -429,17 +427,9 @@ function testLock() {
 }
 
 function testCredits() {
-  assert(creditsIntact(), "credit seal fingerprint matches");
-  assertCredits("unit");
-  assert(CREDIT_NAME === "Asphalt Cake", "author name");
-  assert(CREDIT_YT === "https://www.youtube.com/@AsphaltCake", "youtube url");
-  assert(CREDIT_DC === "discord.gg/vKVBbyfHTD", "discord invite");
-  assert(creditByline() === "by Asphalt Cake", "byline");
-  const src = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "credits.js"), "utf8");
-  assert(!src.includes("Asphalt Cake"), "author name is not plaintext in credits.js");
-  assert(!src.includes("discord.gg/vKVBbyfHTD"), "discord invite is not plaintext in credits.js");
-  assert(!src.includes("@AsphaltCake"), "channel handle is not plaintext in credits.js");
-  pass("credit seal and obfuscation");
+  assert(PROJECT_URL === "https://github.com/rfibyzan/PCRemote", "project url");
+  assert(creditByline() === "PCRemote di GitHub", "footer label");
+  pass("project link");
 }
 
 try {

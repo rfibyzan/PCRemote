@@ -14,6 +14,7 @@ import { AppState } from "react-native";
 import { createConnLog, formatLog } from "./connlog";
 import { getDeviceInfo } from "./deviceinfo";
 import { newestAnnounce, parseRecent, removeRecent, upsertRecent } from "./recent";
+import { parseVideoPacket } from "./videoproto";
 import {
   DEFAULT_PORT,
   NTFY_HOSTS,
@@ -69,6 +70,7 @@ const state = {
   attempts: 0,
   wantScreen: false,
   screenHandler: null,
+  videoHandler: null, // H.264 "PV" access units (src/video.js), beta
   lastHosts: [],
   recent: [],
   device: null,
@@ -283,7 +285,27 @@ function handleTextMessage(raw) {
   emit(m);
 }
 
+/** H.264 access units ("PV" frames) go to one consumer, like JPEG frames. */
+export function setVideoHandler(fn) {
+  state.videoHandler = fn || null;
+}
+
+export function releaseVideoHandler(fn) {
+  if (fn && state.videoHandler === fn) state.videoHandler = null;
+}
+
 function handleBinaryMessage(data) {
+  const video = parseVideoPacket(data);
+  if (video) {
+    if (state.videoHandler) {
+      try {
+        state.videoHandler(video);
+      } catch {
+        // a decoder hiccup must not break the socket loop
+      }
+    }
+    return;
+  }
   const frame = parseBinaryFrame(data);
   if (!frame || frame.t !== "frame") return; // invalid: keep last valid frame
   if (state.screenHandler) {
