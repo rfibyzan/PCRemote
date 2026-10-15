@@ -11,7 +11,8 @@
  * pointers on Android).
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { StyleSheet, Text, Vibration, View } from "react-native";
+import { StyleSheet, Vibration, View } from "react-native";
+import Text from "../AppText";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { CONTROL_DEFS, CONTROL_IDS, controlBox, controlOpacity, moveControl } from "./layout";
 import { TouchRouter } from "./router";
