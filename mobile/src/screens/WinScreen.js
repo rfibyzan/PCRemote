@@ -3,7 +3,8 @@
  * section fits in those two rows except Lainnya, which scrolls inside the
  * area (the area itself never grows, so the viewer stays the same size). */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import Text from "../AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
 import { COLORS } from "../components";
@@ -203,7 +204,7 @@ const styles = StyleSheet.create({
   ctl: { flex: 1, overflow: "hidden" },
   tabs: { flexDirection: "row", gap: 3, height: TABS_H, backgroundColor: COLORS.card, borderRadius: 9, padding: 2 },
   tab: { flex: 1, borderRadius: 7, alignItems: "center", justifyContent: "center" },
-  tabActive: { backgroundColor: "#0c4a6e" },
+  tabActive: { backgroundColor: "#5e5ce6" },
   tabText: { color: COLORS.muted, fontWeight: "800", fontSize: 11 },
   tabTextActive: { color: COLORS.text },
   more: { gap: 6 },
@@ -213,7 +214,7 @@ const styles = StyleSheet.create({
   cellFn: { width: "15%" },
   cellSmall: { width: "12.5%" },
   cellWide: { width: "48%" },
-  cellActive: { backgroundColor: "#0c4a6e", borderWidth: 1, borderColor: COLORS.accent },
+  cellActive: { backgroundColor: "#5e5ce6", borderWidth: 1, borderColor: COLORS.accent },
   cellPressed: { opacity: 0.6 },
   dangerCell: { backgroundColor: "#7f1d1d" },
   cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 10 },
@@ -221,7 +222,7 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", gap: 6 },
   input: { flex: 1, height: CELL_H, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 0 },
   goIcon: { minWidth: 40 },
-  go: { backgroundColor: "#0c4a6e", borderRadius: 10, minWidth: 48, paddingHorizontal: 8, height: CELL_H, alignItems: "center", justifyContent: "center" },
+  go: { backgroundColor: "#5e5ce6", borderRadius: 10, minWidth: 48, paddingHorizontal: 8, height: CELL_H, alignItems: "center", justifyContent: "center" },
   goAlt: { backgroundColor: COLORS.chip },
   goText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
 });
