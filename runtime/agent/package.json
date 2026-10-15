@@ -9,7 +9,9 @@
     "test:unit": "node src/unit_test.js",
     "test:game": "node src/game_test.js",
     "test:input": "node src/unit_test.js",
-    "test:devices": "node src/devices_test.js"
+    "test:devices": "node src/devices_test.js",
+    "test:video": "node src/video_test.js",
+    "pretest": "node src/video_test.js"
   },
   "dependencies": {
     "koffi": "^2.11.0",
