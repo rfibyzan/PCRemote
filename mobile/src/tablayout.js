@@ -9,7 +9,8 @@
  * tabs inside that area, stream settings live in a popover over the viewer.
  * Pure: no React Native imports, tested in tablayout.test.js.
  */
-export const CONTROL_H = 128; // dp, the whole area under the viewer
+export const CONTROL_H = 128; // dp, the tab's control area under the toolbar
+export const TOOLBAR_H = 44; // dp, shared Sill-style toolbar under the viewer (Lipat hides CONTROL_H)
 export const CONTROL_GAP = 6;
 export const CONTROL_PAD = 6; // bottom padding inside CONTROL_H
 export const CONTROL_INNER = CONTROL_H - CONTROL_PAD; // height rows can use
@@ -27,6 +28,7 @@ export function rowHeight(flexRows, fixed = [], total = CONTROL_INNER, gap = CON
 }
 
 /** Viewer height the layout leaves on a window (for previews/tests). */
-export function viewerHeight(winH, chromeH) {
-  return Math.max(0, Math.round((Number(winH) || 0) - (Number(chromeH) || 0) - CONTROL_H));
+export function viewerHeight(winH, chromeH, fold = false) {
+  const under = TOOLBAR_H + 6 + (fold ? 0 : CONTROL_H);
+  return Math.max(0, Math.round((Number(winH) || 0) - (Number(chromeH) || 0) - under));
 }
