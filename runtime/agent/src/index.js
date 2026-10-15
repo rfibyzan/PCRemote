@@ -39,6 +39,7 @@ import { createGamepadSession } from "./gamepad.js";
 import { createVideoManager } from "./video.js";
 import { createDeviceStore, isLocalRequest, linkOf, sanitizeDevice } from "./devices.js";
 import { assertCredits, creditByline, creditChannel, creditSupport, creditsIntact } from "./credits.js";
+import { createAutostartCache, setAutostart } from "./autostart.js";
 
 // Optional QR on the dashboard (`npm install` pulls "qrcode"). Without it the
 // page still works and simply shows the code.
@@ -88,6 +89,7 @@ const state = {
   clients: new Set(),
 };
 const devices = createDeviceStore();
+const autostart = createAutostartCache();
 
 const LINK_LABEL = { wifi: "Wi-Fi", internet: "Internet", usb: "USB" };
 
@@ -140,6 +142,7 @@ function apiState() {
     log: devices.logs().slice(0, 30),
     lan: state.lan.length > 0,
     internet: Boolean(state.tunnel),
+    autostart: autostart.get(),
     now: Date.now(),
   };
 }
@@ -475,115 +478,177 @@ function dashboard(qrSvg = "") {
   const netOk = Boolean(state.tunnel);
   const by = creditByline();
   const support = creditSupport();
-  const pill = (id, label, ok, okText, waitText) =>
-    `<div class="pill"><span id="${id}-dot" class="dot ${ok ? "on" : ""}"></span><span class="k">${label}</span><span id="${id}" class="${ok ? "ok" : "muted"}">${ok ? okText : waitText}</span></div>`;
+  const chip = (id, label, ok, okText, waitText) =>
+    `<div class="chip"><span id="${id}-dot" class="dot ${ok ? "on" : ""}"></span><span class="k">${label}</span><span id="${id}" class="v">${ok ? okText : waitText}</span></div>`;
   const qrBlock = qrSvg
-    ? `<div class="qr">${qrSvg}</div><p class="qrcap">Scan with the PC Remote app<br><span class="muted">(Scan QR on the connect screen)</span></p>`
-    : `<div class="qr qr-off"><span>QR unavailable<br><small>run <code>npm install</code> in runtime\\agent</small></span></div>`;
+    ? `<div class="qr" title="Scan di aplikasi PC Remote (Scan QR di layar connect)">${qrSvg}</div>`
+    : `<div class="qr qr-off"><span>QR tidak tersedia<br><small>jalankan <code>npm install</code> di runtime\\agent</small></span></div>`;
   const initial = JSON.stringify(apiState()).replace(/</g, "\\u003c");
+  const n = state.clients.size;
   return `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PC Remote</title>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PC Remote</title>
 <style>
+  :root { --bg:#0e0e10; --card:#1c1c1e; --row:#262629; --line:#36363a; --txt:#f2f2f5; --mut:#8e8e93; --acc:#6e68f5; --accbg:#242246; --acctx:#c4c0ff; --grn:#34c759; --red:#ff453a; --redbg:#3a1e1e; }
   * { box-sizing: border-box; }
-  html, body { margin:0; min-height:100%; background:#0b1220; }
-  body { font-family: "Segoe UI", system-ui, sans-serif; color:#e8eefc; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
-  .card { width:100%; max-width:860px; background:#151d2e; border:1px solid #1e293b; border-radius:20px; padding:28px 32px; box-shadow:0 20px 60px rgba(0,0,0,.35); }
-  .head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:18px; }
-  h1 { margin:0; font-size:26px; }
-  h1 small { color:#64748b; font-size:14px; font-weight:600; margin-left:8px; }
-  h2 { font-size:14px; color:#94a3b8; text-transform:uppercase; letter-spacing:1px; margin:0 0 10px; }
-  .phones { background:#0c4a6e; color:#7dd3fc; border-radius:999px; padding:5px 12px; font-size:13px; font-weight:700; }
-  .grid { display:flex; gap:32px; align-items:center; flex-wrap:wrap; }
-  .left { flex:1 1 320px; min-width:0; }
-  .right { flex:0 0 220px; text-align:center; margin:0 auto; }
-  .label { color:#94a3b8; font-size:13px; margin:0 0 6px; }
-  .coderow { display:flex; align-items:center; gap:12px; margin:0 0 6px; }
-  .code { font-family: Consolas, "Cascadia Mono", monospace; font-size:44px; letter-spacing:6px; font-weight:700; color:#7dd3fc; margin:0; white-space:nowrap; }
-  .copy { background:#0c4a6e; border-color:#0369a1; color:#e0f2fe; padding:8px 12px; }
-  .copy:hover { background:#0369a1; border-color:#38bdf8; }
-  .copy.done { background:#14532d; border-color:#22c55e; }
-  .sub { color:#94a3b8; font-size:13px; margin:0 0 20px; }
-  .pills { display:flex; flex-direction:column; gap:8px; margin-bottom:22px; }
-  .pill { display:flex; align-items:center; gap:10px; background:#0f172a; border-radius:10px; padding:9px 12px; font-size:14px; }
-  .pill .k { color:#cbd5e1; flex:1; }
-  .dot { width:9px; height:9px; border-radius:50%; background:#f59e0b; flex:0 0 auto; }
-  .dot.on { background:#22c55e; }
-  .dot.off { background:#475569; }
-  .ok { color:#4ade80; font-weight:600; }
-  .muted { color:#94a3b8; }
-  .qr { width:220px; height:220px; background:#fff; border-radius:14px; padding:10px; margin:0 auto; }
+  html, body { margin:0; min-height:100%; background:var(--bg); }
+  body { font-family: -apple-system, "SF Pro Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; color:var(--txt); padding:40px 20px 32px; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:920px; margin:0 auto; }
+  .head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:24px; }
+  h1 { margin:0; font-size:34px; font-weight:700; letter-spacing:-.5px; }
+  h1 small { color:var(--mut); font-size:17px; font-weight:500; margin-left:10px; letter-spacing:0; }
+  .phones { display:inline-flex; align-items:center; gap:8px; background:var(--accbg); color:var(--acctx); border-radius:999px; padding:8px 16px; font-size:15px; font-weight:500; }
+  .update { display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--accbg); border-radius:12px; padding:13px 18px; font-size:16px; font-weight:500; margin:0 0 24px; }
+  .update a { color:#aaa5ff; text-decoration:none; white-space:nowrap; }
+  .update a:hover { text-decoration:underline; }
+  .sec { display:flex; justify-content:space-between; align-items:baseline; margin:0 16px 8px; color:var(--mut); font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:.3px; }
+  .sec .new { color:var(--acc); font-size:12px; font-weight:700; }
+  .group { background:var(--card); border-radius:14px; margin-bottom:30px; overflow:hidden; }
+  .row { display:flex; align-items:center; gap:14px; padding:12px 20px; min-height:56px; position:relative; }
+  .group > .row + .row, .group > .row + details, .group > details + details, .group > details + .row { border-top:1px solid var(--line); margin-left:18px; }
+  .group > .row + .row, .group > details + .row { padding-left:2px; }
+  .group > .row + details > summary, .group > details + details > summary { padding-left:2px; }
+  .row .main { flex:1; min-width:0; }
+  .t { font-size:17px; font-weight:500; }
+  .s { color:var(--mut); font-size:14px; margin-top:3px; }
+  .err { color:var(--red); font-size:13px; margin-top:4px; }
+  .pair { display:flex; gap:28px; align-items:center; padding:22px 24px 24px; }
+  .pair .left { flex:1 1 auto; min-width:0; }
+  .label { color:var(--mut); font-size:15px; font-weight:500; margin:0 0 6px; }
+  .coderow { display:flex; align-items:center; gap:20px; flex-wrap:wrap; margin:0 0 14px; }
+  .code { font-family: "SF Mono", ui-monospace, Consolas, "Cascadia Mono", monospace; font-size:46px; font-weight:700; letter-spacing:4px; margin:0; white-space:nowrap; }
+  .cap { color:var(--mut); font-size:16px; line-height:1.5; margin:0 0 20px; }
+  .chips { display:flex; gap:10px; flex-wrap:wrap; }
+  .chip { display:inline-flex; align-items:center; gap:8px; background:var(--row); border-radius:999px; padding:8px 14px; font-size:15px; font-weight:500; }
+  .chip .v { color:var(--mut); }
+  .dot { width:10px; height:10px; border-radius:50%; background:#ff9f0a; flex:0 0 auto; }
+  .dot.on { background:var(--grn); }
+  .dot.off { background:#48484c; }
+  .qr { width:200px; height:200px; flex:0 0 200px; background:#fff; border-radius:14px; padding:10px; }
   .qr svg { width:100%; height:100%; display:block; }
-  .qr-off { display:flex; align-items:center; justify-content:center; background:#0f172a; color:#94a3b8; font-size:13px; text-align:center; border:1px dashed #334155; }
-  .qrcap { font-size:13px; margin:10px 0 0; color:#cbd5e1; }
-  .section { border-top:1px solid #1e293b; padding-top:16px; margin-top:6px; margin-bottom:16px; }
-  .dev { display:flex; align-items:center; gap:12px; background:#0f172a; border-radius:12px; padding:10px 12px; margin-bottom:8px; }
-  .dev .info { flex:1; min-width:0; }
-  .dev .name { font-weight:700; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .dev .meta { color:#94a3b8; font-size:12px; margin-top:2px; }
-  .tag { display:inline-block; background:#1e293b; color:#cbd5e1; border-radius:6px; padding:1px 6px; font-size:11px; font-weight:700; margin-right:4px; }
-  .tag.bad { background:#7f1d1d; color:#fecaca; }
-  .acts { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
-  .empty { color:#64748b; font-size:13px; padding:4px 2px 8px; }
-  details summary { cursor:pointer; color:#94a3b8; font-size:13px; font-weight:700; margin-bottom:8px; }
-  .log { background:#0f172a; border-radius:10px; padding:8px 12px; max-height:180px; overflow:auto; font-family: Consolas, monospace; font-size:12px; }
-  .log div { padding:2px 0; color:#cbd5e1; }
-  .log .warn { color:#fbbf24; }
-  .log .ok { color:#4ade80; font-weight:400; }
-  .log time { color:#64748b; margin-right:8px; }
-  .danger { display:flex; align-items:center; gap:12px; flex-wrap:wrap; border-top:1px solid #1e293b; padding-top:16px; }
-  button { background:#1e293b; color:#e8eefc; border:1px solid #334155; border-radius:10px; padding:7px 12px; font-weight:700; cursor:pointer; font-size:13px; font-family:inherit; }
-  button:hover { background:#334155; }
-  button.red:hover { background:#7f1d1d; border-color:#ef4444; }
-  .small { color:#64748b; font-size:12px; }
-  .credit { margin:18px 0 0; color:#64748b; font-size:12px; }
-  .credit a { color:#7dd3fc; text-decoration:none; }
-  code { color:#cbd5e1; }
-  .update { margin:0 0 14px; padding:10px 12px; border-radius:10px; background:#2e1065; border:1px solid #7c3aed; color:#ede9fe; font-size:13px; }
-  .update a { color:#c4b5fd; }
+  .qr-off { display:flex; align-items:center; justify-content:center; background:var(--row); color:var(--mut); font-size:13px; text-align:center; }
+  button { background:var(--row); color:var(--txt); border:0; border-radius:9px; padding:7px 14px; font-weight:500; cursor:pointer; font-size:15px; font-family:inherit; white-space:nowrap; }
+  button:hover { background:#323236; }
+  button.red { background:var(--redbg); color:var(--red); }
+  button.red:hover { background:#4a2424; }
+  button.done { background:#1f3a26; color:var(--grn); }
+  .acts { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+  .ico { width:40px; height:40px; flex:0 0 40px; border-radius:10px; background:var(--accbg); color:var(--acctx); display:flex; align-items:center; justify-content:center; }
+  .ico.off { background:var(--row); color:var(--mut); }
+  .ico svg { width:16px; height:22px; }
+  .meta { color:var(--mut); font-size:14px; margin-top:4px; overflow:hidden; text-overflow:ellipsis; }
+  .name { font-size:17px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tag { display:inline-block; background:var(--row); color:var(--txt); border-radius:6px; padding:1px 8px; font-size:13px; font-weight:500; margin-right:8px; }
+  .tag.bad { background:var(--redbg); color:var(--red); }
+  .empty { color:var(--mut); font-size:15px; padding:18px 20px; }
+  details > summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:12px; padding:16px 20px; font-size:17px; }
+  details > summary::-webkit-details-marker { display:none; }
+  details > summary .main { flex:1; }
+  details > summary .cnt { color:var(--mut); }
+  details > summary .chev { color:var(--mut); transition:transform .15s; }
+  details[open] > summary .chev { transform:rotate(90deg); }
+  details > summary:hover { background:#202022; }
+  .sub { border-top:1px solid var(--line); }
+  .sub .row + .row { border-top:1px solid var(--line); }
+  .log { padding:10px 20px 14px; max-height:240px; overflow:auto; font-family: "SF Mono", ui-monospace, Consolas, monospace; font-size:12px; border-top:1px solid var(--line); }
+  .log div { padding:3px 0; color:#d1d1d6; }
+  .log .warn { color:#ff9f0a; }
+  .log .ok { color:var(--grn); }
+  .log time { color:var(--mut); margin-right:10px; }
+  .muted { color:var(--mut); }
+  .switch { position:relative; width:52px; height:30px; flex:0 0 52px; }
+  .switch input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; z-index:1; }
+  .switch .tr { position:absolute; inset:0; border-radius:15px; background:#48484c; transition:background .15s; }
+  .switch .tr::after { content:""; position:absolute; top:2px; left:2px; width:26px; height:26px; border-radius:50%; background:#fff; transition:transform .15s; }
+  .switch input:checked + .tr { background:var(--acc); }
+  .switch input:checked + .tr::after { transform:translateX(22px); }
+  .switch input:disabled { cursor:default; }
+  .switch input:disabled + .tr { opacity:.45; }
+  .switch input:focus-visible + .tr { outline:2px solid var(--acctx); outline-offset:2px; }
+  .danger .t { color:var(--red); }
+  .credit { text-align:center; margin:4px 0 0; color:var(--mut); font-size:13px; }
+  .credit a { color:var(--mut); text-decoration:none; }
+  .credit a:hover { color:var(--txt); }
+  code { color:#d1d1d6; }
+  @media (max-width: 680px) {
+    body { padding:24px 12px; }
+    h1 { font-size:28px; }
+    .pair { flex-direction:column; align-items:flex-start; }
+    .qr { align-self:center; }
+    .code { font-size:38px; }
+    .row.dev { flex-wrap:wrap; }
+    .row.dev .acts { width:100%; justify-content:flex-start; padding-left:54px; }
+  }
 </style></head>
-<body><div class="card">
-  <div class="head"><h1>PC Remote<small>${escapeHtml(state.name)}</small></h1><span class="phones" id="count">${state.clients.size} phone${state.clients.size === 1 ? "" : "s"} connected</span></div>
-  ${state.update ? `<p class="update">Versi baru <b>${escapeHtml(state.update.tag)}</b> tersedia. <a href="${escapeHtml(state.update.url)}" target="_blank" rel="noopener">Download dari GitHub Releases</a></p>` : ""}
-  <div class="grid">
+<body><div class="wrap">
+  <div class="head"><h1>PC Remote<small>${escapeHtml(state.name)}</small></h1><span class="phones"><span class="dot ${n ? "on" : "off"}" id="count-dot"></span><span id="count">${n} HP terhubung</span></span></div>
+  ${state.update ? `<div class="update"><span>Versi baru ${escapeHtml(state.update.tag)} tersedia</span><a href="${escapeHtml(state.update.url)}" target="_blank" rel="noopener">Download ›</a></div>` : ""}
+
+  <div class="sec">Pasangkan HP</div>
+  <div class="group pair">
     <div class="left">
-      <p class="label">Pair code</p>
+      <p class="label">Kode pairing</p>
       <div class="coderow">
         <p class="code" id="code">${escapeHtml(shown)}</p>
-        <button class="copy" id="copy" type="button" title="Copy code">Copy</button>
+        <button id="copy" type="button" title="Salin kode">Salin</button>
       </div>
-      <p class="sub">Enter it on the phone <b>once</b>, or scan the QR. It stays the same after restarts.</p>
-      <div class="pills">
-        ${pill("lan", "Local Wi‑Fi", lanOk, "ready", "no network yet")}
-        ${pill("net", "Internet", netOk, "ready", "starting…")}
-        ${pill("mon", "Screens", mons.length > 0, String(mons.length), "0")}
+      <p class="cap">Masukkan sekali di HP, atau scan QR.<br>Kode tetap sama setelah restart.</p>
+      <div class="chips">
+        ${chip("lan", "Wi‑Fi lokal", lanOk, "siap", "belum ada jaringan")}
+        ${chip("net", "Internet", netOk, "siap", "menyiapkan…")}
+        ${chip("mon", "Layar", mons.length > 0, String(mons.length), "0")}
       </div>
     </div>
-    <div class="right">${qrBlock}</div>
+    ${qrBlock}
   </div>
-  <div class="section">
-    <h2>Connected phones</h2>
-    <div id="online"></div>
-    <details id="recentBox"><summary>Recent phones (<span id="recentN">0</span>)</summary><div id="recent"></div></details>
-    <details id="logBox"><summary>Connection log</summary><div class="log" id="log"></div></details>
+
+  <div class="sec">Mulai otomatis</div>
+  <div class="group">
+    <div class="row">
+      <div class="main">
+        <div class="t">Jalankan PC Remote saat Windows menyala</div>
+        <div class="s">Muncul juga di Task Manager › Startup · tanpa prompt UAC</div>
+        <div class="err" id="autoErr" hidden></div>
+      </div>
+      <label class="switch"><input type="checkbox" id="auto" role="switch" aria-label="Jalankan PC Remote saat Windows menyala" disabled><span class="tr"></span></label>
+    </div>
   </div>
-  <div class="danger">
-    <button class="red" type="button" id="revoke">Make a new lock code</button>
-    <span class="small">Only do that if you want to kick every paired phone.</span>
+
+  <div class="sec">HP terhubung</div>
+  <div class="group" id="online"></div>
+
+  <div class="sec">Lainnya</div>
+  <div class="group">
+    <details id="recentBox"><summary><span class="main">HP sebelumnya</span><span class="cnt" id="recentN">0</span><span class="chev">›</span></summary><div class="sub" id="recent"></div></details>
+    <details id="logBox"><summary><span class="main">Log koneksi</span><span class="chev">›</span></summary><div class="log" id="log"></div></details>
   </div>
+
+  <div class="sec">Keamanan</div>
+  <div class="group danger">
+    <div class="row">
+      <div class="main">
+        <div class="t">Buat kode kunci baru</div>
+        <div class="s">Semua HP yang sudah dipasangkan harus pairing ulang</div>
+      </div>
+      <button class="red" type="button" id="revoke">Buat ulang</button>
+    </div>
+  </div>
+
   <p class="credit"><a href="${creditChannel()}" target="_blank" rel="noopener">${by}</a> · ${support}</p>
 </div>
 <script>
 (function(){
   var LINK = { wifi: "Wi-Fi", internet: "Internet", usb: "USB" };
+  var PHONE = '<svg viewBox="0 0 16 22" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="1.5" y="1" width="13" height="20" rx="3"/><path d="M6 17.5h4"/></svg>';
   var codeText = ${JSON.stringify(state.code)};
+  var autoBusy = false;
   function esc(v){ return String(v == null ? "" : v).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
   function ago(ts, now){
     if (!ts) return "";
     var s = Math.max(0, Math.round((now - ts) / 1000));
-    if (s < 60) return s + " s";
-    if (s < 3600) return Math.floor(s / 60) + " min";
-    if (s < 86400) return Math.floor(s / 3600) + " h";
-    return Math.floor(s / 86400) + " d";
+    if (s < 60) return s + " detik";
+    if (s < 3600) return Math.floor(s / 60) + " menit";
+    if (s < 86400) return Math.floor(s / 3600) + " jam";
+    return Math.floor(s / 86400) + " hari";
   }
   function clock(ts){ var d = new Date(ts); return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
   function post(path, body){
@@ -605,47 +670,74 @@ function dashboard(qrSvg = "") {
   function meta(d){
     return [d.model && String(d.name).indexOf(d.model) < 0 ? d.model : "", d.os, d.app ? "app " + d.app : ""].filter(Boolean).map(esc).join(" · ");
   }
+  function renderAuto(a){
+    var box = document.getElementById("auto"), err = document.getElementById("autoErr");
+    if (!box || autoBusy || !a) return;
+    box.checked = Boolean(a.on);
+    box.disabled = !a.available;
+    if (err.getAttribute("data-sticky") === "1") return;
+    var why = !a.on && a.reason ? a.reason : "";
+    err.textContent = why; err.hidden = !why; err.className = a.available ? "s" : "err";
+  }
   function render(st){
     var n = st.phones.length;
-    document.getElementById("count").textContent = n + " phone" + (n === 1 ? "" : "s") + " connected";
-    setPill("lan", st.lan, "ready", "no network yet");
-    setPill("net", st.internet, "ready", "starting…");
+    document.getElementById("count").textContent = n + " HP terhubung";
+    document.getElementById("count-dot").className = "dot " + (n ? "on" : "off");
+    setChip("lan", st.lan, "siap", "belum ada jaringan");
+    setChip("net", st.internet, "siap", "menyiapkan…");
+    renderAuto(st.autostart);
     var on = st.phones.map(function(p){
-      return '<div class="dev"><span class="dot on"></span><div class="info"><div class="name">' + esc(p.name) + '</div><div class="meta"><span class="tag">' + esc(LINK[p.link] || p.link) + '</span>' +
-        (p.ip && p.link !== "internet" ? esc(p.ip) + ' · ' : '') + 'connected ' + ago(p.since, st.now) + (meta(p) ? ' · ' + meta(p) : '') + '</div></div>' +
-        '<div class="acts">' + btn("kick", p, "Disconnect", "red") + btn("block", p, "Block", "red") + '</div></div>';
+      return '<div class="row dev"><div class="ico">' + PHONE + '</div><div class="main"><div class="name">' + esc(p.name) + '</div><div class="meta"><span class="tag">' + esc(LINK[p.link] || p.link) + '</span>' +
+        (p.ip && p.link !== "internet" ? esc(p.ip) + ' · ' : '') + ago(p.since, st.now) + (meta(p) ? ' · ' + meta(p) : '') + '</div></div>' +
+        '<div class="acts">' + btn("kick", p, "Putuskan") + btn("block", p, "Blokir", "red") + '</div></div>';
     }).join("");
-    document.getElementById("online").innerHTML = on || '<div class="empty">No phone connected yet. Open the app and scan the QR.</div>';
+    document.getElementById("online").innerHTML = on || '<div class="empty">Belum ada HP terhubung. Buka aplikasi dan scan QR.</div>';
     document.getElementById("recentN").textContent = st.recent.length;
     document.getElementById("recent").innerHTML = st.recent.map(function(d){
-      return '<div class="dev"><span class="dot off"></span><div class="info"><div class="name">' + esc(d.name) + '</div><div class="meta">' +
-        (d.blocked ? '<span class="tag bad">Blocked</span>' : '') + '<span class="tag">' + esc(LINK[d.lastLink] || d.lastLink || "?") + '</span>last seen ' + ago(d.lastSeen, st.now) + ' ago' + (meta(d) ? ' · ' + meta(d) : '') + '</div></div>' +
-        '<div class="acts">' + (d.blocked ? btn("unblock", d, "Unblock") : btn("block", d, "Block", "red")) + btn("forget", d, "Forget") + '</div></div>';
-    }).join("") || '<div class="empty">Nothing yet.</div>';
+      return '<div class="row dev"><div class="ico off">' + PHONE + '</div><div class="main"><div class="name">' + esc(d.name) + '</div><div class="meta">' +
+        (d.blocked ? '<span class="tag bad">Diblokir</span>' : '') + '<span class="tag">' + esc(LINK[d.lastLink] || d.lastLink || "?") + '</span>terakhir ' + ago(d.lastSeen, st.now) + ' lalu' + (meta(d) ? ' · ' + meta(d) : '') + '</div></div>' +
+        '<div class="acts">' + (d.blocked ? btn("unblock", d, "Buka blokir") : btn("block", d, "Blokir", "red")) + btn("forget", d, "Hapus") + '</div></div>';
+    }).join("") || '<div class="empty">Belum ada.</div>';
     document.getElementById("log").innerHTML = st.log.map(function(l){
       return '<div class="' + esc(l.kind) + '"><time>' + clock(l.ts) + '</time>' + esc(l.text) + '</div>';
-    }).join("") || '<div class="muted">Empty.</div>';
+    }).join("") || '<div class="muted">Kosong.</div>';
   }
-  function setPill(id, ok, a, b){
+  function setChip(id, ok, a, b){
     var el = document.getElementById(id), dot = document.getElementById(id + "-dot");
     if (!el) return;
-    el.textContent = ok ? a : b; el.className = ok ? "ok" : "muted"; dot.className = "dot" + (ok ? " on" : "");
+    el.textContent = ok ? a : b; dot.className = "dot" + (ok ? " on" : "");
   }
   function refresh(){
     fetch("/api/state", { cache: "no-store" }).then(function(r){ return r.json(); }).then(render).catch(function(){});
   }
+  document.getElementById("auto").onchange = function(){
+    var box = this, want = box.checked, err = document.getElementById("autoErr");
+    autoBusy = true; box.disabled = true;
+    err.hidden = true; err.removeAttribute("data-sticky");
+    post("/api/autostart", { on: want }).then(function(r){
+      autoBusy = false;
+      if (!r || r.ok === false) {
+        err.textContent = "Gagal: " + ((r && r.error) || "tidak diketahui"); err.className = "err"; err.hidden = false; err.setAttribute("data-sticky", "1");
+      }
+      renderAuto(r && r.autostart ? r.autostart : { available: true, on: !want });
+    }, function(){
+      autoBusy = false;
+      err.textContent = "Gagal menghubungi agent"; err.className = "err"; err.hidden = false; err.setAttribute("data-sticky", "1");
+      box.checked = !want; box.disabled = false;
+    });
+  };
   document.getElementById("copy").onclick = function(){
     var b = this;
-    function done(){ b.textContent = "Copied ✓"; b.classList.add("done"); setTimeout(function(){ b.textContent = "Copy"; b.classList.remove("done"); }, 1500); }
+    function done(){ b.textContent = "Tersalin ✓"; b.classList.add("done"); setTimeout(function(){ b.textContent = "Salin"; b.classList.remove("done"); }, 1500); }
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(codeText).then(done, fallback); else fallback();
     function fallback(){
       var t = document.createElement("textarea"); t.value = codeText; document.body.appendChild(t); t.select();
-      try { document.execCommand("copy"); done(); } catch (e) { prompt("Copy the code:", codeText); }
+      try { document.execCommand("copy"); done(); } catch (e) { prompt("Salin kode:", codeText); }
       document.body.removeChild(t);
     }
   };
   document.getElementById("revoke").onclick = function(){
-    if (!confirm("Phones will need this new code. Continue?")) return;
+    if (!confirm("Semua HP harus pairing ulang dengan kode baru. Lanjutkan?")) return;
     post("/revoke").then(function(){ location.reload(); }, function(){ location.reload(); });
   };
   render(${initial});
@@ -1000,6 +1092,24 @@ async function main() {
       });
       return;
     }
+    if (admin && url === "/api/autostart") {
+      void readJson(req).then(async (body) => {
+        const want = body.on === true;
+        let out;
+        try {
+          const next = await setAutostart(want);
+          autostart.set(next);
+          devices.log(want ? "Mulai otomatis dinyalakan" : "Mulai otomatis dimatikan", "info");
+          out = { ok: next.available !== false && next.on === want, autostart: autostart.get() };
+          if (!out.ok) out.error = next.reason || "status tidak berubah";
+        } catch (err) {
+          out = { ok: false, error: String(err?.message || err).slice(0, 240), autostart: (await autostart.refresh(), autostart.get()) };
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(out));
+      });
+      return;
+    }
     if (req.method === "GET" && url === "/api/state") {
       res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
       res.end(JSON.stringify(apiState()));
@@ -1126,6 +1236,10 @@ async function main() {
   }
   printBanner();
   openWindowsFirewall(state.port);
+  // Folder moved since autostart was switched on: point the task at this exe.
+  void autostart.refresh().then((a) => {
+    if (a?.on && a.stale) setAutostart(true).then((v) => autostart.set(v), () => {});
+  });
   usbReverse(state.port);
 
   if (process.platform === "win32") {
