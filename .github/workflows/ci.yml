@@ -46,3 +46,4 @@ jobs:
       - run: node src/pointer_test.js
       - run: node src/unit_test.js
       - run: node src/devices_test.js
+      - run: node src/video_test.js
