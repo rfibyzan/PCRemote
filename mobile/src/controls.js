@@ -395,6 +395,7 @@ const sel = {
   crop: { x: 0, y: 0, w: 1, h: 1 },
   gameLock: false, // true while GAME owns the crop (Fit/restore transaction)
   fold: false, // Lipat: PAD/TYPE/WIN control area hidden, viewer takes the space
+  win: null, // single-window stream: {id, title, exe, mon, x, y, w, h} or null
 };
 const selListeners = new Set();
 
@@ -425,6 +426,7 @@ export function useSel() {
     bar: sel.bar,
     clickBtn: sel.clickBtn,
     fold: sel.fold,
+    win: sel.win || null,
     crop: { ...sel.crop },
   });
   useEffect(() => {

@@ -40,10 +40,12 @@ import { BAR_W, BarScroll, ScrollSettings, sendSwipeScroll } from "./scrollbar";
 import { msg } from "./protocol";
 import { pointerIcon } from "./pointer";
 import { addListener, getStatus, send } from "./connection";
+import { WindowBar, WindowPicker, useWindowStream } from "./windowstream";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD, TOOLBAR_H } from "./tablayout";
 import {
   MAX_ZOOM,
   camFor,
+  camForRect,
   camToNorm,
   clampCam,
   fitCanvas,
@@ -184,6 +186,9 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const looking = mode === "Look";
   const clickBtn = shared.clickBtn;
   const crop = shared.crop;
+  // Single-window stream: the picked app window (camera framed on it) or null.
+  const win = shared.win || null;
+  const [winPick, setWinPick] = useState(false);
   const { monitors, current, camError, pick } = useMonitorSource();
   const cropRef = useRef(crop);
   cropRef.current = crop;
@@ -1278,6 +1283,21 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const sliderFrac = Math.max(0, Math.min(1, Math.log2(Math.max(1, effZoom)) / LOG_MAX));
   const zoomed = effZoom > 1.02;
   const camTools = current !== "cam";
+  const winStream = useWindowStream({
+    win,
+    current,
+    onMonitor: (id) => onPick(id),
+    fitTo: (r) => {
+      const g = geom();
+      if (g) animateCamTo(camForRect(r, g.fit, g.vw, g.vh));
+    },
+    reset: resetCrop,
+  });
+  function pickMonitorChip(id) {
+    // Choosing a screen by hand leaves single-window mode.
+    if (getSel().win) setSel({ win: null });
+    onPick(id);
+  }
   const miniAspect = monitorAspect() || 16 / 9;
   const MINI_W = full ? 120 : 104;
   const miniH = Math.round(Math.max(36, Math.min(90, MINI_W / miniAspect)));
@@ -1291,7 +1311,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         {!!title && <Text style={styles.title}>{title}</Text>}
         <ConnDot />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.topScroll} contentContainerStyle={styles.topScrollContent}>
-        <MonitorChips monitors={monitors} current={current} onPick={onPick} row />
+        <MonitorChips monitors={monitors} current={current} onPick={pickMonitorChip} row />
         </ScrollView>
         <Pressable
           onPress={() => setStreamOpen((v) => !v)}
@@ -1491,8 +1511,21 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             <Text style={styles.localChipText}>Mouse PC sedang dipakai</Text>
           </View>
         )}
+        {!!win && current !== "cam" && (
+          <Block style={[styles.winWrap, bar && styles.shiftForBar]}>
+            <WindowBar
+              win={win}
+              onRefit={() => {
+                send(msg.winAct(win.id, "focus"));
+                if (!win.min) winStream.fitTo(win);
+                else winStream.refresh();
+              }}
+              onExit={winStream.exit}
+            />
+          </Block>
+        )}
         {!streamOpen && !full && current !== "cam" && (
-          <Block style={[styles.lagWrap, bar && styles.shiftForBar]} pointerEvents="box-none">
+          <Block style={[styles.lagWrap, !!win && styles.lagBelowWin, bar && styles.shiftForBar]} pointerEvents="box-none">
             <LagBanner />
           </Block>
         )}
@@ -1525,7 +1558,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             { id: "click", icon: "cursor-default-click-outline", label: "Click", on: mode === "Click", onPress: () => setSel({ mode: "Click" }) },
             { id: "look", icon: "eye-outline", label: "Look", on: mode === "Look", onPress: () => setSel({ mode: "Look" }) },
             { id: "bar", icon: "gesture-swipe-vertical", label: "Bar", on: bar, onPress: () => setSel({ bar: !bar }) },
-            camTools && { id: "fit", icon: "fit-to-screen-outline", label: "Fit", onPress: resetCrop },
+            camTools && { id: "win", icon: "application-outline", label: "Jendela", on: !!win, onPress: () => setWinPick(true) },
+            camTools && { id: "fit", icon: "fit-to-screen-outline", label: "Fit", onPress: win ? winStream.exit : resetCrop },
             camTools && { id: "aim", icon: "crosshairs", label: "Bidik", on: reticle, onPress: () => setReticle((v) => !v) },
             camTools && { id: "full", icon: "fullscreen", label: "Penuh", onPress: toggleFull },
           ]}
@@ -1533,6 +1567,16 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           onFold={() => setSel({ fold: !fold })}
         />
       )}
+      <WindowPicker
+        visible={winPick}
+        list={winStream.list}
+        onRefresh={winStream.refresh}
+        onClose={() => setWinPick(false)}
+        onPick={(w) => {
+          setWinPick(false);
+          winStream.pickWindow(w);
+        }}
+      />
       {!full && !fold && (
       <View style={styles.controls}>
       {actions && (
@@ -1667,4 +1711,6 @@ const styles = StyleSheet.create({
   pad: { flex: 1, borderRadius: 14, backgroundColor: COLORS.card, overflow: "hidden", alignItems: "center", justifyContent: "center" },
   padText: { color: COLORS.muted, textAlign: "center", fontSize: 12 },
   lagWrap: { position: "absolute", left: 8, right: 64, top: 36 },
+  lagBelowWin: { top: 74 },
+  winWrap: { position: "absolute", left: 8, right: 64, top: 34 },
 });

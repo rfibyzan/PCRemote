@@ -33,6 +33,8 @@ import { createPresence, presenceStep } from "./pointerstate.js";
 import { agentVersion, checkForUpdate } from "./updates.js";
 import { hideConsole, startTray, claimSingleInstance } from "./tray.js";
 import { superviseTunnel } from "./tunnel.js";
+import { listWindows, windowAction } from "./windows.js";
+import { WINDOW_ACTIONS } from "./windowmath.js";
 import { probeTunnel, wokeFromSleep } from "./keepalive.js";
 import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam.js";
 import { createGamepadSession } from "./gamepad.js";
@@ -394,6 +396,17 @@ async function handleCommand(ws, msg) {
     case "open":
       openTarget(msg.target || msg.url);
       break;
+    case "windows":
+      // Single-window stream: where every app window is, normalized to its monitor.
+      send(ws, { t: "windows", list: listWindows() });
+      break;
+    case "winAct": {
+      const a = String(msg.a || "");
+      if (!WINDOW_ACTIONS.has(a)) break;
+      const ok = windowAction(msg.id, a);
+      send(ws, { t: "winAct", id: msg.id, a, ok });
+      break;
+    }
     case "monitor":
       if (msg.id === "all") ws.view = "all";
       else {
