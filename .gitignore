@@ -13,6 +13,8 @@ mobile/ios/
 runtime/ffmpeg.exe
 runtime/node.exe
 runtime/cloudflared.exe
+# Autostart helper, compiled on the PC (or in release.yml) from PCRemoteStart.cs
+runtime/agent/autostart/*.exe
 
 # Secrets & signing
 .env
