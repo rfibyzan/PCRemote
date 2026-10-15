@@ -1,7 +1,6 @@
 ﻿PC Remote
 
-by Asphalt Cake
-Support: discord.gg/vKVBbyfHTD
+https://github.com/rfibyzan/PCRemote
 
 Give someone this whole folder, not just the exe.
 
