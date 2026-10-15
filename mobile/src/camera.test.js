@@ -1,6 +1,7 @@
 // Run: node src/camera.test.js
 import {
   camFor,
+  camForRect,
   camToNorm,
   clampCam,
   expandRegion,
@@ -116,6 +117,23 @@ ok(r.x === 0.123456 && r.w === 0.31, "resolveCrop snaps to exact crop");
 const r2 = resolveCrop({ x: 0.5, y: 0.5, w: 0.2, h: 0.2 }, sent);
 ok(r2.x === 0.5, "unknown header used as-is");
 ok(resolveCrop(null, sent).w === 1, "missing header = whole monitor");
+
+{
+  // Single-window: a window covering the right half of a 16:9 monitor, view 400x225.
+  const f = fitCanvas(400, 225, 16 / 9);
+  const c = camForRect({ x: 0.5, y: 0, w: 0.5, h: 1 }, f, 400, 225);
+  ok(Math.abs(c.s - 1) < 1e-6, "half-width window in same-aspect view stays at s=1 (height-limited)");
+  const v = visibleRect(c, f, 400, 225);
+  ok(v.x <= 0.5 + 1e-6 && v.x + v.w >= 1 - 1e-6, "window fully visible");
+  const c2 = camForRect({ x: 0.25, y: 0.25, w: 0.25, h: 0.25 }, f, 400, 225);
+  ok(Math.abs(c2.s - 4) < 1e-6, "quarter window zooms 4x");
+  const p = monitorToView(0.375, 0.375, c2, f, 400, 225);
+  ok(Math.abs(p.x - 200) < 1e-6 && Math.abs(p.y - 112.5) < 1e-6, "window centre at view centre");
+  const tall = fitCanvas(300, 600, 16 / 9);
+  const c3 = camForRect({ x: 0, y: 0, w: 0.5, h: 0.5 }, tall, 300, 600);
+  const v3 = visibleRect(c3, tall, 300, 600);
+  ok(v3.x <= 1e-6 && v3.w >= 0.5 - 1e-6, "portrait view: window width fits");
+}
 
 console.log(`${pass}/${pass + fail} passed`);
 if (fail) process.exit(1);
