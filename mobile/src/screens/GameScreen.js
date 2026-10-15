@@ -11,7 +11,8 @@
  *   and the previous tab crop is restored on exit.
  */
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import Text from "../AppText";
 import { useFocusEffect } from "expo-router";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { ScreenView } from "../components";
@@ -263,5 +264,5 @@ const styles = StyleSheet.create({
   banner: { position: "absolute", top: 70, alignSelf: "center", maxWidth: "50%", borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6 },
   bannerErr: { backgroundColor: "rgba(127,29,29,0.88)" },
   bannerWarn: { backgroundColor: "rgba(120,53,15,0.88)" },
-  bannerText: { color: "#e8eefc", fontSize: 11, fontWeight: "700", textAlign: "center" },
+  bannerText: { color: "#f2f2f5", fontSize: 11, fontWeight: "700", textAlign: "center" },
 });
