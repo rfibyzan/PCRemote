@@ -39,7 +39,7 @@ import { createGamepadSession } from "./gamepad.js";
 import { createVideoManager } from "./video.js";
 import { createDeviceStore, isLocalRequest, linkOf, sanitizeDevice } from "./devices.js";
 import { assertCredits, creditByline, creditChannel, creditSupport, creditsIntact } from "./credits.js";
-import { createAutostartCache, setAutostart } from "./autostart.js";
+import { createAutostartCache, helperBuildable, setAutostart } from "./autostart.js";
 
 // Optional QR on the dashboard (`npm install` pulls "qrcode"). Without it the
 // page still works and simply shows the code.
@@ -676,7 +676,7 @@ function dashboard(qrSvg = "") {
     box.checked = Boolean(a.on);
     box.disabled = !a.available;
     if (err.getAttribute("data-sticky") === "1") return;
-    var why = !a.on && a.reason ? a.reason : "";
+    var why = a.on ? (a.note || "") : (a.reason || "");
     err.textContent = why; err.hidden = !why; err.className = a.available ? "s" : "err";
   }
   function render(st){
@@ -1237,8 +1237,11 @@ async function main() {
   printBanner();
   openWindowsFirewall(state.port);
   // Folder moved since autostart was switched on: point the task at this exe.
+  // Also move an old schtasks.exe Run value over to PCRemoteStart.exe so Task
+  // Manager › Startup says "PC Remote" (only when the helper can be built,
+  // otherwise this would rewrite the same value on every start).
   void autostart.refresh().then((a) => {
-    if (a?.on && a.stale) setAutostart(true).then((v) => autostart.set(v), () => {});
+    if (a?.on && (a.stale || (a.upgrade && helperBuildable()))) setAutostart(true).then((v) => autostart.set(v), () => {});
   });
   usbReverse(state.port);
 
