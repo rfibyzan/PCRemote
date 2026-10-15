@@ -1,0 +1,48 @@
+name: CI
+
+# Runs on every push to main and every PR: phone unit tests + Android bundle
+# check on Linux, PC agent tests on Windows (koffi/SendInput need Windows).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - name: Unit tests
+        run: |
+          set -e
+          for f in src/*.test.js src/*/*.test.js; do
+            echo "== $f"
+            node "$f"
+          done
+      - name: Android bundle builds
+        run: npx expo export --platform android --no-bytecode --output-dir /tmp/export
+
+  agent:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: runtime/agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --omit=dev --no-audit --no-fund
+      - run: node --check src/index.js
+      - run: node src/pointer_test.js
+      - run: node src/unit_test.js
+      - run: node src/devices_test.js
