@@ -36,6 +36,7 @@ import { superviseTunnel } from "./tunnel.js";
 import { probeTunnel, wokeFromSleep } from "./keepalive.js";
 import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam.js";
 import { createGamepadSession } from "./gamepad.js";
+import { createVideoManager } from "./video.js";
 import { createDeviceStore, isLocalRequest, linkOf, sanitizeDevice } from "./devices.js";
 import { assertCredits, creditByline, creditChannel, creditSupport, creditsIntact } from "./credits.js";
 
@@ -238,6 +239,20 @@ function send(ws, obj) {
   if (ws.readyState === 1) ws.send(JSON.stringify(obj));
 }
 
+// Opt-in H.264 stream (beta, src/video.js). JPEG stays the default; while a
+// phone's video is active, screenLoop skips JPEG for it (cursor only).
+const video = createVideoManager({
+  monitorFor,
+  cursorFor: (mon) => cursorOnMonitor(mon),
+  onAu: (ws, au) => {
+    if (au.sent) {
+      noteStream(ws, "sent");
+      ws.lastFrameBytes = au.bytes;
+    } else noteStream(ws, "busy");
+  },
+  log: (line) => console.log(line),
+});
+
 function sendFrame(ws, jpeg, meta) {
   if (ws.readyState !== 1) return;
   const crop = meta.crop || { x: 0, y: 0, w: 1, h: 1 };
@@ -385,6 +400,7 @@ async function handleCommand(ws, msg) {
       ws.lastFp = "";
       send(ws, { t: "monitors", monitors: publicMonitors(), current: ws.view === "all" ? "all" : ws.monitorId });
       sendQualityAck(ws);
+      video.sync(ws); // restarts ffmpeg on the new monitor when video is on
       break;
     case "quality":
       ws.quality = QUALITY[msg.q] ? msg.q : "low";
@@ -418,6 +434,7 @@ async function handleCommand(ws, msg) {
           const frame = await ensureWebcam(ws.quality || "low", clientTune(ws));
           ws.wantsCam = true;
           ws.wantsScreen = false;
+          video.sync(ws);
           send(ws, { t: "cam", on: true, w: frame.w, h: frame.h });
         } catch (err) {
           ws.wantsCam = false;
@@ -431,6 +448,9 @@ async function handleCommand(ws, msg) {
       break;
     case "ping":
       send(ws, { t: "pong", ts: Date.now() });
+      break;
+    case "video":
+      video.request(ws, msg);
       break;
     case "gamepad":
       await handleGamepad(ws, msg);
@@ -753,6 +773,15 @@ async function screenLoop() {
     const live = [...state.clients].filter((ws) => ws.readyState === 1);
     const camClients = live.filter((ws) => ws.wantsCam);
     const screenClients = live.filter((ws) => ws.wantsScreen && !ws.wantsCam);
+    // H.264 phones get their picture from ffmpeg; here only the cursor.
+    const videoClients = screenClients.filter((ws) => video.isActive(ws));
+    const jpegClients = screenClients.filter((ws) => !video.isActive(ws));
+    for (const ws of live) {
+      const on = video.isActive(ws);
+      // Back from H.264 to JPEG: force a fresh JPEG even if the screen is static.
+      if (ws.wasVideo && !on) ws.lastFp = "";
+      ws.wasVideo = on;
+    }
     if (!camClients.length && !screenClients.length) {
       await new Promise((r) => setTimeout(r, 250));
       continue;
@@ -768,8 +797,16 @@ async function screenLoop() {
         }
       }
     }
+    for (const ws of videoClients) {
+      try {
+        const cursor = cursorOnMonitor(monitorFor(ws));
+        send(ws, { t: "cur", cx: cursor.cx, cy: cursor.cy });
+      } catch {
+        // cursor is cosmetic
+      }
+    }
     const groups = new Map();
-    for (const ws of screenClients) {
+    for (const ws of jpegClients) {
       const busy = ws.bufferedAmount > sendBudget(ws);
       if (busy && ws.lastFp) {
         noteStream(ws, "busy");
@@ -791,7 +828,7 @@ async function screenLoop() {
         const jpeg = await captureMonitor(mon, group.quality || "lite", viewAtStart === "all", group.link === "remote", group.crop, clientTune(ws));
         const capMs = Date.now() - capStart;
         for (const client of group.clients) {
-          if (client.readyState !== 1 || client.wantsCam) continue;
+          if (client.readyState !== 1 || client.wantsCam || video.isActive(client)) continue;
           if (client.view !== viewAtStart || client.monitorId !== monitorAtStart) continue;
           const cursor = cursorOnMonitor(mon);
           const fp = `${client.quality}:${client.encWidth || 0}:${client.encJpeg || 0}:${client.encFps || 0}:${client.encViewPx || 0}:${client.qStep || 0}:${client.fpsStep || 0}:${client.encTick || 0}:${viewAtStart}:${monitorAtStart}:${group.crop.x.toFixed(3)}:${group.crop.y.toFixed(3)}:${group.crop.w.toFixed(3)}:${group.crop.h.toFixed(3)}:${frameFingerprint(jpeg)}`;
@@ -1040,6 +1077,7 @@ async function main() {
       }
       if (msg.t === "screen") {
         ws.wantsScreen = Boolean(msg.on);
+        video.sync(ws);
         return;
       }
       // Input must reach Windows in the order it was sent. A tap now waits a
@@ -1061,6 +1099,7 @@ async function main() {
         devices.log(`${ws.device.name} ${why}`, ws.kickedByPc ? "warn" : "info");
       }
       state.clients.delete(ws);
+      video.stop(ws);
       if (ws.gameSession) endGamepad(ws).catch(() => {});
       if (![...state.clients].some((c) => c.wantsCam)) stopWebcam();
     });
