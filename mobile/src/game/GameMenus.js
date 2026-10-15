@@ -9,11 +9,15 @@ import Text from "../AppText";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { CONTROL_DEFS, CONTROL_IDS, LIMITS, controlOpacity } from "./layout";
 
-const ACCENT = "#7dd3fc";
-const PANEL = "rgba(11,18,32,0.94)";
-const BORDER = "#1e293b";
-const TEXT = "#e8eefc";
-const MUTED = "#94a3b8";
+// Same neutral grey + indigo theme as PAD/TYPE/WIN (2026-10-15).
+const ACCENT = "#5e5ce6"; // selected fill
+const ACCENT_TEXT = "#a5a1ff"; // accent on dark
+const PANEL = "rgba(18,18,20,0.96)";
+const GROUP = "#1c1c1f";
+const BORDER = "#2c2c30";
+const TEXT = "#f2f2f5";
+const MUTED = "#8e8e93";
+const DANGER = "#ff6961";
 
 const pct = (v) => `${Math.round(v * 100)}%`;
 
@@ -35,8 +39,8 @@ export function Stepper({ label, value, onMinus, onPlus, format = pct, small }) 
 function Chip({ label, active, onPress, icon, danger }) {
   return (
     <Pressable onPress={onPress} style={[styles.chip, active && styles.chipActive, danger && styles.chipDanger]} hitSlop={4}>
-      {!!icon && <MaterialCommunityIcons name={icon} size={15} color={active ? "#0b1220" : TEXT} />}
-      {!!label && <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>}
+      {!!icon && <MaterialCommunityIcons name={icon} size={15} color={active ? "#ffffff" : danger ? DANGER : TEXT} />}
+      {!!label && <Text style={[styles.chipText, danger && styles.chipTextDanger, active && styles.chipTextActive]}>{label}</Text>}
     </Pressable>
   );
 }
@@ -55,7 +59,7 @@ export function GameChrome({ padOn, onExit, onSettings, onEdit }) {
         <Pressable onPress={onEdit} style={styles.chromeBtn} hitSlop={6}>
           <MaterialCommunityIcons name="gamepad-square-outline" size={18} color={TEXT} />
         </Pressable>
-        <View style={[styles.padDot, { backgroundColor: padOn ? "#3ddc84" : "#64748b" }]} />
+        <View style={[styles.padDot, { backgroundColor: padOn ? "#34c759" : "#6e6e73" }]} />
       </View>
     </View>
   );
@@ -107,36 +111,45 @@ export function SettingsSheet({ layout, onChange, onClose, onReset, streamContro
         </View>
         <ScrollView contentContainerStyle={styles.sheetBody}>
           <Text style={styles.section}>Tampilan</Text>
-          <Stepper label="Transparansi semua" value={layout.opacity} onMinus={() => step("opacity", -0.05)} onPlus={() => step("opacity", 0.05)} />
-          <Stepper label="Ukuran semua" value={layout.scale} onMinus={() => step("scale", -0.05)} onPlus={() => step("scale", 0.05)} />
-          <View style={styles.row}>
-            <Chip icon="monitor" label="Tampilkan layar PC" active={layout.showStream} onPress={() => set({ showStream: !layout.showStream })} />
-            <Chip icon="vibrate" label="Getar" active={layout.haptics} onPress={() => set({ haptics: !layout.haptics })} />
+          <View style={styles.group}>
+            <Stepper label="Transparansi semua" value={layout.opacity} onMinus={() => step("opacity", -0.05)} onPlus={() => step("opacity", 0.05)} />
+            <View style={styles.sep} />
+            <Stepper label="Ukuran semua" value={layout.scale} onMinus={() => step("scale", -0.05)} onPlus={() => step("scale", 0.05)} />
+            <View style={styles.sep} />
+            <View style={styles.row}>
+              <Chip icon="monitor" label="Tampilkan layar PC" active={layout.showStream} onPress={() => set({ showStream: !layout.showStream })} />
+              <Chip icon="vibrate" label="Getar" active={layout.haptics} onPress={() => set({ haptics: !layout.haptics })} />
+            </View>
           </View>
 
           <Text style={styles.section}>Analog</Text>
-          <View style={styles.row}>
-            <Chip label="Stik tetap" active={layout.stickMode === "fixed"} onPress={() => set({ stickMode: "fixed" })} />
-            <Chip label="Stik melayang" active={layout.stickMode === "floating"} onPress={() => set({ stickMode: "floating" })} />
+          <View style={styles.group}>
+            <View style={styles.row}>
+              <Chip label="Stik tetap" active={layout.stickMode === "fixed"} onPress={() => set({ stickMode: "fixed" })} />
+              <Chip label="Stik melayang" active={layout.stickMode === "floating"} onPress={() => set({ stickMode: "floating" })} />
+            </View>
+            <View style={styles.sep} />
+            <Stepper label="Deadzone" value={layout.deadzone} onMinus={() => step("deadzone", -0.02)} onPlus={() => step("deadzone", 0.02)} />
           </View>
-          <Stepper label="Deadzone" value={layout.deadzone} onMinus={() => step("deadzone", -0.02)} onPlus={() => step("deadzone", 0.02)} />
           <Text style={styles.hint}>Ketuk dua kali lalu tahan stik untuk L3 / R3.</Text>
 
           <Text style={styles.section}>Tombol yang ditampilkan</Text>
-          <View style={styles.wrapRow}>
-            {CONTROL_IDS.map((id) => (
-              <Chip key={id} label={CONTROL_DEFS[id].label} active={layout.controls[id].visible} onPress={() => toggleVisible(id)} />
-            ))}
+          <View style={styles.group}>
+            <View style={styles.wrapRow}>
+              {CONTROL_IDS.map((id) => (
+                <Chip key={id} label={CONTROL_DEFS[id].label} active={layout.controls[id].visible} onPress={() => toggleVisible(id)} />
+              ))}
+            </View>
           </View>
 
           {!!streamControls && (
             <>
               <Text style={styles.section}>Stream</Text>
-              {streamControls}
+              <View style={styles.group}>{streamControls}</View>
             </>
           )}
 
-          <View style={[styles.row, { marginTop: 14 }]}>
+          <View style={[styles.group, styles.resetGroup]}>
             <Chip icon="restore" label="Reset semua ke default" onPress={onReset} danger />
           </View>
         </ScrollView>
@@ -146,29 +159,28 @@ export function SettingsSheet({ layout, onChange, onClose, onReset, streamContro
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 },
-  wrapRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
+  row: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8, paddingVertical: 8 },
+  wrapRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, paddingVertical: 8 },
   chip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
-    backgroundColor: "rgba(30,41,59,0.9)",
-    borderWidth: 1,
-    borderColor: "#334155",
+    backgroundColor: "#2c2c30",
   },
-  chipActive: { backgroundColor: ACCENT, borderColor: ACCENT },
-  chipDanger: { borderColor: "rgba(248,113,113,0.6)" },
-  chipText: { color: TEXT, fontSize: 12, fontWeight: "700" },
-  chipTextActive: { color: "#0b1220" },
-  stepper: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 },
-  stepLabel: { color: MUTED, fontSize: 12, fontWeight: "700", minWidth: 70 },
-  stepBtn: { width: 34, height: 30, borderRadius: 8, backgroundColor: "rgba(30,41,59,0.95)", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#334155" },
+  chipActive: { backgroundColor: ACCENT },
+  chipDanger: { backgroundColor: "rgba(255,105,97,0.14)" },
+  chipText: { color: TEXT, fontSize: 12, fontWeight: "500" },
+  chipTextDanger: { color: DANGER },
+  chipTextActive: { color: "#ffffff", fontWeight: "700" },
+  stepper: { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8 },
+  stepLabel: { color: TEXT, fontSize: 13, fontWeight: "400", flex: 1, minWidth: 70 },
+  stepBtn: { width: 34, height: 30, borderRadius: 9, backgroundColor: "#2c2c30", alignItems: "center", justifyContent: "center" },
   stepBtnSm: { width: 30, height: 28 },
-  stepBtnText: { color: TEXT, fontSize: 17, fontWeight: "800", marginTop: -2 },
-  stepValue: { color: TEXT, fontSize: 12, fontWeight: "800", minWidth: 40, textAlign: "center" },
+  stepBtnText: { color: TEXT, fontSize: 17, fontWeight: "500", marginTop: -2 },
+  stepValue: { color: ACCENT_TEXT, fontSize: 12, fontWeight: "700", minWidth: 40, textAlign: "center" },
   chromeWrap: { position: "absolute", left: 0, right: 0, bottom: 6, alignItems: "center" },
   chrome: {
     flexDirection: "row",
@@ -177,7 +189,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: "rgba(11,18,32,0.55)",
+    backgroundColor: "rgba(18,18,20,0.6)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
   },
@@ -189,13 +201,17 @@ const styles = StyleSheet.create({
   edit_center: { top: "34%" },
   edit_top: { top: 8 },
   edit_bottom: { bottom: 8 },
-  editBox: { maxWidth: "62%", backgroundColor: PANEL, borderRadius: 14, borderWidth: 1, borderColor: BORDER, paddingHorizontal: 12, paddingVertical: 10 },
-  editTitle: { color: TEXT, fontSize: 13, fontWeight: "800", textAlign: "center" },
-  sheetWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.35)" },
-  sheet: { width: 420, maxWidth: "70%", maxHeight: "88%", backgroundColor: PANEL, borderRadius: 16, borderWidth: 1, borderColor: BORDER },
-  sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14, paddingTop: 12, paddingBottom: 6 },
-  sheetTitle: { color: TEXT, fontSize: 15, fontWeight: "800" },
-  sheetBody: { paddingHorizontal: 14, paddingBottom: 14 },
-  section: { color: ACCENT, fontSize: 11, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase", marginTop: 12 },
-  hint: { color: MUTED, fontSize: 11, marginTop: 6 },
+  editBox: { maxWidth: "62%", backgroundColor: PANEL, borderRadius: 16, borderWidth: 1, borderColor: BORDER, paddingHorizontal: 12, paddingVertical: 8 },
+  editTitle: { color: TEXT, fontSize: 13, fontWeight: "700", textAlign: "center", paddingTop: 2 },
+  sheetWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.45)" },
+  sheet: { width: 420, maxWidth: "70%", maxHeight: "88%", backgroundColor: PANEL, borderRadius: 18, borderWidth: 1, borderColor: BORDER },
+  sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 },
+  sheetTitle: { color: TEXT, fontSize: 16, fontWeight: "700" },
+  sheetBody: { paddingHorizontal: 14, paddingBottom: 16 },
+  // iOS-style grouped settings: muted section label, then a rounded card.
+  section: { color: MUTED, fontSize: 11, fontWeight: "500", letterSpacing: 0.6, textTransform: "uppercase", marginTop: 14, marginBottom: 6, marginLeft: 4 },
+  group: { backgroundColor: GROUP, borderRadius: 12, paddingHorizontal: 12 },
+  sep: { height: StyleSheet.hairlineWidth, backgroundColor: "#3a3a3e" },
+  resetGroup: { marginTop: 16, alignItems: "flex-start" },
+  hint: { color: MUTED, fontSize: 11, marginTop: 6, marginLeft: 4 },
 });
