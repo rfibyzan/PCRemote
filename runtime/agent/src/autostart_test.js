@@ -1,8 +1,18 @@
 // Pure-logic tests for autostart.js. No koffi, no Windows: runs anywhere with `node src/autostart_test.js`.
+import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   APPROVED_ENABLED_HEX,
+  buildHelperRunCommand,
   buildRunCommand,
+  classifyRunValue,
+  cscArgs,
+  cscCandidates,
+  findCsc,
+  HELPER_NAME,
+  helperNeedsBuild,
+  helperPaths,
   buildTaskXml,
   computeAutostart,
   encodeTaskXml,
@@ -106,6 +116,68 @@ check("exe lookup: PCREMOTE_HOME, then ../../PCRemote.exe", () => {
   const last = path.resolve("/r/runtime/agent", "..", "..", "PCRemote.exe");
   assert(c[0] === path.join("/r", "PCRemote.exe") && c[c.length - 1] === last, JSON.stringify(c));
   assert(findExe({}, () => false) === "", "missing exe");
+});
+
+const HELPER = "C:\\Tools\\PC Remote & Co\\runtime\\agent\\autostart\\PCRemoteStart.exe";
+
+check("helper Run command and Run value kinds", () => {
+  assert(buildHelperRunCommand(HELPER) === `"${HELPER}"`, buildHelperRunCommand(HELPER));
+  assert(classifyRunValue(buildHelperRunCommand(HELPER)) === "helper", "quoted helper");
+  assert(classifyRunValue("C:\\x\\pcremotestart.EXE") === "helper", "unquoted, any case");
+  assert(classifyRunValue(buildRunCommand()) === "schtasks", "schtasks form");
+  assert(classifyRunValue('"D:\\WIN\\System32\\schtasks.exe" /run /tn PCRemote') === "schtasks", "unquoted task name");
+  assert(classifyRunValue('"C:\\Windows\\System32\\schtasks.exe" /run /tn "Other"') === "other", "other task");
+  assert(classifyRunValue("C:\\x\\Something.exe") === "other", "foreign exe");
+  assert(classifyRunValue("") === "" && classifyRunValue(null) === "", "none");
+});
+
+check("computeAutostart accepts helper and schtasks Run values", () => {
+  const base = { exePath: EXE, taskExists: true, taskCommand: EXE, approvedHex: "" };
+  const h = computeAutostart({ ...base, runValue: buildHelperRunCommand(HELPER) });
+  assert(h.on && !h.upgrade && !h.reason && !h.note, JSON.stringify(h));
+  const s = computeAutostart({ ...base, runValue: buildRunCommand() });
+  assert(s.on && s.upgrade === true && !s.reason && !s.note, JSON.stringify(s));
+  const n = computeAutostart({ ...base, runValue: buildRunCommand(), helperNote: "Nama di Task Manager: schtasks (csc tidak ada)" });
+  assert(n.on && !n.reason && /csc tidak ada/.test(n.note), JSON.stringify(n));
+  const nh = computeAutostart({ ...base, runValue: buildHelperRunCommand(HELPER), helperNote: "x" });
+  assert(nh.on && !nh.note, "no note when the helper is in use");
+  const offNote = computeAutostart({ ...base, taskExists: false, runValue: "", helperNote: "x" });
+  assert(!offNote.on && !offNote.note, "no note when off");
+  const dis = computeAutostart({ ...base, runValue: buildHelperRunCommand(HELPER), approvedHex: "03" + "00".repeat(11) });
+  assert(!dis.on && /Task Manager/.test(dis.reason), "helper entry disabled in Task Manager");
+});
+
+check("csc candidates: Framework64 then Framework, from SystemRoot", () => {
+  const c = cscCandidates({ SystemRoot: "D:\\WIN" });
+  assert(c[0] === "D:\\WIN\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe", c[0]);
+  assert(c[1] === "D:\\WIN\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe", c[1]);
+  assert(cscCandidates({})[0].startsWith("C:\\Windows\\Microsoft.NET\\"), "default root");
+  assert(findCsc({ SystemRoot: "D:\\WIN" }, (p) => p === c[1]) === c[1], "32-bit fallback");
+  assert(findCsc({ SystemRoot: "D:\\WIN" }, () => false) === "", "no csc");
+});
+
+check("helper paths and csc arguments", () => {
+  const hp = helperPaths("C:\\PCR\\runtime\\agent", path.win32);
+  assert(hp.exe === "C:\\PCR\\runtime\\agent\\autostart\\" + HELPER_NAME, hp.exe);
+  assert(hp.src === "C:\\PCR\\runtime\\agent\\autostart\\PCRemoteStart.cs", hp.src);
+  assert(hp.ico === "C:\\PCR\\runtime\\agent\\autostart\\PCRemoteStart.ico", hp.ico);
+  const a = cscArgs({ src: hp.src, ico: hp.ico, out: hp.exe });
+  assert(a.includes("/target:winexe"), "no console window");
+  assert(!a.some((x) => /manifest/i.test(x)), "keeps the default asInvoker manifest");
+  assert(a.includes(`/out:${hp.exe}`) && a.includes(`/win32icon:${hp.ico}`), JSON.stringify(a));
+  assert(a[a.length - 1] === hp.src, "source last");
+  assert(!cscArgs({ src: hp.src, ico: "", out: hp.exe }).some((x) => x.startsWith("/win32icon")), "icon optional");
+  // The real files sit where helperPaths() says (platform path here).
+  const real = helperPaths(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+  assert(existsSync(real.src) && existsSync(real.ico), `helper sources missing: ${real.src}`);
+});
+
+check("helper rebuild when missing or older than .cs/.ico", () => {
+  assert(helperNeedsBuild({ exeMtime: 0, srcMtime: 5, icoMtime: 5 }), "missing exe");
+  assert(helperNeedsBuild({ exeMtime: 4, srcMtime: 5, icoMtime: 1 }), "older than source");
+  assert(helperNeedsBuild({ exeMtime: 4, srcMtime: 1, icoMtime: 5 }), "older than icon");
+  assert(!helperNeedsBuild({ exeMtime: 6, srcMtime: 5, icoMtime: 5 }), "up to date");
+  assert(!helperNeedsBuild({ exeMtime: 6, srcMtime: 5 }), "no icon");
 });
 
 if (failed) {
