@@ -3,7 +3,8 @@
  * instead of crashing (the phone camera app + deep link still works).
  */
 import React, { useRef } from "react";
-import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Modal, Pressable, StyleSheet, View } from "react-native";
+import Text from "../AppText";
 import { COLORS } from "../components";
 import { parsePairQr } from "../pairqr";
 
@@ -83,11 +84,11 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 28, gap: 12, backgroundColor: COLORS.bg },
   title: { color: COLORS.text, fontSize: 20, fontWeight: "800" },
   hint: { color: COLORS.muted, textAlign: "center" },
-  btn: { backgroundColor: "#0c4a6e", borderRadius: 12, paddingVertical: 12, paddingHorizontal: 18 },
-  btnText: { color: "#e8eefc", fontWeight: "800" },
+  btn: { backgroundColor: "#5e5ce6", borderRadius: 12, paddingVertical: 12, paddingHorizontal: 18 },
+  btnText: { color: "#f2f2f5", fontWeight: "800" },
   frameWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 16 },
-  frame: { width: 240, height: 240, borderRadius: 18, borderWidth: 3, borderColor: "#38bdf8" },
+  frame: { width: 240, height: 240, borderRadius: 18, borderWidth: 3, borderColor: "#7c7aff" },
   frameText: { color: "#fff", fontWeight: "800", backgroundColor: "rgba(0,0,0,0.55)", paddingVertical: 6, paddingHorizontal: 12, borderRadius: 999 },
-  close: { position: "absolute", top: 44, right: 18, backgroundColor: "rgba(15,23,42,0.85)", borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14 },
-  closeText: { color: "#e8eefc", fontWeight: "800" },
+  close: { position: "absolute", top: 44, right: 18, backgroundColor: "rgba(22,22,24,0.85)", borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14 },
+  closeText: { color: "#f2f2f5", fontWeight: "800" },
 });
