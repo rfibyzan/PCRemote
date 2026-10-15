@@ -51,6 +51,17 @@ media keys, workstation lock, clipboard get/set.
 crop). Last-valid-frame rendering: invalid data never blanks the view;
 stable component identity (no per-frame remount).
 
+## H.264 video (new, opt-in beta, JPEG stays default)
+- ⚙ "Video H.264 (beta)" (SecureStore `pcremote.video`). The focused viewer
+  sends `{t:"video", on, fps, kbps, width}` (presets: Low 1.5 / Mid 4 /
+  High 8 Mbps); agent answers `{t:"videoState", on, encoder, w, h, reason?}`.
+- Binary `PV` frames: 16-byte header (mon, w/h, cursor, key flag, seq) + one
+  Annex-B access unit, decoded by the local module `modules/pcremote-video`
+  (MediaCodec -> TextureView) inside the same camera transform. Needs a new
+  dev/preview build; without the module the toggle says "perlu build baru".
+- While video is on: no crop requests (full monitor, Look zoom scales), agent
+  sends no JPEG to that phone. Any failure (`videoState` on:false) = JPEG.
+
 ## GAME (new, existing Game entry)
 - Landscape + keep-awake + fullscreen; PC screen background (same `PR`
   channel). Stream quality belongs to the Q tab — GAME sends no quality
