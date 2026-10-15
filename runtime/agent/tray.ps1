@@ -15,7 +15,7 @@ function Send-Cmd([string]$cmd) {
 }
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
-$notify.Text = "PC Remote · Asphalt Cake"
+$notify.Text = "PC Remote"
 if ($Icon -and (Test-Path -LiteralPath $Icon)) {
   $notify.Icon = New-Object System.Drawing.Icon($Icon)
 } else {
@@ -26,8 +26,8 @@ $notify.Visible = $true
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
 $openItem = $menu.Items.Add("Open dashboard")
 $openItem.add_Click({ Start-Process $Dashboard })
-$ytItem = $menu.Items.Add("YouTube · Asphalt Cake")
-$ytItem.add_Click({ Start-Process "https://www.youtube.com/@AsphaltCake" })
+$ghItem = $menu.Items.Add("PCRemote di GitHub")
+$ghItem.add_Click({ Start-Process "https://github.com/rfibyzan/PCRemote" })
 [void]$menu.Items.Add("-")
 $closeItem = $menu.Items.Add("Close PC Remote")
 $closeItem.add_Click({
