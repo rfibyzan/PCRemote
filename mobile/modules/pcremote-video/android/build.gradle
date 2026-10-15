@@ -1,0 +1,23 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.pcremotevideo'
+version = '0.1.0'
+
+// Same setup as `npx create-expo-module --local` generates for SDK 54
+// (packages/expo-module-template/android/build.gradle).
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useDefaultAndroidSdkVersions()
+
+android {
+  namespace "expo.modules.pcremotevideo"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}

@@ -199,6 +199,12 @@ addListener((event) => {
   }
 });
 
+/** Subscribe to quality changes outside React (src/video.js). */
+export function addQualityListener(fn) {
+  qListeners.add(fn);
+  return () => qListeners.delete(fn);
+}
+
 export function useQuality() {
   const [s, setS] = useState({ q: qState.q, qStep: qState.qStep, fpsStep: qState.fpsStep });
   useEffect(() => {
