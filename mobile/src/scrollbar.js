@@ -8,7 +8,8 @@
  * re-renders the whole ViewerPanel.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, Vibration, View } from "react-native";
+import { Pressable, StyleSheet, Vibration, View } from "react-native";
+import Text from "./AppText";
 import Reanimated, { useAnimatedStyle, useSharedValue, withSpring } from "react-native-reanimated";
 import * as SecureStore from "expo-secure-store";
 import { COLORS } from "./components";
@@ -244,29 +245,29 @@ const styles = StyleSheet.create({
     bottom: 4,
     width: BAR_W - 4,
     borderRadius: 14,
-    backgroundColor: "rgba(15,23,42,0.85)",
+    backgroundColor: "rgba(22,22,24,0.85)",
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: "#3a3a3e",
     padding: 4,
     alignItems: "center",
   },
   btn: { width: 40, height: 44, borderRadius: 10, backgroundColor: COLORS.chip, alignItems: "center", justifyContent: "center" },
   btnText: { color: COLORS.text, fontWeight: "800", fontSize: 16 },
-  track: { flex: 1, width: 40, marginVertical: 6, borderRadius: 14, backgroundColor: "rgba(30,41,59,0.7)", alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  track: { flex: 1, width: 40, marginVertical: 6, borderRadius: 14, backgroundColor: "rgba(44,44,48,0.7)", alignItems: "center", justifyContent: "center", overflow: "hidden" },
   ticks: { ...StyleSheet.absoluteFillObject, justifyContent: "space-evenly", alignItems: "center" },
-  tick: { width: 12, height: 1, backgroundColor: "#334155" },
-  home: { position: "absolute", width: 30, height: THUMB_H, borderRadius: 14, borderWidth: 1, borderColor: "#475569" },
+  tick: { width: 12, height: 1, backgroundColor: "#3a3a3e" },
+  home: { position: "absolute", width: 30, height: THUMB_H, borderRadius: 14, borderWidth: 1, borderColor: "#48484d" },
   thumb: { width: 32, height: THUMB_H, borderRadius: 16, backgroundColor: COLORS.accent, alignItems: "center", justifyContent: "center", gap: 5 },
   grip: { width: 14, height: 2, borderRadius: 1, backgroundColor: COLORS.bg },
-  pill: { position: "absolute", left: BAR_W + 6, bottom: 10, backgroundColor: "rgba(15,23,42,0.88)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+  pill: { position: "absolute", left: BAR_W + 6, bottom: 10, backgroundColor: "rgba(22,22,24,0.88)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
   pillText: { color: COLORS.accent, fontSize: 11, fontWeight: "800" },
-  set: { marginTop: 6, backgroundColor: COLORS.card, borderRadius: 12, padding: 10, gap: 6, borderWidth: 1, borderColor: "#334155" },
+  set: { marginTop: 6, backgroundColor: COLORS.card, borderRadius: 12, padding: 10, gap: 6, borderWidth: 1, borderColor: "#3a3a3e" },
   setHead: { color: COLORS.muted, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   setRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   setLabel: { color: COLORS.text, fontSize: 12, fontWeight: "800", width: 72 },
   seg: { flex: 1, flexDirection: "row", backgroundColor: COLORS.chip, borderRadius: 10, padding: 2 },
   segBtn: { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: "center" },
-  segOn: { backgroundColor: "#0c4a6e" },
+  segOn: { backgroundColor: "#5e5ce6" },
   segText: { color: COLORS.muted, fontSize: 12, fontWeight: "800" },
   segTextOn: { color: COLORS.text },
   setNote: { color: COLORS.muted, fontSize: 10, marginLeft: 80 },
