@@ -43,6 +43,8 @@ jobs:
           node-version: 22
       - run: npm install --omit=dev --no-audit --no-fund
       - run: node --check src/index.js
+      - run: node --check src/autostart.js
+      - run: node src/autostart_test.js
       - run: node src/pointer_test.js
       - run: node src/unit_test.js
       - run: node src/devices_test.js
