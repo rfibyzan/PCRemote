@@ -36,7 +36,7 @@ import { ConnDot, LagBanner, StreamControls, StreamStats, getSel, setSel, useMon
 import { trackFrameBytes } from "./cursor";
 import { BAR_W, BarScroll, ScrollSettings, sendSwipeScroll } from "./scrollbar";
 import { msg } from "./protocol";
-import { centroid, gestureFor, swipeDir } from "./gestures";
+import { pointerIcon } from "./pointer";
 import { addListener, getStatus, send } from "./connection";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD, TOOLBAR_H } from "./tablayout";
 import {
@@ -246,6 +246,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const lastFrameAt = useRef(0);
   const lastResendAt = useRef(0);
   const [cur, setCur] = useState(null);
+  // {shape, local} from the PC agent ({t:"ptr"}); null on old agents.
+  const [ptr, setPtr] = useState(null);
   const curRef = useRef(null);
   const [stalled, setStalled] = useState(false);
   const stallTimer = useRef(null);
@@ -265,6 +267,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   useEffect(() => {
     return addListener((event) => {
       if (event.t === "cur" && typeof event.cx === "number") feedCursor(event.cx, event.cy);
+      else if (event.t === "ptr") setPtr({ shape: String(event.shape || "arrow"), local: Boolean(event.local) });
+      else if (event.t === "hello" || event.t === "close") setPtr(null);
     });
   }, []);
 
@@ -1018,45 +1022,14 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     }
   }
 
-  // Multi-finger swipe on the touchpad (3 or 4 fingers): one shortcut per
-  // swipe, see src/gestures.js. gestRef = {fingers, x, y, fired}.
-  const gestRef = useRef(null);
-  const [gestLabel, setGestLabel] = useState("");
-  const gestTimer = useRef(null);
-
   function onTouchStart(e) {
-    const touches = e.nativeEvent.touches;
-    const t = touches[0];
+    const t = e.nativeEvent.touches[0];
     lastRef.current = { x: t.pageX, y: t.pageY };
-    if (touches.length >= 3) {
-      const c = centroid(touches);
-      gestRef.current = { fingers: touches.length, x: c.x, y: c.y, fired: gestRef.current?.fired || false };
-    }
   }
 
   function onTouchMove(e) {
     const touches = e.nativeEvent.touches;
     const t = touches[0];
-    if (touches.length >= 3 || gestRef.current) {
-      // Gesture in progress: no pointer move / scroll while 3+ fingers are down.
-      const c = centroid(touches);
-      const g = gestRef.current;
-      if (!g || touches.length > g.fingers) {
-        gestRef.current = { fingers: touches.length, x: c.x, y: c.y, fired: g?.fired || false };
-      } else if (!g.fired && touches.length >= 3) {
-        const hit = gestureFor(g.fingers, swipeDir(c.x - g.x, c.y - g.y));
-        if (hit) {
-          g.fired = true;
-          send(msg.combo(hit.keys));
-          Vibration.vibrate(12);
-          setGestLabel(hit.label);
-          if (gestTimer.current) clearTimeout(gestTimer.current);
-          gestTimer.current = setTimeout(() => setGestLabel(""), 1200);
-        }
-      }
-      lastRef.current = null;
-      return;
-    }
     const last = lastRef.current;
     if (!last) {
       lastRef.current = { x: t.pageX, y: t.pageY };
@@ -1073,11 +1046,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     send(msg.move(dx, dy));
   }
 
-  function onTouchEnd(e) {
+  function onTouchEnd() {
     lastRef.current = null;
-    // The gesture ends when the LAST finger lifts, so fingers leaving one by
-    // one never turn into a stray pointer move.
-    if (!(e?.nativeEvent?.touches || []).length) gestRef.current = null;
   }
 
   function holdLeft() {
@@ -1342,7 +1312,16 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           <Reanimated.View style={canvasStyle} pointerEvents="none">
             <ScreenView style={styles.canvasFill} onFrame={onFrame} monKey={current} placed resolveCrop={snapCrop} />
           </Reanimated.View>
-          {!!cur && <Reanimated.View pointerEvents="none" style={[styles.ring, ringStyle]} />}
+          {!!cur && (
+            <Reanimated.View
+              pointerEvents="none"
+              style={[styles.ring, ptr?.local && styles.ringLocal, ptr?.shape === "none" && styles.ringHidden, ringStyle]}
+            >
+              {!!pointerIcon(ptr?.shape) && (
+                <MaterialCommunityIcons name={pointerIcon(ptr?.shape)} size={14} color="#ffffff" style={styles.ringIcon} />
+              )}
+            </Reanimated.View>
+          )}
         </View>
         </GestureDetector>
         {/* Look controls sit beside (not inside) the gesture view so a drag on
@@ -1482,6 +1461,12 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             </View>
           )}
         </View>
+        {!!ptr?.local && current !== "cam" && (
+          <View style={styles.localChip} pointerEvents="none">
+            <MaterialCommunityIcons name="mouse" size={13} color="#ff9f0a" />
+            <Text style={styles.localChipText}>Mouse PC sedang dipakai</Text>
+          </View>
+        )}
         {!streamOpen && !full && current !== "cam" && (
           <Block style={[styles.lagWrap, bar && styles.shiftForBar]} pointerEvents="box-none">
             <LagBanner />
@@ -1545,16 +1530,13 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       )}
       {touchpad && (
         <View style={styles.pad} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
-          <Text style={[styles.padText, !!gestLabel && styles.padGest]}>
-            {gestLabel
-              ? gestLabel
-              : clickBtn === "right"
-                ? "slide = move · 2 fingers = scroll · hold R to drag"
-                : clickBtn === "middle"
-                  ? "slide = move · 2 fingers = scroll · hold M to drag"
-                  : "slide = move · 2 fingers = scroll · hold Left to drag"}
+          <Text style={styles.padText}>
+            {clickBtn === "right"
+              ? "slide = move · 2 fingers = scroll · hold R to drag"
+              : clickBtn === "middle"
+                ? "slide = move · 2 fingers = scroll · hold M to drag"
+                : "slide = move · 2 fingers = scroll · hold Left to drag"}
           </Text>
-          {!gestLabel && <Text style={styles.padSub}>3 jari: ↑ Task View · ↓ Desktop · ←→ aplikasi · 4 jari ←→ desktop</Text>}
         </View>
       )}
       {children}
@@ -1615,7 +1597,14 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#7c7aff",
     backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
   },
+  ringLocal: { borderColor: "#ff9f0a" },
+  ringHidden: { borderStyle: "dashed", borderColor: "rgba(124,122,255,0.45)" },
+  ringIcon: { textShadowColor: "#000", textShadowRadius: 3 },
+  localChip: { position: "absolute", left: 8, bottom: 8, flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(28,28,31,0.92)", borderRadius: 999, borderWidth: 1, borderColor: "rgba(255,159,10,0.6)", paddingVertical: 4, paddingHorizontal: 9 },
+  localChipText: { color: "#ff9f0a", fontSize: 11, fontWeight: "600" },
   lookBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: 6, gap: 6 },
   zoomSlider: { position: "absolute", right: 2, top: 40, bottom: 56, width: 56, alignItems: "center" },
   zTouch: { flex: 1, width: 56, alignItems: "center" },
@@ -1652,7 +1641,5 @@ const styles = StyleSheet.create({
   btnText: { color: COLORS.text, fontWeight: "700" },
   pad: { flex: 1, borderRadius: 14, backgroundColor: COLORS.card, overflow: "hidden", alignItems: "center", justifyContent: "center" },
   padText: { color: COLORS.muted, textAlign: "center", fontSize: 12 },
-  padGest: { color: COLORS.accent, fontSize: 14, fontWeight: "700" },
-  padSub: { color: "#6e6e73", textAlign: "center", fontSize: 10, marginTop: 2, paddingHorizontal: 8 },
   lagWrap: { position: "absolute", left: 8, right: 64, top: 36 },
 });
