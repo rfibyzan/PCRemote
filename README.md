@@ -16,6 +16,17 @@ PCRemote/
 └── HOW-TO.txt       # end-user setup (Indonesian)
 ```
 
+## Download a release
+
+The easiest way: grab `PCRemote-vX.Y.Z-windows.zip` from
+[GitHub Releases](https://github.com/rfibyzan/PCRemote/releases/latest), unzip, run `PCRemote.exe`.
+It already contains node.exe, ffmpeg.exe and cloudflared.exe. A release build checks for a newer
+release and shows a banner on the PC dashboard.
+
+To publish one: `git tag v1.2.0 && git push origin v1.2.0` (or Actions → Release → Run workflow).
+`.github/workflows/release.yml` builds the zip; with the `EXPO_TOKEN` repo secret it also attaches the
+preview APK (built without the gitignored SF Pro files, so it uses Roboto).
+
 ## Required binaries (not committed — too large for GitHub)
 
 Place these next to `runtime/` as in a release folder:
