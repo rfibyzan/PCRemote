@@ -53,8 +53,21 @@ stable component identity (no per-frame remount).
 
 ## H.264 video (default on; JPEG = fallback)
 - ⚙ "Video H.264" (SecureStore `pcremote.video`, default ON when nothing saved). The focused viewer
-  sends `{t:"video", on, fps, kbps, width}` (presets: Low 1.5 / Mid 4 /
-  High 8 Mbps); agent answers `{t:"videoState", on, encoder, w, h, reason?}`.
+  sends `{t:"video", on, fps, kbps, width}`; agent answers
+  `{t:"videoState", on, encoder, w, h, reason?}`.
+- Quality = one stored level `{q, qStep, fpsStep}` (`pcremote.quality`) shared by both
+  codecs (`videoproto.js` `qualityView`). While H.264 is active the steppers show
+  "Bitrate" (Mbps) and H.264 fps; on JPEG (incl. fallback) Q## and JPEG fps.
+  | Preset | JPEG | H.264 |
+  |---|---|---|
+  | Low (lite) | Q18 · 6 fps | 2 Mbps · 30 fps · 720p |
+  | Mid (low/med) | Q26 · 13 fps | 5 Mbps · 30 fps · 1080p |
+  | High (high/super) | Q40 · 22 fps | 10 Mbps · 60 fps · 1080p |
+  qStep +1 = JPEG Q +8 (18..92) / bitrate +25 % of preset (500..20000 kbps);
+  fpsStep +1 = JPEG +2 fps (max 30) / H.264 +5 fps (10..60). Width is automatic:
+  < 3 Mbps -> 1280, else 1920 (agent never upscales, keeps it even). Internet
+  (`link: remote`) caps H.264 at 2.5 Mbps and the stepper shows "Batas internet".
+  A step skips values the active codec cannot show; buttons disable at the limit.
 - Binary `PV` frames: 16-byte header (mon, w/h, cursor, key flag, seq) + one
   Annex-B access unit, decoded by the local module `modules/pcremote-video`
   (MediaCodec -> TextureView) inside the same camera transform. Needs a new

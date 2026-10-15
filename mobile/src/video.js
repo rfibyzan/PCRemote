@@ -16,7 +16,7 @@ import Text from "./AppText";
 import { COLORS } from "./components";
 import { msg } from "./protocol";
 import { addListener, getStatus, releaseVideoHandler, send, setVideoHandler } from "./connection";
-import { addQualityListener, getQuality } from "./controls";
+import { addQualityListener, getQuality, setVideoCodecActive, useQuality } from "./controls";
 import { fmtKbps, videoParams } from "./videoproto";
 import { videoSupported } from "../modules/pcremote-video";
 
@@ -41,6 +41,7 @@ function snapshot() {
 }
 
 function emitVs() {
+  setVideoCodecActive(vs.active); // quality steppers switch to bitrate / H.264 fps
   const s = snapshot();
   for (const fn of [...vsListeners]) {
     try {
@@ -187,13 +188,15 @@ export function useVideo() {
 /** "Video H.264" switch for the stream ⚙ popover. */
 export function VideoToggle() {
   const v = useVideo();
+  useQuality(); // re-render the status line when the level changes
   const p = currentParams();
+  const res = p.width >= 1920 ? "1080p" : "720p";
   let note;
   if (!v.supported) note = "Perlu build baru aplikasi (modul video belum ada di APK ini).";
   else if (!v.pref) note = "Mati: pakai JPEG.";
   else if (v.active) note = `Aktif · ${v.encoder || "h264"} ${v.w}×${v.h} · ${fmtKbps(p.kbps)} · ${p.fps} fps`;
   else if (v.reason) note = `Kembali ke JPEG: ${v.reason}`;
-  else note = `Menyalakan… (${fmtKbps(p.kbps)} · ${p.fps} fps)`;
+  else note = `Menyalakan… (${fmtKbps(p.kbps)} · ${p.fps} fps · maks ${res})`;
   return (
     <View style={styles.set}>
       <View style={styles.row}>
