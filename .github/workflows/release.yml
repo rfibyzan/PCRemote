@@ -48,6 +48,23 @@ jobs:
           $vi = (Get-Item autostart\PCRemoteStart.exe).VersionInfo
           $vi | Format-List FileDescription, CompanyName, ProductName, FileVersion
           if ($vi.FileDescription -ne "PC Remote") { throw "FileDescription is '$($vi.FileDescription)'" }
+      - name: Build PCRemote.exe launcher (in-box .NET Framework csc)
+        shell: pwsh
+        working-directory: launcher
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
+          & $csc /nologo /noconfig /target:exe /r:System.dll /out:NetstatTest.exe NetstatTest.cs Netstat.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\NetstatTest.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $csc /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $vi = (Get-Item ..\PCRemote.exe).VersionInfo
+          $vi | Format-List FileDescription, ProductName, FileVersion
+          if ($vi.FileDescription -ne "PC Remote") { throw "FileDescription is '$($vi.FileDescription)'" }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path ..\PCRemote.exe))
+          if (-not ([Text.Encoding]::ASCII.GetString($bytes).Contains("requireAdministrator"))) { throw "manifest missing requireAdministrator" }
       - name: Assemble folder
         shell: pwsh
         run: |
