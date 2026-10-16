@@ -28,7 +28,7 @@ import {
   typeText,
   lastInjectTime,
 } from "./input.js";
-import { QUALITY, captureMonitor, cursorOnMonitor, cursorPos as monCursorPos, cursorShape, encodeProfile, frameFingerprint, listMonitors } from "./monitors.js";
+import { QUALITY, captureMonitor, cursorOnMonitor, cursorPos as monCursorPos, cursorShape, encodeProfile, frameFingerprint, listDxgiOutputs, listMonitors } from "./monitors.js";
 import { createPresence, presenceStep } from "./pointerstate.js";
 import { agentVersion, checkForUpdate } from "./updates.js";
 import { hideConsole, startTray, claimSingleInstance } from "./tray.js";
@@ -249,6 +249,9 @@ function send(ws, obj) {
 const video = createVideoManager({
   monitorFor,
   cursorFor: (mon) => cursorOnMonitor(mon),
+  // DXGI output rects so ddagrab (no cursor flicker) can target the monitor.
+  dxgiOutputs: () => listDxgiOutputs(),
+  onStart: (ws, info) => devices.log(`${ws.device?.name || "HP"}: H.264 aktif (${info.label}, ${info.w}x${info.h})`, "info"),
   onAu: (ws, au) => {
     if (au.sent) {
       noteStream(ws, "sent");
