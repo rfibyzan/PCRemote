@@ -310,6 +310,8 @@ function helloPayload() {
     screen: size,
     monitors: publicMonitors(),
     mode: "direct",
+    // Lets the phone tell an old agent apart from a failing feature.
+    features: ["winThumbs", "winMax", "apps"],
   };
 }
 
@@ -414,8 +416,8 @@ async function handleCommand(ws, msg) {
         if (msg.thumbs && !ws.thumbBusy) {
           ws.thumbBusy = true;
           windowThumbs(list)
-            .then((thumbs) => send(ws, { t: "winThumbs", thumbs }))
-            .catch(() => {})
+            .then((r) => send(ws, { t: "winThumbs", thumbs: r.thumbs, err: r.err || undefined }))
+            .catch((e) => send(ws, { t: "winThumbs", thumbs: {}, err: String(e?.message || e).slice(0, 200) }))
             .finally(() => {
               ws.thumbBusy = false;
             });
@@ -426,7 +428,7 @@ async function handleCommand(ws, msg) {
       // App launcher: Start-menu apps with icons (cached ~10 min, refresh=1 rescans).
       listApps(!!msg.refresh)
         .then((list) => send(ws, { t: "apps", list }))
-        .catch(() => send(ws, { t: "apps", list: [], error: true }));
+        .catch((e) => send(ws, { t: "apps", list: [], error: String(e?.message || e).slice(0, 300) }));
       break;
     case "appOpen": {
       const ok = openApp(String(msg.id || ""), !!msg.admin);
@@ -437,6 +439,7 @@ async function handleCommand(ws, msg) {
       const a = String(msg.a || "");
       if (!WINDOW_ACTIONS.has(a)) break;
       const ok = windowAction(msg.id, a);
+      // ok=false: window gone; the phone refreshes the list either way.
       send(ws, { t: "winAct", id: msg.id, a, ok });
       break;
     }

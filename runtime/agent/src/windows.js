@@ -17,6 +17,7 @@ const EnumWindows = user32.func("bool __stdcall EnumWindows(PcrEnumWindowsProc *
 const IsWindowVisible = user32.func("bool __stdcall IsWindowVisible(intptr hwnd)");
 const IsWindow = user32.func("bool __stdcall IsWindow(intptr hwnd)");
 const IsIconicW = user32.func("bool __stdcall IsIconic(intptr hwnd)");
+const IsZoomedW = user32.func("bool __stdcall IsZoomed(intptr hwnd)");
 const GetWindowTextW = user32.func("int32 __stdcall GetWindowTextW(intptr hwnd, _Out_ uint16_t *buf, int32 max)");
 const GetWindowLongPtrW = user32.func("intptr __stdcall GetWindowLongPtrW(intptr hwnd, int32 index)");
 const GetWindowRect = user32.func("bool __stdcall GetWindowRect(intptr hwnd, _Out_ WinRECT *r)");
@@ -113,7 +114,7 @@ export function listWindows() {
         if (pidOut[0] === own) return true;
         const place = min ? null : placeWindow(r, monitors);
         if (!min && !place) return true;
-        out.push({ id: Number(h), title: title.slice(0, 120), exe: processName(h), min: Boolean(min), ...(place || { mon: null }) });
+        out.push({ id: Number(h), title: title.slice(0, 120), exe: processName(h), min: Boolean(min), max: Boolean(IsZoomedW(h)), ...(place || { mon: null }) });
       } catch {
         // skip this window
       }
@@ -148,7 +149,8 @@ export function windowAction(id, action) {
   if (action === "focus") forceForeground(h);
   else if (action === "min") ShowWindowW(h, 6); // SW_MINIMIZE
   else if (action === "max") {
-    ShowWindowW(h, 3); // SW_MAXIMIZE
+    // Toggle like the title-bar button: maximized -> restore.
+    ShowWindowW(h, IsZoomedW(h) ? 9 : 3); // SW_RESTORE : SW_MAXIMIZE
     forceForeground(h);
   } else if (action === "close") PostMessageW(h, WM_CLOSE, 0, 0);
   return true;

@@ -50,6 +50,7 @@ const THUMB_W = 192;
 const CACHE_MS = 1800;
 const MAX_SIDE = 4096;
 const cache = new Map(); // id -> { at, data }
+let lastErr = "";
 
 function grab(h) {
   const r = { left: 0, top: 0, right: 0, bottom: 0 };
@@ -114,9 +115,11 @@ export async function windowThumb(id) {
         .toBuffer();
       data = jpg.toString("base64");
     }
-  } catch {
+  } catch (e) {
     data = null;
+    lastErr = String(e?.message || e).slice(0, 200);
   }
+  if (!data && !lastErr) lastErr = "PrintWindow gagal";
   cache.set(h, { at: Date.now(), data });
   if (cache.size > 80) {
     for (const k of cache.keys()) {
@@ -126,13 +129,17 @@ export async function windowThumb(id) {
   return data;
 }
 
-/** Thumbnails for the first `max` windows of a list: { [id]: base64 }. */
+/** Thumbnails for the first `max` windows of a list: { thumbs: {[id]: base64}, err }.
+ * err is set only when every window failed (shown on the phone for debugging). */
 export async function windowThumbs(list, max = 12) {
   const out = {};
+  lastErr = "";
+  let tried = 0;
   for (const w of (list || []).slice(0, max)) {
     if (w.min) continue;
+    tried += 1;
     const data = await windowThumb(w.id);
     if (data) out[w.id] = data;
   }
-  return out;
+  return { thumbs: out, err: tried && !Object.keys(out).length ? lastErr : "" };
 }
