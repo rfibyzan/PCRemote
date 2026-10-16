@@ -14,6 +14,7 @@ import { Alert, Image, Pressable, ScrollView, StyleSheet, View } from "react-nat
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "./AppText";
 import { COLORS } from "./components";
+import Animated, { FadeIn, FadeInDown, FadeOut } from "react-native-reanimated";
 import { MotionModal, MotionPanel, PressScale, useLatched } from "./motion";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
@@ -112,7 +113,10 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
             >
               <View style={styles.thumb}>
                 {img ? (
-                  <Image source={{ uri: `data:image/jpeg;base64,${img}` }} style={styles.thumbImg} resizeMode="cover" fadeDuration={0} />
+                  // Fades in once when the first thumbnail lands; later refreshes swap in place.
+                  <Animated.View key="img" entering={FadeIn.duration(220)} style={styles.thumbImg}>
+                    <Image source={{ uri: `data:image/jpeg;base64,${img}` }} style={styles.thumbImg} resizeMode="cover" fadeDuration={0} />
+                  </Animated.View>
                 ) : (
                   <MaterialCommunityIcons name={w.min ? "window-minimize" : "application-outline"} size={24} color={COLORS.muted} />
                 )}
@@ -125,11 +129,13 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
         })}
       </ScrollView>
       {(oldAgent || !!err) && (
+        <Animated.View entering={FadeInDown.duration(200)} exiting={FadeOut.duration(150)}>
         <Text style={styles.notice} numberOfLines={2}>
           {oldAgent
             ? "Agent di PC masih versi lama: thumbnail, Maksimalkan, dan daftar aplikasi butuh agent terbaru (tutup lalu jalankan lagi)."
             : `Thumbnail gagal: ${err}`}
         </Text>
+        </Animated.View>
       )}
       <AppSheet visible={apps} onClose={() => setApps(false)} onOpened={() => setTimeout(() => send(msg.windows(true)), 1500)} />
       <MotionModal visible={!!menu} onRequestClose={() => setMenu(null)}>

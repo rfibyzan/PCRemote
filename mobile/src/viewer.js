@@ -26,6 +26,10 @@ import Reanimated, {
   useSharedValue,
   withDecay,
   withTiming,
+  FadeIn,
+  FadeInDown,
+  FadeInUp,
+  FadeOut,
 } from "react-native-reanimated";
 import { useFocusEffect, useNavigation } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -148,7 +152,7 @@ export function Block({ children, ...props }) {
 // sideways when they don't fit; Lipat (fold) stays pinned at the right.
 function Toolbar({ items, fold, onFold }) {
   return (
-    <View style={styles.toolbar}>
+    <Reanimated.View entering={FadeInDown.duration(180)} exiting={FadeOut.duration(120)} style={styles.toolbar}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tbScroll} contentContainerStyle={styles.tbContent}>
         {items.filter(Boolean).map((it) => (
           <PressScale
@@ -172,7 +176,7 @@ function Toolbar({ items, fold, onFold }) {
         <MaterialCommunityIcons name={fold ? "chevron-up" : "chevron-down"} size={22} color={COLORS.text} />
         <Text style={styles.tbLabel}>{fold ? "Buka" : "Lipat"}</Text>
       </PressScale>
-    </View>
+    </Reanimated.View>
   );
 }
 
@@ -1313,7 +1317,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     <View style={styles.root}>
       {full && <StatusBar hidden />}
       {!full && !typing && (
-      <View style={styles.topRow}>
+      <Reanimated.View entering={FadeInUp.duration(180)} exiting={FadeOut.duration(120)} style={styles.topRow}>
         {!!title && <Text style={styles.title}>{title}</Text>}
         <ConnDot />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.topScroll} contentContainerStyle={styles.topScrollContent}>
@@ -1327,7 +1331,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         >
           <Text style={[styles.gearText, streamOpen && styles.subTextActive]}>⚙</Text>
         </Pressable>
-      </View>
+      </Reanimated.View>
       )}
       <View style={[styles.viewerBox, full && styles.viewerBoxFull]}>
         <GestureDetector gesture={lookGesture}>
@@ -1491,14 +1495,14 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           )}
         <View style={[styles.overlayTop, bar && styles.shiftForBar]} pointerEvents="none">
           {hintOn && !streamOpen && (
-            <View style={styles.hintPill}>
+            <Reanimated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(150)} style={styles.hintPill}>
               <Text style={styles.hint}>{hintText}</Text>
-            </View>
+            </Reanimated.View>
           )}
           {stalled && (
-            <View style={styles.stalled}>
+            <Reanimated.View entering={FadeInDown.duration(200)} exiting={FadeOut.duration(150)} style={styles.stalled}>
               <Text style={styles.stalledText}>Stream terhenti — mencoba lagi otomatis…</Text>
-            </View>
+            </Reanimated.View>
           )}
           {tapBlocked && !stalled && (
             <View style={styles.blocked}>

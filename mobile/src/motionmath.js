@@ -7,6 +7,8 @@ export const MOTION = {
   touchFrom: 0.6, // menus opened from a held item grow from 60% at that item
   sheetRise: 0.35, // sheets rise from 35% of the screen height below
   pressScale: 0.96,
+  pulseMs: 700, // one half-cycle of a breathing pulse
+  listStagger: 40, // ms between rows of a short list (Recent PC)
   stagger: 15, // ms per row for grids that appear
   staggerMax: 240,
 };

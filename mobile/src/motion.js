@@ -5,8 +5,10 @@ import React, { createContext, useContext, useEffect, useRef, useState } from "r
 import { Modal, Pressable, StyleSheet, useWindowDimensions } from "react-native";
 import Animated, {
   Easing,
+  cancelAnimation,
   interpolate,
   runOnJS,
+  withRepeat,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
@@ -156,30 +158,58 @@ export function riseIn() {
   };
 }
 
-/** Segmented tabs whose highlight slides to the chosen tab with a spring.
- * renderLabel(item, active) draws each label. */
+/** Segmented tabs whose highlight slides to the chosen tab with a spring
+ * (rows or columns: it follows each tab's measured box). renderLabel(item,
+ * active) draws each label; tabStyle may be a function of (item, active). */
 export function SlideTabs({ items, value, onChange, style, tabStyle, activeColor, radius = 7, renderLabel }) {
   const [boxes, setBoxes] = useState({});
   const box = boxes[value];
   const x = useSpringValue(box ? box.x : 0);
+  const y = useSpringValue(box ? box.y : 0);
   const w = useSpringValue(box ? box.w : 0);
-  const anim = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }], width: w.value }));
+  const h = useSpringValue(box ? box.h : 0);
+  const anim = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }, { translateY: y.value }], width: w.value, height: h.value }));
   return (
     <Animated.View style={style}>
-      {!!box && <Animated.View pointerEvents="none" style={[{ position: "absolute", top: 2, bottom: 2, left: 0, borderRadius: radius, backgroundColor: activeColor }, anim]} />}
+      {!!box && <Animated.View pointerEvents="none" style={[{ position: "absolute", top: 0, left: 0, borderRadius: radius, backgroundColor: activeColor }, anim]} />}
       {items.map((it) => (
         <Pressable
           key={it}
           onPress={() => onChange(it)}
           onLayout={(e) => {
-            const { x: bx, width } = e.nativeEvent.layout;
-            setBoxes((b) => (b[it] && b[it].x === bx && b[it].w === width ? b : { ...b, [it]: { x: bx, w: width } }));
+            const l = e.nativeEvent.layout;
+            setBoxes((b) => {
+              const o = b[it];
+              return o && o.x === l.x && o.y === l.y && o.w === l.width && o.h === l.height ? b : { ...b, [it]: { x: l.x, y: l.y, w: l.width, h: l.height } };
+            });
           }}
-          style={tabStyle}
+          style={typeof tabStyle === "function" ? tabStyle(it, it === value) : tabStyle}
         >
           {renderLabel(it, it === value)}
         </Pressable>
       ))}
     </Animated.View>
   );
+}
+
+/** Gentle breathing while `on` (connecting, waiting for a scan): opacity
+ * down to `min` and scale up to `grow`, back and forth. Still when off or
+ * when the system asks for reduced motion. */
+export function Pulse({ on, min = 0.55, grow = 1, ms = MOTION.pulseMs, style, children }) {
+  const reduce = useReducedMotion();
+  const t = useSharedValue(0);
+  useEffect(() => {
+    if (on && !reduce) {
+      t.value = withRepeat(withTiming(1, { duration: ms, easing: Easing.inOut(Easing.quad) }), -1, true);
+    } else {
+      cancelAnimation(t);
+      t.value = withTiming(0, CLOSE);
+    }
+    return () => cancelAnimation(t);
+  }, [on, reduce, ms, t]);
+  const anim = useAnimatedStyle(() => ({
+    opacity: interpolate(t.value, [0, 1], [1, min]),
+    transform: [{ scale: interpolate(t.value, [0, 1], [1, grow]) }],
+  }));
+  return <Animated.View style={[style, anim]}>{children}</Animated.View>;
 }

@@ -12,11 +12,14 @@ import ViewerPanel from "../viewer";
 import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
-import Animated, { FadeIn } from "react-native-reanimated";
+import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
 import ShortcutEditor from "../shortcuteditor";
-import { PressScale, SlideTabs } from "../motion";
+import { PressScale, SlideTabs, popIn } from "../motion";
 import { useShortcuts, saveShortcuts } from "../shortcuts";
 import { comboKeys, comboLabel, moveShortcut, removeShortcut, upsertShortcut, MAX_SHORTCUTS } from "../shortcutmath";
+
+// Shortcut tiles slide into place when one is added, moved or removed.
+const SC_LAYOUT = LinearTransition.springify().damping(18).stiffness(220);
 
 const APPS = [
   { id: "explorer", label: "Files", icon: "folder" },
@@ -192,24 +195,27 @@ export default function WinScreen() {
         {section === "Pintasan" && (
           <ScrollView contentContainerStyle={styles.grid} nestedScrollEnabled showsVerticalScrollIndicator={false}>
             {shortcuts.map((sc) => (
+              <Animated.View key={sc.id} entering={popIn} exiting={FadeOut.duration(150)} layout={SC_LAYOUT} style={styles.scWrap}>
               <PressScale
-                key={sc.id}
                 onPress={() => send(msg.combo(comboKeys(sc)))}
                 onLongPress={() => shortcutMenu(sc)}
                 delayLongPress={380}
                 hitSlop={HIT}
                 accessibilityLabel={`${sc.name}, ${comboLabel(sc)}`}
-                style={({ pressed }) => [styles.cell, styles.scCell, pressed && styles.cellPressed]}
+                style={({ pressed }) => [styles.cell, styles.scCell, styles.scFill, pressed && styles.cellPressed]}
               >
                 <Text style={styles.scName} numberOfLines={1}>{sc.name}</Text>
                 <Text style={styles.scCombo} numberOfLines={1}>{comboLabel(sc)}</Text>
               </PressScale>
+              </Animated.View>
             ))}
             {shortcuts.length < MAX_SHORTCUTS ? (
-              <PressScale onPress={() => setEditing({})} hitSlop={HIT} style={({ pressed }) => [styles.cell, styles.scCell, styles.scAdd, pressed && styles.cellPressed]}>
+              <Animated.View key="__add" layout={SC_LAYOUT} style={styles.scWrap}>
+              <PressScale onPress={() => setEditing({})} hitSlop={HIT} style={({ pressed }) => [styles.cell, styles.scCell, styles.scAdd, styles.scFill, pressed && styles.cellPressed]}>
                 <MaterialIcons name="add" size={16} color={COLORS.accent} />
                 <Text style={styles.scAddText}>{shortcuts.length ? "Tambah" : "Tambah pintasan"}</Text>
               </PressScale>
+              </Animated.View>
             ) : null}
           </ScrollView>
         )}
@@ -281,6 +287,8 @@ const styles = StyleSheet.create({
   cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 10 },
   cellTextActive: { color: COLORS.accent },
   scCell: { width: "31.5%", alignItems: "flex-start", paddingHorizontal: 8 },
+  scWrap: { width: "31.5%", flexGrow: 1 },
+  scFill: { width: "100%" },
   scName: { color: COLORS.text, fontWeight: "800", fontSize: 11 },
   scCombo: { color: COLORS.muted, fontSize: 9 },
   scAdd: { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.accent, borderStyle: "dashed", alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 4 },
