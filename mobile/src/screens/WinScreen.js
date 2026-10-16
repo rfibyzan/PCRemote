@@ -12,9 +12,14 @@ import ViewerPanel from "../viewer";
 import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
+import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
 import ShortcutEditor from "../shortcuteditor";
+import { PressScale, SlideTabs, popIn } from "../motion";
 import { useShortcuts, saveShortcuts } from "../shortcuts";
 import { comboKeys, comboLabel, moveShortcut, removeShortcut, upsertShortcut, MAX_SHORTCUTS } from "../shortcutmath";
+
+// Shortcut tiles slide into place when one is added, moved or removed.
+const SC_LAYOUT = LinearTransition.springify().damping(18).stiffness(220);
 
 const APPS = [
   { id: "explorer", label: "Files", icon: "folder" },
@@ -123,7 +128,7 @@ export default function WinScreen() {
 
   function Btn({ label, icon, onPress, active, danger, wide, fn, small, a11y }) {
     return (
-      <Pressable
+      <PressScale
         onPress={onPress}
         hitSlop={HIT}
         accessibilityLabel={a11y || label}
@@ -131,21 +136,23 @@ export default function WinScreen() {
       >
         {icon ? <MaterialIcons name={icon} size={16} color={COLORS.text} /> : null}
         {label ? <Text style={[styles.cellText, active && styles.cellTextActive]} numberOfLines={1}>{label}</Text> : null}
-      </Pressable>
+      </PressScale>
     );
   }
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <ViewerPanel title="Win" touchpad={false} actions={false} onTap={releaseApps}>
-      <View style={styles.tabs}>
-        {SECTIONS.map((sec) => (
-          <Pressable key={sec} onPress={() => setSection(sec)} style={[styles.tab, section === sec && styles.tabActive]}>
-            <Text style={[styles.tabText, section === sec && styles.tabTextActive]}>{sec}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <View style={styles.ctl}>
+      <SlideTabs
+        items={SECTIONS}
+        value={section}
+        onChange={setSection}
+        style={styles.tabs}
+        tabStyle={styles.tab}
+        activeColor={styles.tabActive.backgroundColor}
+        renderLabel={(sec, on) => <Text style={[styles.tabText, on && styles.tabTextActive]}>{sec}</Text>}
+      />
+      <Animated.View key={section} entering={FadeIn.duration(150)} style={styles.ctl}>
         {section === "Sistem" && (
           <View style={styles.grid}>
             <Btn icon="apps" label="Start" onPress={() => send(msg.key("win"))} />
@@ -188,24 +195,27 @@ export default function WinScreen() {
         {section === "Pintasan" && (
           <ScrollView contentContainerStyle={styles.grid} nestedScrollEnabled showsVerticalScrollIndicator={false}>
             {shortcuts.map((sc) => (
-              <Pressable
-                key={sc.id}
+              <Animated.View key={sc.id} entering={popIn} exiting={FadeOut.duration(150)} layout={SC_LAYOUT} style={styles.scWrap}>
+              <PressScale
                 onPress={() => send(msg.combo(comboKeys(sc)))}
                 onLongPress={() => shortcutMenu(sc)}
                 delayLongPress={380}
                 hitSlop={HIT}
                 accessibilityLabel={`${sc.name}, ${comboLabel(sc)}`}
-                style={({ pressed }) => [styles.cell, styles.scCell, pressed && styles.cellPressed]}
+                style={({ pressed }) => [styles.cell, styles.scCell, styles.scFill, pressed && styles.cellPressed]}
               >
                 <Text style={styles.scName} numberOfLines={1}>{sc.name}</Text>
                 <Text style={styles.scCombo} numberOfLines={1}>{comboLabel(sc)}</Text>
-              </Pressable>
+              </PressScale>
+              </Animated.View>
             ))}
             {shortcuts.length < MAX_SHORTCUTS ? (
-              <Pressable onPress={() => setEditing({})} hitSlop={HIT} style={({ pressed }) => [styles.cell, styles.scCell, styles.scAdd, pressed && styles.cellPressed]}>
+              <Animated.View key="__add" layout={SC_LAYOUT} style={styles.scWrap}>
+              <PressScale onPress={() => setEditing({})} hitSlop={HIT} style={({ pressed }) => [styles.cell, styles.scCell, styles.scAdd, styles.scFill, pressed && styles.cellPressed]}>
                 <MaterialIcons name="add" size={16} color={COLORS.accent} />
                 <Text style={styles.scAddText}>{shortcuts.length ? "Tambah" : "Tambah pintasan"}</Text>
-              </Pressable>
+              </PressScale>
+              </Animated.View>
             ) : null}
           </ScrollView>
         )}
@@ -243,7 +253,7 @@ export default function WinScreen() {
             </View>
           </View>
         )}
-      </View>
+      </Animated.View>
       </ViewerPanel>
       <ShortcutEditor
         visible={editing != null}
@@ -277,6 +287,8 @@ const styles = StyleSheet.create({
   cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 10 },
   cellTextActive: { color: COLORS.accent },
   scCell: { width: "31.5%", alignItems: "flex-start", paddingHorizontal: 8 },
+  scWrap: { width: "31.5%", flexGrow: 1 },
+  scFill: { width: "100%" },
   scName: { color: COLORS.text, fontWeight: "800", fontSize: 11 },
   scCombo: { color: COLORS.muted, fontSize: 9 },
   scAdd: { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.accent, borderStyle: "dashed", alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 4 },

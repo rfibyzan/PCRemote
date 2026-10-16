@@ -5,7 +5,9 @@
  * Recent PCs connect with one tap; Log out forgets the current PC.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { ScrollView, StyleSheet, TextInput, View } from "react-native";
+import Animated, { FadeIn, FadeInDown, FadeOut } from "react-native-reanimated";
+import { PressScale, Pulse, popIn } from "../motion";
 import Text from "../AppText";
 import { COLORS } from "../components";
 import {
@@ -113,9 +115,9 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
       )}
 
       {!paired && (
-        <Pressable onPress={() => setScanOpen(true)} style={styles.scanBig}>
+        <PressScale onPress={() => setScanOpen(true)} style={styles.scanBig}>
           <Text style={styles.scanBigText}>▣  Scan QR di layar PC</Text>
-        </Pressable>
+        </PressScale>
       )}
 
       {!paired && (
@@ -135,15 +137,18 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
       )}
 
       <View style={styles.row}>
-        <Pressable
-          style={[styles.primary, working && styles.primaryBusy, !paired && normalizeCode(code).length < 8 && styles.primaryOff]}
+        <Pulse on={working} min={0.6} style={styles.flex}>
+        <PressScale
+          style={[styles.primary, styles.noFlex, working && styles.primaryBusy, !paired && normalizeCode(code).length < 8 && styles.primaryOff]}
           onPress={onConnectPress}
           disabled={working || (!paired && normalizeCode(code).length < 8)}
         >
           <Text style={styles.primaryText}>{working ? "Menghubungkan…" : STOP_STATES.has(st.status) ? "Connect lagi" : "Connect"}</Text>
-        </Pressable>
+        </PressScale>
+        </Pulse>
         {working && (
-          <Pressable
+          <Animated.View entering={popIn} exiting={FadeOut.duration(120)}>
+          <PressScale
             onPress={() => {
               cancelFind();
               setBusy(false);
@@ -151,7 +156,8 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
             style={styles.cancel}
           >
             <Text style={styles.cancelText}>Batal</Text>
-          </Pressable>
+          </PressScale>
+          </Animated.View>
         )}
       </View>
 
@@ -161,12 +167,18 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
         {st.link ? ` · ${st.link}` : ""}
         {st.attempts ? ` · coba ${st.attempts}` : ""}
       </Text>
-      {!!st.detail && <Text style={styles.message}>{st.detail}</Text>}
+      {!!st.detail && (
+        <Animated.View key={st.detail} entering={FadeIn.duration(180)}>
+          <Text style={styles.message}>{st.detail}</Text>
+        </Animated.View>
+      )}
 
       {(st.status === "failed" || st.status === "unreachable" || st.status === "reconnecting") && !busy && (
-        <Pressable onPress={() => retryConnect()} style={styles.retry}>
-          <Text style={styles.retryText}>Coba lagi sekarang</Text>
-        </Pressable>
+        <Animated.View entering={FadeInDown.duration(200)} exiting={FadeOut.duration(150)}>
+          <PressScale onPress={() => retryConnect()} style={styles.retry}>
+            <Text style={styles.retryText}>Coba lagi sekarang</Text>
+          </PressScale>
+        </Animated.View>
       )}
 
       <LogPanel lines={8} />
@@ -181,10 +193,10 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
 
       {paired && (
         <View style={styles.row}>
-          <Pressable onPress={() => setScanOpen(true)} style={[styles.scan, styles.flex]}>
+          <PressScale onPress={() => setScanOpen(true)} style={[styles.scan, styles.flex]}>
             <Text style={styles.scanText}>▣  Scan QR PC lain</Text>
-          </Pressable>
-          <Pressable
+          </PressScale>
+          <PressScale
             onPress={() => {
               clearPairing();
               setCode("");
@@ -192,7 +204,7 @@ export default function ConnectScreen({ onConnected, qrParams = null }) {
             style={styles.logout}
           >
             <Text style={styles.logoutText}>Log out</Text>
-          </Pressable>
+          </PressScale>
         </View>
       )}
       <QrScanner visible={scanOpen} onClose={() => setScanOpen(false)} onResult={onQr} />
@@ -208,6 +220,7 @@ const styles = StyleSheet.create({
   input: { backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 12, padding: 14, fontSize: 20, letterSpacing: 3, textAlign: "center" },
   row: { flexDirection: "row", gap: 8, alignItems: "center" },
   flex: { flex: 1 },
+  noFlex: { flex: 0 }, // primary sits inside Pulse, which carries the flex
   primary: { flex: 1, backgroundColor: "#5e5ce6", borderRadius: 12, paddingVertical: 14, alignItems: "center" },
   primaryBusy: { backgroundColor: "#5e5ce6" },
   primaryOff: { backgroundColor: "#2c2c30" },

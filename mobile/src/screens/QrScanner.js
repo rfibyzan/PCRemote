@@ -4,6 +4,9 @@
  */
 import React, { useRef } from "react";
 import { Modal, Pressable, StyleSheet, View } from "react-native";
+import Animated, { FadeIn } from "react-native-reanimated";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Pulse, popIn } from "../motion";
 import Text from "../AppText";
 import { COLORS } from "../components";
 import { parsePairQr } from "../pairqr";
@@ -41,6 +44,9 @@ function ScanBody({ onResult }) {
   const [perm, requestPerm] = Camera.useCameraPermissions();
   const done = useRef(false);
   const [bad, setBad] = React.useState(false);
+  const [ok, setOk] = React.useState(false); // brief green tick before the scanner closes
+  const okTimer = useRef(null);
+  React.useEffect(() => () => clearTimeout(okTimer.current), []); // closed during the tick = no result
 
   if (!perm) return <View style={styles.center} />;
   if (!perm.granted) {
@@ -68,12 +74,23 @@ function ScanBody({ onResult }) {
             return;
           }
           done.current = true;
-          onResult(r);
+          setOk(true);
+          okTimer.current = setTimeout(() => onResult(r), 450);
         }}
       />
       <View style={styles.frameWrap} pointerEvents="none">
-        <View style={styles.frame} />
-        <Text style={styles.frameText}>{bad ? "Itu bukan QR PC Remote" : "Arahkan ke QR di layar PC"}</Text>
+        <Pulse on={!ok} min={0.7} grow={1.03} ms={900}>
+          <View style={[styles.frame, ok && styles.frameOk]}>
+            {ok && (
+              <Animated.View entering={popIn} style={styles.tick}>
+                <MaterialCommunityIcons name="check-bold" size={44} color="#fff" />
+              </Animated.View>
+            )}
+          </View>
+        </Pulse>
+        <Animated.View key={ok ? "ok" : bad ? "bad" : "aim"} entering={FadeIn.duration(160)}>
+          <Text style={styles.frameText}>{ok ? "QR terbaca, menghubungkan…" : bad ? "Itu bukan QR PC Remote" : "Arahkan ke QR di layar PC"}</Text>
+        </Animated.View>
       </View>
     </View>
   );
@@ -87,7 +104,9 @@ const styles = StyleSheet.create({
   btn: { backgroundColor: "#5e5ce6", borderRadius: 12, paddingVertical: 12, paddingHorizontal: 18 },
   btnText: { color: "#f2f2f5", fontWeight: "800" },
   frameWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 16 },
-  frame: { width: 240, height: 240, borderRadius: 18, borderWidth: 3, borderColor: "#7c7aff" },
+  frame: { width: 240, height: 240, borderRadius: 18, borderWidth: 3, borderColor: "#7c7aff", alignItems: "center", justifyContent: "center" },
+  frameOk: { borderColor: "#34c759" },
+  tick: { width: 84, height: 84, borderRadius: 42, backgroundColor: "#34c759", alignItems: "center", justifyContent: "center" },
   frameText: { color: "#fff", fontWeight: "800", backgroundColor: "rgba(0,0,0,0.55)", paddingVertical: 6, paddingHorizontal: 12, borderRadius: 999 },
   close: { position: "absolute", top: 44, right: 18, backgroundColor: "rgba(22,22,24,0.85)", borderRadius: 999, paddingVertical: 8, paddingHorizontal: 14 },
   closeText: { color: "#f2f2f5", fontWeight: "800" },

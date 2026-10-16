@@ -3,11 +3,13 @@
  * persistence) shared by PAD / TYPE / GAME / WIN. No second quality system.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Modal, Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import Text from "./AppText";
 import * as SecureStore from "expo-secure-store";
 import { router } from "expo-router";
 import { COLORS } from "./components";
+import Animated, { FadeIn, FadeInDown, FadeOut } from "react-native-reanimated";
+import { MotionModal, MotionPanel, PressScale, Pulse, SlideTabs } from "./motion";
 import { STORE_QUALITY, msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { registerSetting, settingChanged } from "./settingsync";
@@ -320,7 +322,7 @@ export function LagBanner() {
   if (!on || Date.now() < muteUntil) return null;
   const next = lighterQuality(quality);
   return (
-    <View style={styles.lag}>
+    <Animated.View entering={FadeInDown.duration(200)} exiting={FadeOut.duration(150)} style={styles.lag}>
       <Text style={styles.lagText} numberOfLines={2}>
         Koneksi lambat: frame tertahan di PC.
       </Text>
@@ -332,7 +334,7 @@ export function LagBanner() {
       <Pressable onPress={() => setMuteUntil(Date.now() + 60_000)} hitSlop={8} accessibilityLabel="Tutup">
         <Text style={styles.lagX}>✕</Text>
       </Pressable>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -354,13 +356,15 @@ export function StreamControls({ compact }) {
   return (
     <View style={[styles.box, compact && styles.boxCompact]}>
       <View style={styles.presets}>
-        <Pressable onPress={() => setPickOpen(true)} style={styles.dropBtn} hitSlop={4}>
-          <Text style={styles.dropText}>{label} ▾</Text>
-        </Pressable>
+        <PressScale onPress={() => setPickOpen(true)} style={styles.dropBtn} hitSlop={4}>
+          <Animated.View key={label} entering={FadeIn.duration(160)}>
+            <Text style={styles.dropText}>{label} ▾</Text>
+          </Animated.View>
+        </PressScale>
         <View style={styles.stepper}>
-          <Pressable onPress={() => stepQ(view.qDown)} disabled={view.qDown == null} style={[styles.stepBtn, view.qDown == null && styles.stepBtnOff]} hitSlop={4}>
+          <PressScale onPress={() => stepQ(view.qDown)} disabled={view.qDown == null} style={[styles.stepBtn, view.qDown == null && styles.stepBtnOff]} hitSlop={4}>
             <Text style={styles.stepBtnText}>−</Text>
-          </Pressable>
+          </PressScale>
           <View style={styles.stepMid} accessibilityLabel={view.video ? `Bitrate ${view.qText}` : `Kualitas ${view.qText}`}>
             {!!view.qCaption && (
               <Text style={styles.stepCaption} numberOfLines={1}>
@@ -371,39 +375,40 @@ export function StreamControls({ compact }) {
               {view.qText}
             </Text>
           </View>
-          <Pressable onPress={() => stepQ(view.qUp)} disabled={view.qUp == null} style={[styles.stepBtn, view.qUp == null && styles.stepBtnOff]} hitSlop={4}>
+          <PressScale onPress={() => stepQ(view.qUp)} disabled={view.qUp == null} style={[styles.stepBtn, view.qUp == null && styles.stepBtnOff]} hitSlop={4}>
             <Text style={styles.stepBtnText}>+</Text>
-          </Pressable>
+          </PressScale>
         </View>
         <View style={styles.stepper}>
-          <Pressable onPress={() => stepFps(view.fpsDown)} disabled={view.fpsDown == null} style={[styles.stepBtn, view.fpsDown == null && styles.stepBtnOff]} hitSlop={4}>
+          <PressScale onPress={() => stepFps(view.fpsDown)} disabled={view.fpsDown == null} style={[styles.stepBtn, view.fpsDown == null && styles.stepBtnOff]} hitSlop={4}>
             <Text style={styles.stepBtnText}>−</Text>
-          </Pressable>
+          </PressScale>
           <Text style={styles.stepValue}>{view.fpsText}</Text>
-          <Pressable onPress={() => stepFps(view.fpsUp)} disabled={view.fpsUp == null} style={[styles.stepBtn, view.fpsUp == null && styles.stepBtnOff]} hitSlop={4}>
+          <PressScale onPress={() => stepFps(view.fpsUp)} disabled={view.fpsUp == null} style={[styles.stepBtn, view.fpsUp == null && styles.stepBtnOff]} hitSlop={4}>
             <Text style={styles.stepBtnText}>+</Text>
-          </Pressable>
+          </PressScale>
         </View>
       </View>
       <StreamStats />
-      <Modal visible={pickOpen} transparent animationType="fade" onRequestClose={() => setPickOpen(false)}>
+      <MotionModal visible={pickOpen} dim={0.6} onRequestClose={() => setPickOpen(false)}>
         <Pressable style={styles.modalShade} onPress={() => setPickOpen(false)}>
-          <View style={styles.modalBox}>
-            {["Low", "Mid", "High"].map((p) => (
-              <Pressable
-                key={p}
-                onPress={() => {
-                  applyQuality(PRESET_Q[p], 0, 0);
-                  setPickOpen(false);
-                }}
-                style={[styles.modalItem, label === p && styles.modalItemActive]}
-              >
-                <Text style={[styles.modalText, label === p && styles.modalTextActive]}>{p}</Text>
-              </Pressable>
-            ))}
-          </View>
+          <MotionPanel kind="pop">
+            <SlideTabs
+              items={["Low", "Mid", "High"]}
+              value={label}
+              onChange={(p) => {
+                applyQuality(PRESET_Q[p], 0, 0);
+                setTimeout(() => setPickOpen(false), 160); // let the highlight slide first
+              }}
+              style={styles.modalBox}
+              tabStyle={styles.modalItem}
+              activeColor={styles.modalItemActive.backgroundColor}
+              radius={10}
+              renderLabel={(p, on) => <Text style={[styles.modalText, on && styles.modalTextActive]}>{p}</Text>}
+            />
+          </MotionPanel>
         </Pressable>
-      </Modal>
+      </MotionModal>
     </View>
   );
 }
@@ -532,7 +537,9 @@ export function ConnDot() {
       style={({ pressed }) => [styles.connPill, pressed && styles.connPillPressed]}
       accessibilityLabel="Perangkat dan log koneksi"
     >
-      <Text style={[styles.connDot, { color }]}>{glyph}</Text>
+      <Pulse on={!st.connected && st.status === "reconnecting"} min={0.35}>
+        <Text style={[styles.connDot, { color }]}>{glyph}</Text>
+      </Pulse>
       <Text style={styles.connLabel} numberOfLines={1}>
         {st.pcName ? st.pcName.slice(0, 12) : "Perangkat"}
       </Text>
@@ -554,7 +561,7 @@ const styles = StyleSheet.create({
   stepValue: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
   stats: { color: COLORS.muted, fontSize: 11, fontWeight: "700", textAlign: "center" },
   statsWarn: { color: "#fbbf24" },
-  modalShade: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
+  modalShade: { flex: 1, alignItems: "center", justifyContent: "center" },
   modalBox: { backgroundColor: COLORS.card, borderRadius: 14, padding: 8, gap: 4, minWidth: 200 },
   modalItem: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16, alignItems: "center" },
   modalItemActive: { backgroundColor: "#5e5ce6" },

@@ -2,6 +2,9 @@
  * (with Share/copy) and the recent-PC list. */
 import React, { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, Share, StyleSheet, View } from "react-native";
+import Animated, { FadeInDown, FadeOut, LinearTransition } from "react-native-reanimated";
+import { PressScale } from "../motion";
+import { MOTION } from "../motionmath";
 import Text from "../AppText";
 import { COLORS } from "../components";
 import { addListener, connLog, connLogText, getRecent } from "../connection";
@@ -70,11 +73,17 @@ export function RecentList({ recent, currentCode, onConnect, onForget, busy }) {
   return (
     <View style={styles.recentBox}>
       <Text style={styles.sectionTitle}>Recent PC</Text>
-      {recent.map((r) => {
+      {recent.map((r, i) => {
         const current = r.code === currentCode;
         return (
-          <View key={r.code} style={styles.recentRow}>
-            <Pressable style={styles.recentMain} disabled={busy} onPress={() => onConnect(r)}>
+          <Animated.View
+            key={r.code}
+            entering={FadeInDown.delay(Math.min(i, 6) * MOTION.listStagger).duration(220)}
+            exiting={FadeOut.duration(150)}
+            layout={LinearTransition.duration(200)}
+            style={styles.recentRow}
+          >
+            <PressScale style={styles.recentMain} disabled={busy} onPress={() => onConnect(r)} scaleTo={0.98}>
               <Text style={styles.recentName} numberOfLines={1}>
                 {r.name || "PC"}
                 {current ? "  ·  aktif" : ""}
@@ -83,7 +92,7 @@ export function RecentList({ recent, currentCode, onConnect, onForget, busy }) {
                 {agoText(r.lastAt)}
                 {r.link ? ` · ${r.link}` : ""} · kode {r.code.slice(0, 2)}••••••
               </Text>
-            </Pressable>
+            </PressScale>
             <Pressable
               hitSlop={8}
               style={styles.recentX}
@@ -96,7 +105,7 @@ export function RecentList({ recent, currentCode, onConnect, onForget, busy }) {
             >
               <Text style={styles.recentXText}>✕</Text>
             </Pressable>
-          </View>
+          </Animated.View>
         );
       })}
     </View>

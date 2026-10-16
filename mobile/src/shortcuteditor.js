@@ -1,14 +1,18 @@
 /** Editor sheet for one custom shortcut (WIN > Pintasan): name, modifier
  * chips, one main key from a paged picker, preview, Tes kirim, Simpan. */
 import React, { useEffect, useState } from "react";
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import Text from "./AppText";
+import Animated, { FadeIn } from "react-native-reanimated";
 import { COLORS } from "./components";
+import { MotionModal, MotionPanel, PressScale, useLatched } from "./motion";
 import { msg } from "./protocol";
 import { send } from "./connection";
 import { SC_KEY_PAGES, SC_MODS, SC_MOD_LABEL, comboKeys, comboLabel, keyLabel } from "./shortcutmath";
 
 export default function ShortcutEditor({ visible, initial, onSave, onDelete, onClose }) {
+  const shown = useLatched(initial); // title stays put while the sheet fades out
+  const del = useLatched(onDelete);
   const [name, setName] = useState("");
   const [mods, setMods] = useState([]);
   const [key, setKey] = useState("");
@@ -28,12 +32,12 @@ export default function ShortcutEditor({ visible, initial, onSave, onDelete, onC
   const toggleMod = (m) => setMods((cur) => (cur.includes(m) ? cur.filter((x) => x !== m) : [...cur, m]));
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <MotionModal visible={visible} onRequestClose={onClose}>
       <Pressable style={styles.dim} onPress={onClose} />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.sheetWrap}>
-        <View style={styles.sheet}>
+        <MotionPanel kind="sheet" style={styles.sheet}>
           <View style={styles.grab} />
-          <Text style={styles.title}>{initial?.id ? "Edit pintasan" : "Pintasan baru"}</Text>
+          <Text style={styles.title}>{shown?.id ? "Edit pintasan" : "Pintasan baru"}</Text>
 
           <Text style={styles.label}>Nama</Text>
           <TextInput
@@ -48,9 +52,9 @@ export default function ShortcutEditor({ visible, initial, onSave, onDelete, onC
           <Text style={styles.label}>Tombol pengubah</Text>
           <View style={styles.row}>
             {SC_MODS.map((m) => (
-              <Pressable key={m} onPress={() => toggleMod(m)} style={[styles.mod, mods.includes(m) && styles.on]}>
+              <PressScale key={m} onPress={() => toggleMod(m)} style={[styles.mod, mods.includes(m) && styles.on]}>
                 <Text style={[styles.modText, mods.includes(m) && styles.onText]}>{SC_MOD_LABEL[m]}</Text>
-              </Pressable>
+              </PressScale>
             ))}
           </View>
 
@@ -64,37 +68,39 @@ export default function ShortcutEditor({ visible, initial, onSave, onDelete, onC
           </View>
           <ScrollView style={styles.keysBox} contentContainerStyle={styles.keys} nestedScrollEnabled>
             {SC_KEY_PAGES[page][1].map((k) => (
-              <Pressable key={k} onPress={() => setKey(k)} style={[styles.key, key === k && styles.on]}>
+              <PressScale key={k} onPress={() => setKey(k)} style={[styles.key, key === k && styles.on]}>
                 <Text style={[styles.keyText, key === k && styles.onText]}>{keyLabel(k)}</Text>
-              </Pressable>
+              </PressScale>
             ))}
           </ScrollView>
 
           <Text style={styles.label}>Pratinjau</Text>
-          <Text style={styles.preview}>{ready ? comboLabel(draft) : "Pilih tombol utama"}</Text>
+          <Animated.View key={ready ? comboLabel(draft) : "-"} entering={FadeIn.duration(160)}>
+            <Text style={styles.preview}>{ready ? comboLabel(draft) : "Pilih tombol utama"}</Text>
+          </Animated.View>
 
           <View style={styles.row}>
-            {onDelete ? (
-              <Pressable onPress={onDelete} style={[styles.btn, styles.danger]}>
+            {(visible ? onDelete : del) ? (
+              <PressScale onPress={visible ? onDelete : del} style={[styles.btn, styles.danger]}>
                 <Text style={styles.btnText}>Hapus</Text>
-              </Pressable>
+              </PressScale>
             ) : null}
-            <Pressable disabled={!ready} onPress={() => send(msg.combo(comboKeys(draft)))} style={[styles.btn, !ready && styles.off]}>
+            <PressScale disabled={!ready} onPress={() => send(msg.combo(comboKeys(draft)))} style={[styles.btn, !ready && styles.off]}>
               <Text style={styles.btnText}>Tes kirim</Text>
-            </Pressable>
-            <Pressable disabled={!ready} onPress={() => onSave(draft)} style={[styles.btn, styles.primary, !ready && styles.off]}>
+            </PressScale>
+            <PressScale disabled={!ready} onPress={() => onSave(draft)} style={[styles.btn, styles.primary, !ready && styles.off]}>
               <Text style={styles.btnText}>Simpan</Text>
-            </Pressable>
+            </PressScale>
           </View>
           <Text style={styles.note}>Tersimpan di HP dan di PC (agent baru), jadi kembali setelah instal ulang.</Text>
-        </View>
+        </MotionPanel>
       </KeyboardAvoidingView>
-    </Modal>
+    </MotionModal>
   );
 }
 
 const styles = StyleSheet.create({
-  dim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
+  dim: { ...StyleSheet.absoluteFillObject },
   sheetWrap: { flex: 1, justifyContent: "flex-end" },
   sheet: { backgroundColor: COLORS.card, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 16, paddingBottom: 24, gap: 6 },
   grab: { alignSelf: "center", width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.line, marginBottom: 6 },

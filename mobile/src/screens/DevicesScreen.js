@@ -3,6 +3,7 @@
  * full connection log. Opened from the connection dot in the header. */
 import React, { useEffect, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { PressScale, Pulse } from "../motion";
 import Text from "../AppText";
 import { COLORS } from "../components";
 import { addListener, clearPairing, connectToCode, disconnectByUser, forgetRecent, getStatus } from "../connection";
@@ -46,7 +47,9 @@ export default function DevicesScreen({ onBack, onConnected, onLoggedOut }) {
       <View style={styles.card}>
         <Text style={panelStyles.sectionTitle}>PC sekarang</Text>
         <View style={styles.pcRow}>
-          <Text style={[styles.dot, { color: st.connected ? COLORS.ok : st.status === "reconnecting" ? "#facc15" : COLORS.muted }]}>●</Text>
+          <Pulse on={!st.connected && st.status === "reconnecting"} min={0.35}>
+            <Text style={[styles.dot, { color: st.connected ? COLORS.ok : st.status === "reconnecting" ? "#facc15" : COLORS.muted }]}>●</Text>
+          </Pulse>
           <View style={{ flex: 1 }}>
             <Text style={styles.pcName}>{st.pcName || (st.code ? "PC" : "Belum ada PC")}</Text>
             <Text style={styles.meta}>
@@ -58,11 +61,11 @@ export default function DevicesScreen({ onBack, onConnected, onLoggedOut }) {
         {!!st.code && (
           <View style={styles.row}>
             {st.connected && (
-              <Pressable style={styles.btn} onPress={() => disconnectByUser()}>
+              <PressScale style={styles.btn} onPress={() => disconnectByUser()}>
                 <Text style={styles.btnText}>Putuskan</Text>
-              </Pressable>
+              </PressScale>
             )}
-            <Pressable
+            <PressScale
               style={[styles.btn, styles.btnDanger]}
               onPress={() => {
                 clearPairing();
@@ -70,7 +73,7 @@ export default function DevicesScreen({ onBack, onConnected, onLoggedOut }) {
               }}
             >
               <Text style={styles.btnDangerText}>Log out dari PC ini</Text>
-            </Pressable>
+            </PressScale>
           </View>
         )}
         <Text style={styles.small}>Log out menghapus kode PC dari HP ini. PC tetap ada di Recent sampai kamu hapus (✕).</Text>
