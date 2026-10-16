@@ -31,7 +31,7 @@ import { addListener, getStatus, send } from "../connection";
 import { GamepadState } from "../game/GamepadState";
 import GamepadOverlay from "../game/GamepadOverlay";
 import { EditToolbar, GameChrome, SettingsSheet } from "../game/GameMenus";
-import { LIMITS, controlOpacity, defaultLayout, patchControl, stepValue } from "../game/layout";
+import { LIMITS, controlOpacity, defaultLayout, moveChrome, patchControl, stepValue } from "../game/layout";
 import { loadLayout, saveLayout } from "../game/storage";
 import { applyOrientation } from "../orientation";
 
@@ -256,17 +256,35 @@ export default function GameScreen({ onExit }) {
         </View>
       )}
 
-      {editMode ? (
+      {/* Menu group: draggable stand-in while editing, live buttons otherwise.
+          Rendered after the overlay so it sits on top and gets its touches. */}
+      <GameChrome
+        chrome={layout.chrome}
+        W={viewSize.w}
+        H={viewSize.h}
+        padOn={Boolean(padStatus?.on)}
+        editMode={editMode}
+        onMove={(px, py) => {
+          setSelected(null);
+          setLayout((L) => moveChrome(L, px, py, viewSize.w, viewSize.h));
+        }}
+        onExit={exit}
+        onSettings={() => setShowSettings((s) => !s)}
+        onEdit={startEdit}
+      />
+
+      {editMode && (
         <EditToolbar
           layout={layout}
           selected={selected}
           position={!selected ? "center" : layout.controls[selected].y < 0.5 ? "bottom" : "top"}
+          onToggleChrome={() => setLayout((L) => ({ ...L, chrome: { ...L.chrome, collapsed: !L.chrome?.collapsed } }))}
           onResize={resize}
           onOpacity={fade}
           onOpacityGlobal={fadeGlobal}
           onHide={hide}
           onReset={() => {
-            setLayout((L) => ({ ...defaultLayout(), opacity: L.opacity, scale: L.scale, haptics: L.haptics, stickMode: L.stickMode, deadzone: L.deadzone, showStream: L.showStream }));
+            setLayout((L) => ({ ...defaultLayout(), chrome: { ...defaultLayout().chrome, collapsed: Boolean(L.chrome?.collapsed) }, opacity: L.opacity, scale: L.scale, haptics: L.haptics, stickMode: L.stickMode, deadzone: L.deadzone, showStream: L.showStream }));
             setSelected(null);
           }}
           onCancel={() => {
@@ -280,8 +298,6 @@ export default function GameScreen({ onExit }) {
             setEditMode(false);
           }}
         />
-      ) : (
-        <GameChrome padOn={Boolean(padStatus?.on)} onExit={exit} onSettings={() => setShowSettings((s) => !s)} onEdit={startEdit} />
       )}
 
       {showSettings && !editMode && (
