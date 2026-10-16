@@ -2,7 +2,7 @@
  * Unit tests for the GAME layout model + multi-touch router (pure, no RN).
  * Run: node src/game/layout.test.js
  */
-import { CONTROL_DEFS, CONTROL_IDS, cleanLayout, controlBox, defaultLayout, dpadDirs, faceButton, hitTest, moveControl, stickVector } from "./layout.js";
+import { CONTROL_DEFS, CONTROL_IDS, chromeBox, cleanLayout, moveChrome, controlBox, defaultLayout, dpadDirs, faceButton, hitTest, moveControl, stickVector } from "./layout.js";
 import { TouchRouter } from "./router.js";
 
 let passed = 0;
@@ -238,6 +238,24 @@ test("router: sync releases fingers whose touchEnd was lost; reused id resets", 
   assert(!pad.btn.y && pad.btn.rb, "pointer id reuse dropped Y");
   r.releaseAll();
   assert(!pad.btn.rb && r.fingers.size === 0, "all released");
+});
+
+test("menu group: defaults, clean, move, stays on screen", () => {
+  const d = defaultLayout();
+  assert(d.chrome.x === 0.5 && d.chrome.collapsed === false, "default chrome");
+  const old = cleanLayout({ ...d, chrome: undefined });
+  assert(old.chrome.x === 0.5 && old.chrome.y === 0.93, "old saved layout gets default chrome");
+  const bad = cleanLayout({ ...d, chrome: { x: 5, y: -2, collapsed: 1 } });
+  assert(bad.chrome.x === 1 && bad.chrome.y === 0 && bad.chrome.collapsed === true, "chrome clamped");
+  for (const [W, H] of SCREENS) {
+    const m = moveChrome(d, W / 2, 20, W, H);
+    const b = chromeBox(m.chrome, W, H, 140, 36);
+    assert(Math.abs(b.left + 70 - W / 2) < 1, "centred x");
+    assert(b.top === 4, "clamped to top margin");
+    const e = chromeBox({ x: 1, y: 1 }, W, H, 140, 36);
+    assert(e.left + 140 <= W - 4 + 1e-9 && e.top + 36 <= H - 4 + 1e-9, "inside screen");
+  }
+  assert(d.chrome !== defaultLayout().chrome, "defaults not shared");
 });
 
 console.log(`\n${passed}/${passed + failed} layout tests passed`);
