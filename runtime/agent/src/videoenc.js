@@ -3,7 +3,8 @@
  * No Windows / koffi / child_process here so `node src/video_test.js` runs
  * anywhere.
  *
- * Pipeline: ffmpeg gdigrab -> H.264 encoder -> FLV on stdout. FLV is used
+ * Pipeline: ffmpeg ddagrab (Desktop Duplication, gdigrab as fallback) ->
+ * H.264 encoder -> FLV on stdout. FLV is used
  * only as framing: every tag carries exactly one access unit with its length
  * up front, so the agent knows where an AU ends the moment its last byte
  * arrives (no "wait for the next start code" frame of latency, no guessing on
@@ -101,22 +102,107 @@ function outputArgs() {
 }
 
 /**
+ * Screen capture sources tried in order. ddagrab (Desktop Duplication API,
+ * ffmpeg >= 6.1, lavfi source) reads the compositor's frames and never
+ * touches the cursor. gdigrab BitBlts with SRCCOPY|CAPTUREBLT every frame,
+ * which makes the real Windows cursor flicker while the stream runs, so it
+ * is only the fallback (old ffmpeg, monitor on another GPU, rotated output,
+ * "all monitors" view, or ddagrab failing at runtime).
+ */
+export const CAPTURE_CANDIDATES = ["ddagrab", "gdigrab"];
+
+/** `ffmpeg -hide_banner -filters` output -> true when the ddagrab source exists. */
+export function ffmpegHasDdagrab(filtersText) {
+  return /(^|\s)ddagrab\s/m.test(String(filtersText || ""));
+}
+
+/**
+ * DXGI output (adapter 0, the one ffmpeg's ddagrab opens by default) that
+ * fully contains the capture rect -> { idx, offX, offY, w, h } with offsets
+ * relative to that output, or null when no single unrotated output holds it.
+ * outputs = [{ idx, left, top, right, bottom, rotation?, attached? }] in
+ * desktop pixels (same space as listMonitors()).
+ */
+export function ddagrabTarget(rect, outputs) {
+  const r = captureRect(rect);
+  for (const o of Array.isArray(outputs) ? outputs : []) {
+    if (!o || o.attached === false || !Number.isInteger(o.idx) || o.idx < 0) continue;
+    // DXGI_MODE_ROTATION: 0 unspecified, 1 identity; rotated outputs stay on gdigrab.
+    if (o.rotation && o.rotation !== 1) continue;
+    if (r.left >= o.left && r.top >= o.top && r.left + r.w <= o.right && r.top + r.h <= o.bottom) {
+      return { idx: o.idx, offX: r.left - o.left, offY: r.top - o.top, w: r.w, h: r.h };
+    }
+  }
+  return null;
+}
+
+/**
+ * Which capture to use for this session.
+ * supported: ffmpeg has ddagrab; bad: Set of captures that already failed
+ * for this phone; forced: PCREMOTE_CAPTURE ("ddagrab" | "gdigrab" | "").
+ * -> { capture: "ddagrab", dda } or { capture: "gdigrab", dda: null, why }
+ */
+export function chooseCapture({ supported = false, bad = new Set(), rect, outputs = [], forced = "" } = {}) {
+  const f = String(forced || "").trim().toLowerCase();
+  const gdi = (why) => ({ capture: "gdigrab", dda: null, why });
+  if (f === "gdigrab") return gdi("PCREMOTE_CAPTURE=gdigrab");
+  if (!supported) return gdi("ffmpeg tanpa ddagrab");
+  if (bad && bad.has("ddagrab")) return gdi("ddagrab gagal");
+  const dda = ddagrabTarget(rect, outputs);
+  if (!dda) return gdi("monitor tidak cocok dengan output DXGI");
+  return { capture: "ddagrab", dda, why: "" };
+}
+
+/** ffmpeg input args for the chosen capture. */
+export function captureInputArgs({ capture = "gdigrab", rect, dda = null, fps = 30 }) {
+  if (capture === "ddagrab" && dda) {
+    const src = [
+      `ddagrab=output_idx=${dda.idx}`,
+      `framerate=${fps}`,
+      "draw_mouse=0",
+      `offset_x=${dda.offX}`,
+      `offset_y=${dda.offY}`,
+      `video_size=${dda.w}x${dda.h}`,
+    ].join(":");
+    return ["-f", "lavfi", "-i", src];
+  }
+  const r = captureRect(rect);
+  return [
+    "-f", "gdigrab", "-framerate", String(fps), "-draw_mouse", "0",
+    "-offset_x", String(r.left), "-offset_y", String(r.top),
+    "-video_size", `${r.w}x${r.h}`,
+    "-i", "desktop",
+  ];
+}
+
+/** Status label: "ddagrab+h264_nvenc", "gdigrab+libx264", ... */
+export function streamLabel(capture, encoder) {
+  return `${capture === "ddagrab" ? "ddagrab" : "gdigrab"}+${encoderLabel(encoder)}`;
+}
+
+/**
  * Full ffmpeg argv for one capture session.
  * rect = monitor rect in physical desktop pixels (the agent is DPI aware).
+ * capture = "ddagrab" (needs dda from ddagrabTarget) or "gdigrab".
  * Mouse is NOT drawn: the phone draws its own cursor ring.
+ * Returns { args, out, capture, input: [start, end) of the input args }.
  */
-export function buildCaptureArgs({ encoder, rect, fps = 30, kbps = 4000, maxWidth = 1600 }) {
+export function buildCaptureArgs({ encoder, rect, fps = 30, kbps = 4000, maxWidth = 1600, capture = "gdigrab", dda = null }) {
   const r = captureRect(rect);
-  const out = outputSize(r.w, r.h, maxWidth);
-  const vf = `scale=${out.w}:${out.h}:flags=fast_bilinear,format=${encoderPixFmt(encoder)}`;
+  const useDda = capture === "ddagrab" && Boolean(dda);
+  const out = outputSize(useDda ? dda.w : r.w, useDda ? dda.h : r.h, maxWidth);
+  // ddagrab hands out D3D11 textures: copy to system memory as BGRA, then
+  // the same scale/format chain as gdigrab.
+  const vf = `${useDda ? "hwdownload,format=bgra," : ""}scale=${out.w}:${out.h}:flags=fast_bilinear,format=${encoderPixFmt(encoder)}`;
+  const head = ["-hide_banner", "-loglevel", "error", "-nostdin"];
+  const input = captureInputArgs({ capture: useDda ? "ddagrab" : "gdigrab", rect, dda, fps });
   return {
     out,
+    capture: useDda ? "ddagrab" : "gdigrab",
+    input: [head.length, head.length + input.length],
     args: [
-      "-hide_banner", "-loglevel", "error", "-nostdin",
-      "-f", "gdigrab", "-framerate", String(fps), "-draw_mouse", "0",
-      "-offset_x", String(r.left), "-offset_y", String(r.top),
-      "-video_size", `${r.w}x${r.h}`,
-      "-i", "desktop",
+      ...head,
+      ...input,
       "-vf", vf,
       ...encoderArgs(encoder, kbps, fps),
       ...outputArgs(),

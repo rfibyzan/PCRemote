@@ -135,6 +135,125 @@ export function listMonitors() {
   return monitorCache.list;
 }
 
+// ---- DXGI outputs (for ffmpeg ddagrab) -----------------------------------
+// ddagrab picks a monitor by DXGI output index on the default adapter, which
+// is not guaranteed to follow EnumDisplayMonitors order. Ask DXGI directly
+// (tiny COM-by-vtable calls through koffi) for each output's desktop rect so
+// video.js can map the monitor rect it streams to output_idx + offsets.
+
+const DXGI_OUTPUT_DESC = koffi.struct("DXGI_OUTPUT_DESC", {
+  DeviceName: koffi.array("uint16", 32),
+  DesktopCoordinates: RECT,
+  AttachedToDesktop: "int32",
+  Rotation: "uint32",
+  Monitor: "void *",
+});
+const ComRelease = koffi.proto("uint32 __stdcall ComRelease(void *self)");
+const FactoryEnumAdapters1 = koffi.proto("int32 __stdcall FactoryEnumAdapters1(void *self, uint32 idx, _Out_ void **adapter)");
+const AdapterEnumOutputs = koffi.proto("int32 __stdcall AdapterEnumOutputs(void *self, uint32 idx, _Out_ void **output)");
+const OutputGetDesc = koffi.proto("int32 __stdcall OutputGetDesc(void *self, _Out_ DXGI_OUTPUT_DESC *desc)");
+
+// Vtable slots: IUnknown 0-2, IDXGIObject 3-6, then the interface's own.
+const VT_RELEASE = 2;
+const VT_FACTORY1_ENUMADAPTERS1 = 12; // IDXGIFactory 7-11, IDXGIFactory1 12-13
+const VT_ADAPTER_ENUMOUTPUTS = 7;
+const VT_OUTPUT_GETDESC = 7;
+
+let dxgiApi = null;
+function dxgi() {
+  if (dxgiApi === null) {
+    try {
+      const lib = koffi.load("dxgi.dll");
+      dxgiApi = { CreateDXGIFactory1: lib.func("int32 __stdcall CreateDXGIFactory1(void *riid, _Out_ void **factory)") };
+    } catch {
+      dxgiApi = false;
+    }
+  }
+  return dxgiApi || null;
+}
+
+function guidBytes(text) {
+  const h = text.replace(/[{}-]/g, "");
+  const b = Buffer.alloc(16);
+  b.writeUInt32LE(parseInt(h.slice(0, 8), 16), 0);
+  b.writeUInt16LE(parseInt(h.slice(8, 12), 16), 4);
+  b.writeUInt16LE(parseInt(h.slice(12, 16), 16), 6);
+  Buffer.from(h.slice(16), "hex").copy(b, 8);
+  return b;
+}
+const IID_IDXGIFactory1 = guidBytes("770aae78-f26f-4dba-a829-253c83d1b387");
+
+function comMethod(obj, slot) {
+  const vtbl = koffi.decode(obj, "void *");
+  return koffi.decode(vtbl, slot * koffi.sizeof("void *"), "void *");
+}
+function comRelease(obj) {
+  if (!obj) return;
+  try {
+    koffi.call(comMethod(obj, VT_RELEASE), ComRelease, obj);
+  } catch {
+    // best effort
+  }
+}
+
+let dxgiCache = { at: 0, list: [] };
+
+/**
+ * Outputs of DXGI adapter 0 (the adapter ffmpeg's ddagrab uses unless told
+ * otherwise): [{ idx, device, left, top, right, bottom, rotation, attached }].
+ * Empty list when DXGI is unavailable; never throws.
+ */
+export function listDxgiOutputs() {
+  if (Date.now() - dxgiCache.at < 2000) return dxgiCache.list;
+  const list = [];
+  const api = dxgi();
+  let factory = null;
+  let adapter = null;
+  try {
+    if (api) {
+      const fOut = [null];
+      if (api.CreateDXGIFactory1(IID_IDXGIFactory1, fOut) >= 0 && fOut[0]) {
+        factory = fOut[0];
+        const aOut = [null];
+        if (koffi.call(comMethod(factory, VT_FACTORY1_ENUMADAPTERS1), FactoryEnumAdapters1, factory, 0, aOut) >= 0 && aOut[0]) {
+          adapter = aOut[0];
+          for (let idx = 0; idx < 16; idx += 1) {
+            const oOut = [null];
+            // DXGI_ERROR_NOT_FOUND (negative HRESULT) ends the list.
+            if (koffi.call(comMethod(adapter, VT_ADAPTER_ENUMOUTPUTS), AdapterEnumOutputs, adapter, idx, oOut) < 0 || !oOut[0]) break;
+            const output = oOut[0];
+            try {
+              const desc = {};
+              if (koffi.call(comMethod(output, VT_OUTPUT_GETDESC), OutputGetDesc, output, desc) >= 0) {
+                const r = desc.DesktopCoordinates;
+                list.push({
+                  idx,
+                  device: decodeWide(desc.DeviceName),
+                  left: r.left,
+                  top: r.top,
+                  right: r.right,
+                  bottom: r.bottom,
+                  rotation: desc.Rotation,
+                  attached: Boolean(desc.AttachedToDesktop),
+                });
+              }
+            } finally {
+              comRelease(output);
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    list.length = 0;
+  } finally {
+    comRelease(adapter);
+    comRelease(factory);
+  }
+  dxgiCache = { at: Date.now(), list };
+  return list;
+}
+
 export function cursorPos() {
   const point = { x: 0, y: 0 };
   GetCursorPos(point);

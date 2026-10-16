@@ -1,10 +1,16 @@
 // Tests for the pure H.264 stream helpers (src/videoenc.js). Runs anywhere:
 // no koffi / Windows. If an `ffmpeg` with libx264 is on PATH, also runs a
-// real encode through the FLV demuxer (gdigrab swapped for lavfi).
+// real encode through the FLV demuxer (capture input swapped for lavfi).
 import { execFileSync, spawnSync } from "node:child_process";
 import {
+  CAPTURE_CANDIDATES,
   ENCODER_CANDIDATES,
   buildCaptureArgs,
+  captureInputArgs,
+  chooseCapture,
+  ddagrabTarget,
+  ffmpegHasDdagrab,
+  streamLabel,
   buildProbeArgs,
   buildVideoHeader,
   captureRect,
@@ -57,6 +63,95 @@ test("captureRect is even and keeps negative offsets", () => {
 test("videoRequest clamps", () => {
   eq(videoRequest({}), { fps: 30, kbps: 4000, maxWidth: 1600 }, "defaults");
   eq(videoRequest({ fps: 999, kbps: 1, width: 99999 }), { fps: 60, kbps: 300, maxWidth: 1920 }, "clamped");
+});
+
+test("capture args: gdigrab is the default when no ddagrab target is given", () => {
+  const { args, capture } = buildCaptureArgs({ encoder: "libx264", rect: { left: 0, top: 0, w: 1920, h: 1080 } });
+  eq(capture, "gdigrab", "capture");
+  assert(args.join(" ").includes("-f gdigrab"), "gdigrab");
+  // ddagrab asked for but no DXGI target -> still gdigrab, never a broken argv
+  const b = buildCaptureArgs({ encoder: "libx264", rect: { left: 0, top: 0, w: 1920, h: 1080 }, capture: "ddagrab", dda: null });
+  eq(b.capture, "gdigrab", "no dda -> gdigrab");
+  assert(!b.args.join(" ").includes("ddagrab"), "no ddagrab in argv");
+});
+
+test("capture args: ddagrab output/offsets, no mouse, hwdownload before scale, same encoder tail", () => {
+  const rect = { left: 1920, top: 0, w: 2560, h: 1440 };
+  const dda = ddagrabTarget(rect, [
+    { idx: 0, left: 0, top: 0, right: 1920, bottom: 1080, rotation: 1 },
+    { idx: 1, left: 1920, top: 0, right: 4480, bottom: 1440, rotation: 1 },
+  ]);
+  eq(dda, { idx: 1, offX: 0, offY: 0, w: 2560, h: 1440 }, "target");
+  const { args, out, capture, input } = buildCaptureArgs({ encoder: "libx264", rect, fps: 30, kbps: 4000, maxWidth: 1600, capture: "ddagrab", dda });
+  const s = args.join(" ");
+  eq(capture, "ddagrab", "capture");
+  eq(out, { w: 1600, h: 900 }, "out size");
+  assert(!s.includes("gdigrab"), "no gdigrab");
+  const src = args[args.indexOf("lavfi") + 2];
+  eq(args.slice(input[0], input[1]), ["-f", "lavfi", "-i", src], "input slice");
+  eq(src, "ddagrab=output_idx=1:framerate=30:draw_mouse=0:offset_x=0:offset_y=0:video_size=2560x1440", "ddagrab source");
+  const vf = args[args.indexOf("-vf") + 1];
+  eq(vf, "hwdownload,format=bgra,scale=1600:900:flags=fast_bilinear,format=yuv420p", "vf");
+  assert(s.includes("-bf 0") && s.includes("-g 60") && s.endsWith("-f flv pipe:1"), "encoder/output tail kept");
+  // Same encoder/output args as the gdigrab variant: only input + vf differ.
+  const g = buildCaptureArgs({ encoder: "libx264", rect, fps: 30, kbps: 4000, maxWidth: 1600 });
+  eq(args.slice(input[1] + 2), g.args.slice(g.input[1] + 2), "tail identical");
+  for (const enc of ENCODER_CANDIDATES) {
+    const a = buildCaptureArgs({ encoder: enc, rect, capture: "ddagrab", dda }).args.join(" ");
+    assert(a.includes(`hwdownload,format=bgra,scale=`) && a.includes(`format=${encoderPixFmt(enc)}`), `${enc} vf`);
+  }
+});
+
+test("ddagrabTarget: crops inside an output, rejects spanning / rotated / detached", () => {
+  const outs = [
+    { idx: 0, left: 0, top: 0, right: 1920, bottom: 1080, rotation: 1 },
+    { idx: 1, left: -1280, top: 0, right: 0, bottom: 1024, rotation: 0 },
+    { idx: 2, left: 1920, top: 0, right: 3000, bottom: 1920, rotation: 2 }, // portrait, rotated 90
+  ];
+  eq(ddagrabTarget({ left: -1280, top: 0, w: 1280, h: 1024 }, outs), { idx: 1, offX: 0, offY: 0, w: 1280, h: 1024 }, "negative-left monitor");
+  eq(ddagrabTarget({ left: 100, top: 50, w: 801, h: 601 }, outs), { idx: 0, offX: 100, offY: 50, w: 800, h: 600 }, "crop -> offsets, even size");
+  eq(ddagrabTarget({ left: -1280, top: 0, w: 3200, h: 1080 }, outs), null, "all-monitors rect spans outputs");
+  eq(ddagrabTarget({ left: 1920, top: 0, w: 1080, h: 1920 }, outs), null, "rotated output");
+  eq(ddagrabTarget({ left: 0, top: 0, w: 1920, h: 1080 }, [{ ...outs[0], attached: false }]), null, "detached");
+  eq(ddagrabTarget({ left: 0, top: 0, w: 1920, h: 1080 }, []), null, "no outputs");
+  eq(ddagrabTarget({ left: 0, top: 0, w: 1920, h: 1080 }, undefined), null, "bad input");
+});
+
+test("chooseCapture: ddagrab when supported + mapped, gdigrab fallback otherwise", () => {
+  const rect = { left: 0, top: 0, w: 1920, h: 1080 };
+  const outputs = [{ idx: 0, left: 0, top: 0, right: 1920, bottom: 1080, rotation: 1 }];
+  eq(CAPTURE_CANDIDATES, ["ddagrab", "gdigrab"], "order");
+  const ok = chooseCapture({ supported: true, rect, outputs });
+  eq(ok.capture, "ddagrab", "chosen when supported");
+  eq(ok.dda.idx, 0, "output");
+  eq(chooseCapture({ supported: false, rect, outputs }).capture, "gdigrab", "old ffmpeg");
+  eq(chooseCapture({ supported: true, bad: new Set(["ddagrab"]), rect, outputs }).capture, "gdigrab", "failed at runtime");
+  eq(chooseCapture({ supported: true, rect, outputs: [] }).capture, "gdigrab", "no DXGI outputs");
+  eq(chooseCapture({ supported: true, rect, outputs, forced: "gdigrab" }).capture, "gdigrab", "forced");
+  eq(chooseCapture({ supported: true, rect, outputs, forced: "ddagrab" }).capture, "ddagrab", "forced ddagrab");
+  assert(chooseCapture({ supported: false, rect, outputs }).why, "reason for log");
+  eq(chooseCapture().capture, "gdigrab", "no args");
+});
+
+test("ffmpegHasDdagrab parses -filters output", () => {
+  const filters = [
+    "Filters:",
+    "  T.. = Timeline support",
+    " ... cropdetect        V->V       Auto-detect crop size.",
+    " ... ddagrab           |->V       Grab Windows Desktop images using Desktop Duplication API",
+    " ... gblur             V->V       Apply Gaussian Blur filter.",
+  ].join("\r\n");
+  assert(ffmpegHasDdagrab(filters), "found");
+  assert(!ffmpegHasDdagrab(filters.replace("ddagrab ", "xddagrabx ")), "not a substring match");
+  assert(!ffmpegHasDdagrab(""), "empty");
+  assert(!ffmpegHasDdagrab(undefined), "undefined");
+});
+
+test("status label names capture + encoder", () => {
+  eq(streamLabel("ddagrab", "h264_nvenc"), "ddagrab+h264_nvenc", "dda");
+  eq(streamLabel("gdigrab", "h264_nvenc_legacy"), "gdigrab+h264_nvenc", "legacy");
+  eq(captureInputArgs({ capture: "gdigrab", rect: { left: -10, top: 4, w: 100, h: 50 }, fps: 25 }).join(" "),
+    "-f gdigrab -framerate 25 -draw_mouse 0 -offset_x -10 -offset_y 4 -video_size 100x50 -i desktop", "gdigrab input");
 });
 
 test("capture args: gdigrab monitor rect, no mouse, no B-frames, GOP 2 s, FLV out", () => {
@@ -200,11 +295,11 @@ function hasLibx264() {
 
 if (hasLibx264()) {
   test("real libx264 -> FLV -> Annex-B AUs decode back with ffmpeg", () => {
-    const { args } = buildCaptureArgs({ encoder: "libx264", rect: { left: 0, top: 0, w: 1920, h: 1080 }, fps: 30, kbps: 2000, maxWidth: 640 });
-    // Swap the gdigrab input for a synthetic one; keep every encoder/output arg.
-    const i = args.indexOf("gdigrab");
-    const iEnd = args.indexOf("desktop");
-    const real = [...args.slice(0, i - 1), "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=30:d=5", ...args.slice(iEnd + 1)];
+    // gdigrab path (ddagrab needs a D3D11 GPU; its argv differs only in the
+    // input + a hwdownload prefix, checked above). Swap the capture input for
+    // a synthetic one; keep every encoder/output arg.
+    const { args, input } = buildCaptureArgs({ encoder: "libx264", rect: { left: 0, top: 0, w: 1920, h: 1080 }, fps: 30, kbps: 2000, maxWidth: 640 });
+    const real = [...args.slice(0, input[0]), "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=30:d=5", ...args.slice(input[1])];
     const r = spawnSync("ffmpeg", real, { maxBuffer: 50_000_000 });
     assert(r.status === 0, `ffmpeg failed: ${String(r.stderr)}`);
     const aus = [];
@@ -225,6 +320,23 @@ if (hasLibx264()) {
   });
 } else {
   console.log("SKIP  real libx264 encode (no ffmpeg/libx264 on PATH)");
+}
+
+// ---- DXGI output query (Windows only, smoke) ------------------------------
+if (process.platform === "win32") {
+  try {
+    const { listDxgiOutputs } = await import("./monitors.js");
+    const outs = listDxgiOutputs();
+    test("listDxgiOutputs returns well-formed outputs (Windows)", () => {
+      assert(Array.isArray(outs), "array");
+      for (const o of outs) {
+        assert(Number.isInteger(o.idx) && o.right > o.left && o.bottom > o.top, `output ${JSON.stringify(o)}`);
+      }
+    });
+    console.log(`INFO  DXGI outputs: ${JSON.stringify(outs)}`);
+  } catch (err) {
+    console.log(`SKIP  DXGI smoke (${err?.message || err})`);
+  }
 }
 
 if (failed) {
