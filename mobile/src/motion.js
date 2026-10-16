@@ -109,7 +109,9 @@ const OUTER_KEYS = new Set([
   "width", "height", "minWidth", "maxWidth", "minHeight", "maxHeight", "aspectRatio",
 ]);
 
+const EMPTY = [{}, {}];
 function splitStyle(style) {
+  if (!style) return EMPTY;
   const flat = StyleSheet.flatten(style) || {};
   const outer = {};
   const inner = {};
@@ -126,9 +128,9 @@ export function PressScale({ style, onPressIn, onPressOut, scaleTo = MOTION.pres
   const s = useSharedValue(0);
   const anim = useAnimatedStyle(() => (s.value === 0 ? IDLE : { transform: [{ scale: 1 - (1 - scaleTo) * s.value }] }));
   const fnStyle = typeof style === "function";
-  // Pressable already tracks `pressed`; the outer box only needs the base style
-  // (layout keys never depend on pressed), the inner face gets the live one.
-  const outer = fnStyle ? splitStyle(style({ pressed: false }))[0] : splitStyle(style)[0];
+  // Pressable already tracks `pressed`; split the resting style once per
+  // render (layout keys never depend on pressed) and only re-split while held.
+  const [outer, innerRest] = splitStyle(fnStyle ? style({ pressed: false }) : style);
   return (
     <Pressable
       {...rest}
@@ -143,7 +145,7 @@ export function PressScale({ style, onPressIn, onPressOut, scaleTo = MOTION.pres
       style={outer}
     >
       {({ pressed }) => (
-        <Animated.View style={[styles.fill, splitStyle(fnStyle ? style({ pressed }) : style)[1], anim]}>
+        <Animated.View style={[styles.fill, pressed && fnStyle ? splitStyle(style({ pressed }))[1] : innerRest, anim]}>
           {typeof children === "function" ? children({ pressed }) : children}
         </Animated.View>
       )}

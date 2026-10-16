@@ -151,10 +151,30 @@ export function Block({ children, ...props }) {
 
 // Toolbar under the viewer (Sill style): icon + small label buttons, scrolls
 // sideways when they don't fit; Lipat (fold) stays pinned at the right.
+// One toolbar scroll position for every tab (Pad, Type, Win, ...): scrolling
+// it in one tab leaves the others at the same spot.
+let toolbarX = 0;
+
 function Toolbar({ items, fold, onFold }) {
+  const ref = useRef(null);
+  const restore = useCallback(() => {
+    ref.current?.scrollTo({ x: toolbarX, animated: false });
+  }, []);
+  useFocusEffect(restore);
   return (
     <Reanimated.View entering={FadeInDown.duration(180)} exiting={FadeOut.duration(120)} style={styles.toolbar}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tbScroll} contentContainerStyle={styles.tbContent}>
+      <ScrollView
+        ref={ref}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.tbScroll}
+        contentContainerStyle={styles.tbContent}
+        scrollEventThrottle={32}
+        onScroll={(e) => {
+          toolbarX = e.nativeEvent.contentOffset.x;
+        }}
+        onContentSizeChange={restore}
+      >
         {items.filter(Boolean).map((it) => (
           <PressScale
             key={it.id}
@@ -231,6 +251,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const tapRef = useRef({ t: 0, x: 0, y: 0 });
   // Zoom slider (Look, right edge): absolute 1x..MAX_ZOOM, centre-anchored.
   const [trackH, setTrackH] = useState(0);
+  const trackHV = useSharedValue(120);
   const trackHRef = useRef(0);
   const sliderDrag = useRef(null);
   const [sliderHot, setSliderHot] = useState(false);
@@ -555,7 +576,9 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     setSel({ cam: camToNorm(camRef.current, g.fit, g.vw, g.vh) });
   }
 
-  function applyCamInstant(c) {
+  // live = called per touch-move (zoom slider, minimap): the picture moves on
+  // the UI thread right away, React re-renders at most every 100 ms.
+  function applyCamInstant(c, live) {
     cancelAnimation(camS);
     cancelAnimation(camX);
     cancelAnimation(camY);
@@ -563,7 +586,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     camX.value = c.tx;
     camY.value = c.ty;
     camRef.current = { ...c };
-    bumpTick(true);
+    bumpTick(!live);
   }
 
   function adoptSharedCam() {
@@ -1105,7 +1128,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // snap onto a tick when released close to it.
   function zoomFromLog(l, n, g) {
     const z = Math.pow(2, Math.max(0, Math.min(LOG_MAX, l)));
-    applyCamInstant(camFor(z, n.cx, n.cy, g.fit, g.vw, g.vh));
+    applyCamInstant(camFor(z, n.cx, n.cy, g.fit, g.vw, g.vh), true);
     requestRegion(true);
   }
 
@@ -1170,7 +1193,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     heatSlider(true);
     const cx = clamp01(t.locationX / w);
     const cy = clamp01(t.locationY / h);
-    applyCamInstant(camFor(camRef.current.s, cx, cy, g.fit, g.vw, g.vh));
+    applyCamInstant(camFor(camRef.current.s, cx, cy, g.fit, g.vw, g.vh), !end);
     requestRegion(true);
     if (end) {
       heatSlider(false);
@@ -1291,7 +1314,13 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const g0 = geom();
   const vis = g0 ? visibleRect(camRef.current, g0.fit, g0.vw, g0.vh) : { x: 0, y: 0, w: 1, h: 1 };
   const effZoom = camRef.current.s || 1;
-  const sliderFrac = Math.max(0, Math.min(1, Math.log2(Math.max(1, effZoom)) / LOG_MAX));
+  // Knob follows the live zoom on the UI thread (no React render per move);
+  // only its label waits for the next (throttled) render.
+  const knobStyle = useAnimatedStyle(() => {
+    const z = camS.value > 1 ? camS.value : 1;
+    const f = Math.min(1, Math.log2(z) / LOG_MAX);
+    return { top: (1 - f) * (trackHV.value > 0 ? trackHV.value : 120) - 13 };
+  });
   const zoomed = effZoom > 1.02;
   const camTools = current !== "cam";
   const winStream = useWindowStream({
@@ -1392,6 +1421,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                   const h = Math.round(e.nativeEvent.layout.height);
                   if (h && h !== trackHRef.current) {
                     trackHRef.current = h;
+                    trackHV.value = h;
                     setTrackH(h);
                   }
                 }}
@@ -1410,12 +1440,9 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
                     <Text style={styles.zTickText}>{z}x</Text>
                   </View>
                 ))}
-                <View
-                  pointerEvents="none"
-                  style={[styles.zKnob, { top: (1 - sliderFrac) * Math.max(0, trackH || 120) - 13 }]}
-                >
+                <Reanimated.View pointerEvents="none" style={[styles.zKnob, knobStyle]}>
                   <Text style={styles.zKnobText}>{effZoom.toFixed(1)}x</Text>
-                </View>
+                </Reanimated.View>
               </Block>
             </View>
           )}
