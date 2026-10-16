@@ -176,7 +176,8 @@ export const msg = {
     if (release) m.release = true;
     return m;
   },
-  text: (s) => ({ t: "text", s }),
+  // keys=true: agent types real key presses (games/hotkeys see them).
+  text: (s, keys = false) => (keys ? { t: "text", s, k: 1 } : { t: "text", s }),
   media: (a) => ({ t: "media", a }),
   lock: () => ({ t: "lock" }),
   open: (target) => ({ t: "open", target }),
