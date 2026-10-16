@@ -404,6 +404,7 @@ const sel = {
   fold: false, // Lipat: PAD/TYPE/WIN control area hidden, viewer takes the space
   win: null, // single-window stream: {id, title, exe, mon, x, y, w, h} or null
   typing: false, // TYPE live typing: keyboard up, viewer chrome hidden
+  thumbs: false, // window bar (thumbnails) open over the viewer
 };
 const selListeners = new Set();
 
@@ -436,6 +437,7 @@ export function useSel() {
     fold: sel.fold,
     win: sel.win || null,
     typing: sel.typing,
+    thumbs: sel.thumbs,
     crop: { ...sel.crop },
   });
   useEffect(() => {
