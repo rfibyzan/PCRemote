@@ -105,21 +105,28 @@ const APress = Animated.createAnimatedComponent(Pressable);
 export function PressScale({ style, onPressIn, onPressOut, scaleTo = MOTION.pressScale, children, ...rest }) {
   const reduce = useReducedMotion();
   const s = useSharedValue(0);
+  // Reanimated drops a function `style` on an animated Pressable (the button
+  // lost its background/padding), so track `pressed` here and always hand it
+  // a plain style array.
+  const [pressed, setPressed] = useState(false);
   const anim = useAnimatedStyle(() => ({ transform: [{ scale: interpolate(s.value, [0, 1], [1, scaleTo]) }] }));
+  const base = typeof style === "function" ? style({ pressed }) : style;
   return (
     <APress
       {...rest}
       onPressIn={(e) => {
+        setPressed(true);
         if (!reduce) s.value = withTiming(1, { duration: 80 });
         onPressIn?.(e);
       }}
       onPressOut={(e) => {
+        setPressed(false);
         s.value = withSpring(0, { duration: 260, dampingRatio: 0.55 });
         onPressOut?.(e);
       }}
-      style={(st) => [typeof style === "function" ? style(st) : style, anim]}
+      style={[base, anim]}
     >
-      {children}
+      {typeof children === "function" ? children({ pressed }) : children}
     </APress>
   );
 }
