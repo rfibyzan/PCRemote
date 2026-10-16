@@ -99,8 +99,6 @@ export function MotionView({ visible, kind = "pop", origin = "center", style, ch
 }
 
 
-/** Pressable that dips to 96% while held and springs back. Same props as
- * Pressable; style may be a function of { pressed }. */
 // Keys that place a button in its parent; they stay on the outer Pressable.
 // Everything else (background, padding, border, inner layout) is drawn by the
 // inner Animated.View, which is what scales.
@@ -126,28 +124,34 @@ function splitStyle(style) {
 export function PressScale({ style, onPressIn, onPressOut, scaleTo = MOTION.pressScale, children, ...rest }) {
   const reduce = useReducedMotion();
   const s = useSharedValue(0);
-  const [pressed, setPressed] = useState(false);
-  const anim = useAnimatedStyle(() => ({ transform: [{ scale: interpolate(s.value, [0, 1], [1, scaleTo]) }] }));
-  const [outer, inner] = splitStyle(typeof style === "function" ? style({ pressed }) : style);
+  const anim = useAnimatedStyle(() => (s.value === 0 ? IDLE : { transform: [{ scale: 1 - (1 - scaleTo) * s.value }] }));
+  const fnStyle = typeof style === "function";
+  // Pressable already tracks `pressed`; the outer box only needs the base style
+  // (layout keys never depend on pressed), the inner face gets the live one.
+  const outer = fnStyle ? splitStyle(style({ pressed: false }))[0] : splitStyle(style)[0];
   return (
     <Pressable
       {...rest}
       onPressIn={(e) => {
-        setPressed(true);
         if (!reduce) s.value = withTiming(1, { duration: 80 });
         onPressIn?.(e);
       }}
       onPressOut={(e) => {
-        setPressed(false);
-        s.value = withSpring(0, { duration: 260, dampingRatio: 0.55 });
+        if (!reduce) s.value = withSpring(0, { duration: 260, dampingRatio: 0.55 });
         onPressOut?.(e);
       }}
       style={outer}
     >
-      <Animated.View style={[styles.fill, inner, anim]}>{typeof children === "function" ? children({ pressed }) : children}</Animated.View>
+      {({ pressed }) => (
+        <Animated.View style={[styles.fill, splitStyle(fnStyle ? style({ pressed }) : style)[1], anim]}>
+          {typeof children === "function" ? children({ pressed }) : children}
+        </Animated.View>
+      )}
     </Pressable>
   );
 }
+
+const IDLE = { transform: [{ scale: 1 }] };
 
 /** Spring a numeric value (e.g. a sliding indicator's x). */
 export function useSpringValue(target) {

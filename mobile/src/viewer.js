@@ -30,6 +30,7 @@ import Reanimated, {
   FadeInDown,
   FadeInUp,
   FadeOut,
+  LayoutAnimationConfig,
 } from "react-native-reanimated";
 import { useFocusEffect, useNavigation } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -1314,6 +1315,9 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const thumb = zoomed ? getLastFullFrame(current) : null;
 
   return (
+    // skipEntering: on mount (tab switch) the chrome just appears; entering
+    // fades only play when it comes back later (e.g. leaving typing mode).
+    <LayoutAnimationConfig skipEntering>
     <View style={styles.root}>
       {full && <StatusBar hidden />}
       {!full && !typing && (
@@ -1627,6 +1631,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       </View>
       )}
     </View>
+    </LayoutAnimationConfig>
   );
 }
 
