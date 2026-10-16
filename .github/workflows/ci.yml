@@ -67,7 +67,7 @@ jobs:
           $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
           $o = .\NetstatTest.exe 2>&1
           $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
-          $o = & $csc /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs 2>&1
+          $o = & $csc /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs 2>&1
           $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
           $vi = (Get-Item ..\PCRemote.exe).VersionInfo
           $vi | Format-List FileDescription, ProductName, FileVersion
