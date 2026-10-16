@@ -9,6 +9,10 @@
  *   triggers flushed immediately, 500 ms heartbeat (agent WATCHDOG_MS = 2 s),
  *   zero-state + gamepadEnd on exit. Stream crop is forced to Fit while in GAME
  *   and the previous tab crop is restored on exit.
+ * - Stream: H.264 when available (VideoLayer over the JPEG ScreenView, same as
+ *   the other tabs, letterboxed to the video shape), JPEG as the fallback. Both
+ *   layers stay mounted when the PC screen is hidden (1x1, invisible) so frames
+ *   / access units keep the stall watchdog fed.
  */
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
@@ -16,8 +20,11 @@ import Text from "../AppText";
 import { useFocusEffect } from "expo-router";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { ScreenView } from "../components";
+import VideoLayer from "../videoview";
+import { VideoToggle, useVideo } from "../video";
+import { fitCanvas } from "../camera";
 import { StreamControls, setSel } from "../controls";
-import { useCursor } from "../cursor";
+import { trackFrameBytes, useCursor } from "../cursor";
 import { getCommittedCrop, setCommittedCrop } from "../viewer";
 import { msg } from "../protocol";
 import { addListener, getStatus, send } from "../connection";
@@ -79,6 +86,30 @@ export default function GameScreen({ onExit }) {
     if (stalled) setStalled(false);
     cursor.feed(f);
   }
+
+  // ---- H.264 (same VideoLayer as the other tabs; JPEG is the fallback) ----
+  // While H.264 flows the agent sends no JPEG, so access units feed the stall
+  // watchdog, cursor and byte meter exactly like JPEG frames do.
+  const video = useVideo();
+  const [viewSize, setViewSize] = useState({ w: 0, h: 0 });
+  function onGameVideoPacket(p) {
+    lastFrameAt.current = Date.now();
+    if (stalled) setStalled(false);
+    cursor.feed({ w: p.w, h: p.h, cx: p.cx, cy: p.cy });
+    trackFrameBytes(p.bytes);
+  }
+  // Codec switch (H.264 shown / back to JPEG): give the new stream a fresh
+  // grace period so the "Stream terhenti" banner does not fire mid-handoff.
+  function onGameVideoActive() {
+    lastFrameAt.current = Date.now();
+  }
+  // The decoder surface stretches to its box: letterbox it like the JPEG
+  // ScreenView (resizeMode contain) so picture and cursor dot line up.
+  const videoAspect = video.w > 0 && video.h > 0 ? video.w / video.h : 16 / 9;
+  const videoFit = fitCanvas(viewSize.w, viewSize.h, videoAspect);
+  const videoBox = viewSize.w && viewSize.h
+    ? { position: "absolute", left: videoFit.ox, top: videoFit.oy, width: videoFit.bw, height: videoFit.bh }
+    : StyleSheet.absoluteFill;
 
   // The GAME tab stays mounted after its first visit, so the whole session
   // (landscape lock, keep-awake, crop, send timers) runs on FOCUS and is torn
@@ -184,14 +215,24 @@ export default function GameScreen({ onExit }) {
   }
 
   return (
-    <View style={styles.root} onLayout={(e) => (cursor.viewRef.current = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}>
-      {layout.showStream && (
-        <View style={StyleSheet.absoluteFill} pointerEvents="none">
-          <ScreenView style={styles.screenInner} onFrame={onGameFrame} />
-          {cursor.dot()}
+    <View
+      style={styles.root}
+      onLayout={(e) => {
+        const { width, height } = e.nativeEvent.layout;
+        cursor.viewRef.current = { w: width, h: height };
+        setViewSize((prev) => (prev.w === width && prev.h === height ? prev : { w: width, h: height }));
+      }}
+    >
+      {/* One stable tree for shown and hidden stream: toggling "show PC screen"
+          must not remount the VideoLayer (that would release + re-claim H.264
+          and restart the PC encoder). Hidden = 1x1 invisible, still streaming. */}
+      <View style={layout.showStream ? StyleSheet.absoluteFill : styles.hiddenStream} pointerEvents="none">
+        <ScreenView style={styles.screenInner} onFrame={onGameFrame} />
+        <View style={layout.showStream ? videoBox : StyleSheet.absoluteFill} pointerEvents="none">
+          <VideoLayer onPacket={onGameVideoPacket} onActive={onGameVideoActive} />
         </View>
-      )}
-      {!layout.showStream && <ScreenView style={styles.hiddenStream} onFrame={onGameFrame} />}
+        {layout.showStream && cursor.dot()}
+      </View>
 
       <GamepadOverlay
         key={session}
@@ -249,7 +290,12 @@ export default function GameScreen({ onExit }) {
           onChange={commitLayout}
           onClose={() => setShowSettings(false)}
           onReset={() => commitLayout(defaultLayout())}
-          streamControls={<StreamControls compact />}
+          streamControls={
+            <>
+              <StreamControls compact />
+              <VideoToggle />
+            </>
+          }
         />
       )}
     </View>
