@@ -115,7 +115,8 @@ export function stepLevel(cur, d, valueAt, lo, hi) {
 }
 
 /** What the quality steppers show for the active codec.
- * video = H.264 confirmed flowing; otherwise JPEG (incl. fallback). */
+ * video = H.264 confirmed flowing; otherwise JPEG (incl. fallback).
+ * `fps` = the requested fps of that codec (H.264: also the stats target). */
 export function qualityView({ q = "low", qStep = 0, fpsStep = 0 } = {}, { video = false, link = "" } = {}) {
   const qs = clampQStep(qStep);
   const fs = clampFpsStep(fpsStep);
@@ -126,6 +127,7 @@ export function qualityView({ q = "low", qStep = 0, fpsStep = 0 } = {}, { video 
     const fps = videoFps(q, fs);
     return {
       video: true,
+      fps,
       qText: fmtKbps(kbps),
       qCaption: capped ? "Batas internet" : `Bitrate ${videoWidth(kbps) >= 1920 ? "1080p" : "720p"}`,
       fpsText: `${fps} fps`,
@@ -135,11 +137,13 @@ export function qualityView({ q = "low", qStep = 0, fpsStep = 0 } = {}, { video 
       fpsUp: stepLevel(fs, 1, (n) => videoFps(q, n), FPS_STEP_MIN, FPS_STEP_MAX),
     };
   }
+  const jpegFps = fpsValue(q, fs);
   return {
     video: false,
+    fps: jpegFps,
     qText: `Q${qValue(q, qs)}`,
     qCaption: "",
-    fpsText: `${fpsValue(q, fs)} fps`,
+    fpsText: `${jpegFps} fps`,
     qDown: stepLevel(qs, -1, (n) => qValue(q, n), Q_STEP_MIN, Q_STEP_MAX),
     qUp: stepLevel(qs, 1, (n) => qValue(q, n), Q_STEP_MIN, Q_STEP_MAX),
     fpsDown: stepLevel(fs, -1, (n) => fpsValue(q, n), FPS_STEP_MIN, FPS_STEP_MAX),
