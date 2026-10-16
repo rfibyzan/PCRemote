@@ -9,6 +9,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
 import { COLORS } from "../components";
 import ViewerPanel from "../viewer";
+import { setSel, useSel } from "../controls";
 import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
@@ -51,28 +52,10 @@ export default function WinScreen() {
     lastSection = v;
     setSectionState(v);
   }
-  // Apps = Alt+Tab switcher hold: first tap opens and HOLDS Alt, second tap
-  // (Apps again or any viewer tap) releases to confirm the selection.
-  const [appsHeld, setAppsHeld] = useState(false);
-  const appsHeldRef = useRef(false);
+  // Apps = window bar (thumbnails over the stream); replaces the old
+  // Alt+Tab hold. Shared with the toolbar "Jendela" button.
+  const shared = useSel();
   const fetchClipAt = useRef(0);
-
-  function releaseApps() {
-    if (!appsHeldRef.current) return;
-    appsHeldRef.current = false;
-    setAppsHeld(false);
-    send(msg.combo(["alt", "tab"], false, true));
-  }
-
-  function tapApps() {
-    if (appsHeldRef.current) {
-      releaseApps();
-      return;
-    }
-    appsHeldRef.current = true;
-    setAppsHeld(true);
-    send(msg.combo(["alt", "tab"], true, false));
-  }
 
   useEffect(() => {
     // Clipboard fetch throttled: remounts on every tab visit must not spam
@@ -84,14 +67,9 @@ export default function WinScreen() {
     }
     const off = addListener((event) => {
       if (event.t === "clipboard" && typeof event.s === "string") setClip(event.s);
-      if (event.t === "close" && appsHeldRef.current) {
-        appsHeldRef.current = false;
-        setAppsHeld(false);
-      }
     });
     return () => {
       off();
-      if (appsHeldRef.current) send(msg.combo(["alt", "tab"], false, true)); // never leave Alt stuck
     };
   }, []);
 
@@ -111,7 +89,7 @@ export default function WinScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <ViewerPanel title="Win" touchpad={false} actions={false} onTap={releaseApps}>
+      <ViewerPanel title="Win" touchpad={false} actions={false}>
       <View style={styles.tabs}>
         {SECTIONS.map((sec) => (
           <Pressable key={sec} onPress={() => setSection(sec)} style={[styles.tab, section === sec && styles.tabActive]}>
@@ -123,7 +101,7 @@ export default function WinScreen() {
         {section === "Sistem" && (
           <View style={styles.grid}>
             <Btn icon="apps" label="Start" onPress={() => send(msg.key("win"))} />
-            <Btn icon="swap-horiz" label="Apps" active={appsHeld} onPress={tapApps} />
+            <Btn icon="swap-horiz" label="Apps" active={!!shared.thumbs} onPress={() => setSel({ thumbs: !shared.thumbs })} />
             <Btn icon="view-carousel" label="Task View" onPress={() => send(msg.combo(["win", "tab"]))} />
             <Btn icon="desktop-windows" label="Desktop" onPress={() => send(msg.combo(["win", "d"]))} />
             <Btn icon="close" label="Close" onPress={() => send(msg.combo(["alt", "f4"]))} />
