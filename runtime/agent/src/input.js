@@ -1,5 +1,6 @@
 import koffi from "koffi";
 import { execFile } from "node:child_process";
+import { forceUnicode, planChar } from "./keyplan.js";
 
 const user32 = koffi.load("user32.dll");
 const kernel32 = koffi.load("kernel32.dll");
@@ -76,6 +77,8 @@ const GetCursorPos = user32.func("bool __stdcall GetCursorPos(_Out_ POINT *lpPoi
 const GetSystemMetrics = user32.func("int32 __stdcall GetSystemMetrics(int32 nIndex)");
 const MapVirtualKeyW = user32.func("uint32 __stdcall MapVirtualKeyW(uint32 uCode, uint32 uMapType)");
 const GetAsyncKeyState = user32.func("int16 __stdcall GetAsyncKeyState(int32 vKey)");
+const VkKeyScanW = user32.func("int16 __stdcall VkKeyScanW(uint16 ch)");
+const GetKeyState = user32.func("int16 __stdcall GetKeyState(int32 nVirtKey)");
 const WindowFromPoint = user32.func("void * __stdcall WindowFromPoint(POINT pt)");
 const GetAncestor = user32.func("void * __stdcall GetAncestor(void *hwnd, uint32 gaFlags)");
 const SetForegroundWindow = user32.func("bool __stdcall SetForegroundWindow(void *hWnd)");
@@ -542,6 +545,61 @@ export function typeText(text) {
     }
     const scan = char.codePointAt(0) || 0;
     inputs.push(keyPacket(0, scan, KEYEVENTF_UNICODE), keyPacket(0, scan, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+  }
+  for (let i = 0; i < inputs.length; i += 24) {
+    sendInputs(inputs.slice(i, i + 24));
+  }
+}
+
+/**
+ * Type text as real key presses on the PC's layout (Shift added as needed),
+ * so games and global hotkeys see it. Characters the layout can't make
+ * (emoji, accents, AltGr) fall back to Unicode packets.
+ */
+export function typeKeys(text) {
+  const value = String(text || "");
+  if (!value) return;
+  let caps = false;
+  try {
+    caps = (GetKeyState(0x14) & 1) === 1;
+  } catch {
+    caps = false;
+  }
+  const shiftInfo = describeKey("shift");
+  const userShift = (GetAsyncKeyState(0x10) & 0x8000) !== 0;
+  const inputs = [];
+  for (const char of value) {
+    if (char === "\n" || char === "\t") {
+      const k = describeKey(char === "\n" ? "enter" : "tab");
+      inputs.push(keyPacket(k.vk, k.scan, k.flagsDown), keyPacket(k.vk, k.scan, k.flagsUp));
+      continue;
+    }
+    let plan = null;
+    if (!forceUnicode(char)) {
+      try {
+        plan = planChar(char, VkKeyScanW(char.charCodeAt(0)), caps);
+      } catch {
+        plan = null;
+      }
+    }
+    if (!plan) {
+      const code = char.codePointAt(0) || 0;
+      if (code > 0xffff) {
+        for (const unit of [char.charCodeAt(0), char.charCodeAt(1)]) {
+          inputs.push(keyPacket(0, unit, KEYEVENTF_UNICODE), keyPacket(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+        }
+      } else {
+        inputs.push(keyPacket(0, code, KEYEVENTF_UNICODE), keyPacket(0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+      }
+      continue;
+    }
+    const scan = MapVirtualKeyW(plan.vk, MAPVK_VK_TO_VSC) || 0;
+    const ext = EXTENDED.has(plan.vk) ? KEYEVENTF_EXTENDEDKEY : 0;
+    // A Shift the user holds via Hold keeps working; only add our own.
+    const addShift = plan.shift && !userShift;
+    if (addShift) inputs.push(keyPacket(shiftInfo.vk, shiftInfo.scan, shiftInfo.flagsDown));
+    inputs.push(keyPacket(plan.vk, scan, KEYEVENTF_SCANCODE | ext), keyPacket(plan.vk, scan, KEYEVENTF_SCANCODE | ext | KEYEVENTF_KEYUP));
+    if (addShift) inputs.push(keyPacket(shiftInfo.vk, shiftInfo.scan, shiftInfo.flagsUp));
   }
   for (let i = 0; i < inputs.length; i += 24) {
     sendInputs(inputs.slice(i, i + 24));
