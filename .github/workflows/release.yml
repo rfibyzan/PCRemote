@@ -3,9 +3,11 @@ name: Release
 # Push a tag like v1.2.0 (or run it by hand from the Actions tab) and this
 # builds the ready-to-use Windows folder as a zip on GitHub Releases:
 #   PCRemote.exe, HOW-TO.txt, runtime/node.exe, runtime/ffmpeg.exe,
-#   runtime/cloudflared.exe, runtime/agent (with node_modules + version.txt).
+#   runtime/cloudflared.exe, runtime/agent (with node_modules + version.txt),
+#   PCRemote.apk. The committed PCRemote.apk (latest local release build) is
+#   also attached on its own as PCRemote-<tag>.apk.
 # If the repo secret EXPO_TOKEN exists, the preview APK is built on EAS and
-# attached too. Note: SF Pro is gitignored, so a CI-built APK uses Roboto.
+# replaces that attachment. Note: SF Pro is gitignored, so a CI-built APK uses Roboto.
 on:
   push:
     tags: ["v*"]
@@ -72,7 +74,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           $out = "dist/PCRemote"
           New-Item -ItemType Directory -Force "$out/runtime" | Out-Null
-          Copy-Item PCRemote.exe, HOW-TO.txt $out
+          Copy-Item PCRemote.exe, HOW-TO.txt, PCRemote.apk $out
+          Copy-Item PCRemote.apk "dist/PCRemote-$env:TAG.apk"
           Copy-Item runtime/agent "$out/runtime/agent" -Recurse
           Set-Content "$out/runtime/agent/version.txt" $env:TAG -NoNewline
           # node.exe = the same Node version the dependencies were installed with
@@ -88,7 +91,9 @@ jobs:
           tag_name: ${{ env.TAG }}
           name: PC Remote ${{ env.TAG }}
           generate_release_notes: true
-          files: dist/PCRemote-${{ env.TAG }}-windows.zip
+          files: |
+            dist/PCRemote-${{ env.TAG }}-windows.zip
+            dist/PCRemote-${{ env.TAG }}.apk
 
   apk:
     runs-on: ubuntu-latest
