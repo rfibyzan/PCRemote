@@ -131,7 +131,7 @@ export function setCommittedCrop(c) {
 // underneath (without it, Look's one-finger pan stole every slider drag).
 // The Manual gesture never activates, so the RN touch events and Pressables
 // inside keep working exactly as before.
-function Block({ children, ...props }) {
+export function Block({ children, ...props }) {
   const g = useMemo(() => Gesture.Manual(), []);
   return (
     <GestureDetector gesture={g}>
@@ -174,7 +174,7 @@ function Toolbar({ items, fold, onFold }) {
   );
 }
 
-export default function ViewerPanel({ title = "", touchpad = true, actions = true, onTap = null, children = null }) {
+export default function ViewerPanel({ title = "", touchpad = true, actions = true, onTap = null, children = null, overlay = null }) {
   // Layout C: header row + viewer (flex: 1) + fixed CONTROL_H area. The
   // control area is identical on PAD / TYPE / WIN, so the viewer is too.
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
@@ -182,6 +182,9 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const bar = shared.bar;
   // Lipat: hide the tab's control area so the stream gets that height too.
   const fold = !!shared.fold;
+  // TYPE live typing: the phone keyboard is up, so toolbar + control area
+  // step aside and the stream keeps all the height above the keyboard.
+  const typing = !!shared.typing;
   const mode = shared.mode === "Click" ? "Click" : "Look";
   const looking = mode === "Look";
   const clickBtn = shared.clickBtn;
@@ -1306,7 +1309,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   return (
     <View style={styles.root}>
       {full && <StatusBar hidden />}
-      {!full && (
+      {!full && !typing && (
       <View style={styles.topRow}>
         {!!title && <Text style={styles.title}>{title}</Text>}
         <ConnDot />
@@ -1551,8 +1554,9 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             <BarScroll />
           </Block>
         )}
+        {overlay}
       </View>
-      {!full && (
+      {!full && !typing && (
         <Toolbar
           items={[
             { id: "click", icon: "cursor-default-click-outline", label: "Click", on: mode === "Click", onPress: () => setSel({ mode: "Click" }) },
@@ -1577,7 +1581,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           winStream.pickWindow(w);
         }}
       />
-      {!full && !fold && (
+      {!full && !fold && !typing && (
       <View style={styles.controls}>
       {actions && (
         <View style={styles.btnRow}>
