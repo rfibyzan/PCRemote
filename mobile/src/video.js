@@ -18,6 +18,7 @@ import { msg } from "./protocol";
 import { addListener, getStatus, releaseVideoHandler, send, setVideoHandler } from "./connection";
 import { addQualityListener, getQuality, setVideoCodecActive, useQuality } from "./controls";
 import { fmtKbps, videoParams } from "./videoproto";
+import { registerSetting, settingChanged } from "./settingsync";
 import { videoSupported } from "../modules/pcremote-video";
 
 export const STORE_VIDEO = "pcremote.video";
@@ -108,9 +109,25 @@ export function setVideoPref(on) {
   vs.blocked = false;
   vs.reason = "";
   SecureStore.setItemAsync(STORE_VIDEO, JSON.stringify({ on: vs.pref })).catch(() => {});
+  settingChanged("video", { on: vs.pref });
   emitVs();
   syncAgent();
 }
+
+registerSetting("video", {
+  read: async () => {
+    const raw = await SecureStore.getItemAsync(STORE_VIDEO);
+    return raw ? JSON.parse(raw) : null;
+  },
+  apply: (v) => {
+    if (!v || typeof v.on !== "boolean") return;
+    vs.loaded = true;
+    vs.pref = v.on;
+    SecureStore.setItemAsync(STORE_VIDEO, JSON.stringify({ on: vs.pref })).catch(() => {});
+    emitVs();
+    syncAgent();
+  },
+});
 
 /** Focused viewer takes the H.264 stream (and its AU handler). */
 export function claimVideo(handler) {

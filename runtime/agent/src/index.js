@@ -38,6 +38,7 @@ import { listWindows, windowAction } from "./windows.js";
 import { WINDOW_ACTIONS } from "./windowmath.js";
 import { windowThumbs } from "./thumbs.js";
 import { listApps, openApp } from "./apps.js";
+import { createSettingsStore } from "./settings.js";
 import { probeTunnel, wokeFromSleep } from "./keepalive.js";
 import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam.js";
 import { createGamepadSession } from "./gamepad.js";
@@ -311,7 +312,7 @@ function helloPayload() {
     monitors: publicMonitors(),
     mode: "direct",
     // Lets the phone tell an old agent apart from a failing feature.
-    features: ["winThumbs", "winMax", "apps"],
+    features: ["winThumbs", "winMax", "apps", "settings"],
   };
 }
 
@@ -353,6 +354,12 @@ async function endGamepad(ws) {
     }
   }
   send(ws, { t: "gamepad", on: false });
+}
+
+let settingsCache = null;
+function settingsStore() {
+  if (!settingsCache) settingsCache = createSettingsStore();
+  return settingsCache;
 }
 
 const ORDERED_INPUT = new Set(["move", "click", "scroll", "abs", "drag", "key", "combo", "text", "media"]);
@@ -510,6 +517,22 @@ async function handleCommand(ws, msg) {
     case "gamepadEnd":
       await endGamepad(ws);
       break;
+    case "settings": {
+      // Phone settings kept on the PC (see settings.js). set = merge (newest
+      // ts wins) and tell the other phones; no set = send everything.
+      if (msg.set && typeof msg.set === "object") {
+        const changed = settingsStore().apply(msg.set);
+        if (Object.keys(changed).length) {
+          for (const other of [...state.clients]) {
+            if (other !== ws) send(other, { t: "settings", items: changed });
+          }
+        }
+        send(ws, { t: "settingsAck", keys: Object.keys(changed) });
+      } else {
+        send(ws, { t: "settings", items: settingsStore().all(), full: true });
+      }
+      break;
+    }
     case "clipboard":
       if (msg.s != null) await setClipboard(msg.s);
       send(ws, { t: "clipboard", s: await getClipboard() });

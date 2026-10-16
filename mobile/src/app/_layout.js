@@ -1,6 +1,7 @@
 import { Stack } from "expo-router";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useAppFonts } from "../fonts";
+import "../settingsync";
 
 export default function RootLayout() {
   // Optional local UI font (src/fonts): wait for it so the first frame never

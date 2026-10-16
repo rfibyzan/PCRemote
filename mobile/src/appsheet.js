@@ -17,6 +17,7 @@ import { COLORS } from "./components";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { filterApps, pushRecent, quickRow, togglePin } from "./appsmath";
+import { registerSetting, settingChanged } from "./settingsync";
 
 const STORE = "pcr_apps";
 const ICON = 44;
@@ -27,9 +28,24 @@ let cachedList = null; // survives closing the sheet
 let prefs = { recent: [], pinned: [] };
 let prefsLoaded = false;
 
+const prefListeners = new Set();
 function savePrefs() {
   SecureStore.setItemAsync(STORE, JSON.stringify(prefs)).catch(() => {});
+  settingChanged("apps", prefs);
 }
+registerSetting("apps", {
+  read: async () => {
+    const v = await SecureStore.getItemAsync(STORE);
+    return v ? JSON.parse(v) : null;
+  },
+  apply: (p) => {
+    if (!p || !Array.isArray(p.recent) || !Array.isArray(p.pinned)) return;
+    prefs = { recent: p.recent, pinned: p.pinned };
+    prefsLoaded = true;
+    SecureStore.setItemAsync(STORE, JSON.stringify(prefs)).catch(() => {});
+    for (const l of [...prefListeners]) l(prefs);
+  },
+});
 
 function AppIcon({ app, size = ICON }) {
   if (app.icon) {
@@ -59,6 +75,12 @@ export default function AppSheet({ visible, onClose, onOpened }) {
 
   const sheetW = Math.min(width, 560);
   const cols = Math.max(4, Math.floor((sheetW - 24) / CELL));
+
+  useEffect(() => {
+    const onPrefs = (p) => setState({ recent: p.recent, pinned: p.pinned });
+    prefListeners.add(onPrefs);
+    return () => prefListeners.delete(onPrefs);
+  }, []);
 
   useEffect(() => {
     if (prefsLoaded) return;

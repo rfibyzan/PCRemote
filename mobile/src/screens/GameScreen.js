@@ -14,7 +14,7 @@
  *   layers stay mounted when the PC screen is hidden (1x1, invisible) so frames
  *   / access units keep the stall watchdog fed.
  */
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import Text from "../AppText";
 import { useFocusEffect } from "expo-router";
@@ -32,7 +32,7 @@ import { GamepadState } from "../game/GamepadState";
 import GamepadOverlay from "../game/GamepadOverlay";
 import { EditToolbar, GameChrome, SettingsSheet } from "../game/GameMenus";
 import { LIMITS, controlOpacity, defaultLayout, moveChrome, patchControl, stepValue } from "../game/layout";
-import { loadLayout, saveLayout } from "../game/storage";
+import { loadLayout, onLayoutRestored, saveLayout } from "../game/storage";
 import { applyOrientation } from "../orientation";
 
 const HEARTBEAT_MS = 500;
@@ -55,6 +55,14 @@ export default function GameScreen({ onExit }) {
     savedRef.current = next;
     saveLayout(next);
   }, []);
+
+  // Layout restored from the PC (settingsync); never while editing.
+  const editRef = useRef(false);
+  editRef.current = editMode;
+  useEffect(() => onLayoutRestored((next) => {
+    savedRef.current = next;
+    if (!editRef.current) setLayout(next);
+  }), []);
 
   // ---- PC side status ----
   const [padStatus, setPadStatus] = useState(null);
