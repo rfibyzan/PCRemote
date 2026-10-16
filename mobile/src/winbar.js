@@ -15,7 +15,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "./AppText";
 import { COLORS } from "./components";
 import { msg } from "./protocol";
-import { addListener, send } from "./connection";
+import { addListener, getStatus, send } from "./connection";
 import { pruneThumbs, tileName } from "./winbarmath";
 import AppSheet from "./appsheet";
 
@@ -28,6 +28,9 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
   const [thumbs, setThumbs] = useState({});
   const [menu, setMenu] = useState(null);
   const [apps, setApps] = useState(false);
+  const [err, setErr] = useState("");
+  const features = getStatus().hello?.features;
+  const oldAgent = !Array.isArray(features) || !features.includes("winThumbs");
 
   useEffect(() => {
     const off = addListener((e) => {
@@ -37,6 +40,7 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
       }
       if (e.t === "winThumbs" && e.thumbs && typeof e.thumbs === "object") {
         setThumbs((t) => ({ ...t, ...e.thumbs }));
+        setErr(typeof e.err === "string" ? e.err : "");
       }
     });
     send(msg.windows(true));
@@ -114,6 +118,13 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
           );
         })}
       </ScrollView>
+      {(oldAgent || !!err) && (
+        <Text style={styles.notice} numberOfLines={2}>
+          {oldAgent
+            ? "Agent di PC masih versi lama: thumbnail, Maksimalkan, dan daftar aplikasi butuh agent terbaru (tutup lalu jalankan lagi)."
+            : `Thumbnail gagal: ${err}`}
+        </Text>
+      )}
       <AppSheet visible={apps} onClose={() => setApps(false)} onOpened={() => setTimeout(() => send(msg.windows(true)), 1500)} />
       <Modal visible={!!menu} transparent animationType="fade" onRequestClose={() => setMenu(null)}>
         <Pressable style={styles.shade} onPress={() => setMenu(null)}>
@@ -145,7 +156,7 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
               {[
                 ["stream", "Stream jendela ini", "fit-to-screen-outline"],
                 ["min", "Minimize", "window-minimize"],
-                ["max", "Maksimalkan", "window-maximize"],
+                ["max", menu.max ? "Pulihkan ukuran" : "Maksimalkan", menu.max ? "window-restore" : "window-maximize"],
                 ["close", "Tutup", "window-close"],
               ].map(([a, label, icon]) => (
                 <Pressable key={a} onPress={() => act(menu, a)} style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}>
@@ -178,6 +189,7 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     paddingHorizontal: 8,
   },
+  notice: { color: "#ffb86b", fontSize: 11, paddingHorizontal: 10, paddingTop: 4 },
   addTile: { borderColor: COLORS.accent, width: 76 },
   tile: {
     width: TW,
