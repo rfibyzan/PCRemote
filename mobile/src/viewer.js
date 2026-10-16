@@ -32,6 +32,7 @@ import { StatusBar } from "expo-status-bar";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { COLORS, MonitorChips, ScreenView, getLastFullFrame } from "./components";
 import { applyOrientation } from "./orientation";
+import { MotionView, PressScale } from "./motion";
 import VideoLayer from "./videoview";
 import { VideoToggle, isVideoActive } from "./video";
 import { ConnDot, LagBanner, StreamControls, StreamStats, getSel, setSel, useMonitorSource, useSel } from "./controls";
@@ -150,7 +151,7 @@ function Toolbar({ items, fold, onFold }) {
     <View style={styles.toolbar}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tbScroll} contentContainerStyle={styles.tbContent}>
         {items.filter(Boolean).map((it) => (
-          <Pressable
+          <PressScale
             key={it.id}
             onPress={it.onPress}
             hitSlop={2}
@@ -159,10 +160,10 @@ function Toolbar({ items, fold, onFold }) {
           >
             <MaterialCommunityIcons name={it.icon} size={19} color={it.on ? "#ffffff" : COLORS.text} />
             <Text style={[styles.tbLabel, it.on && styles.tbLabelOn]}>{it.label}</Text>
-          </Pressable>
+          </PressScale>
         ))}
       </ScrollView>
-      <Pressable
+      <PressScale
         onPress={onFold}
         hitSlop={2}
         accessibilityLabel={fold ? "Buka kontrol" : "Lipat kontrol"}
@@ -170,7 +171,7 @@ function Toolbar({ items, fold, onFold }) {
       >
         <MaterialCommunityIcons name={fold ? "chevron-up" : "chevron-down"} size={22} color={COLORS.text} />
         <Text style={styles.tbLabel}>{fold ? "Buka" : "Lipat"}</Text>
-      </Pressable>
+      </PressScale>
     </View>
   );
 }
@@ -1557,16 +1558,14 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             </Pressable>
           </Block>
         )}
-        {streamOpen && (
-          <>
-            <Pressable style={StyleSheet.absoluteFill} onPress={() => setStreamOpen(false)} accessibilityLabel="Tutup pengaturan stream" />
-            <Block style={styles.streamPop} onTouchStart={armStreamTimer}>
-              <StreamControls compact />
-              <ScrollSettings />
-              <VideoToggle />
-            </Block>
-          </>
-        )}
+        {streamOpen && <Pressable style={StyleSheet.absoluteFill} onPress={() => setStreamOpen(false)} accessibilityLabel="Tutup pengaturan stream" />}
+        <MotionView visible={streamOpen} kind="pop" origin="top right" style={styles.streamPop}>
+          <Block onTouchStart={armStreamTimer}>
+            <StreamControls compact />
+            <ScrollSettings />
+            <VideoToggle />
+          </Block>
+        </MotionView>
         {bar && (
           <Block style={styles.bar}>
             <BarScroll />

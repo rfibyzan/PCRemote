@@ -7,10 +7,11 @@
  * camera follows the window when it moves or resizes.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, Modal, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "./AppText";
 import { COLORS } from "./components";
+import { MotionModal, MotionPanel } from "./motion";
 import { getSel, setSel } from "./controls";
 import { msg } from "./protocol";
 import { addListener, send } from "./connection";
@@ -100,8 +101,9 @@ export function WindowPicker({ visible, list, onPick, onRefresh, onClose }) {
     if (visible) onRefresh();
   }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <MotionModal visible={visible} onRequestClose={onClose}>
       <Pressable style={styles.shade} onPress={onClose}>
+        <MotionPanel kind="pop" style={styles.panel}>
         <Pressable style={styles.sheet} onPress={() => {}}>
           <View style={styles.head}>
             <Text style={styles.headTitle}>Stream satu jendela</Text>
@@ -128,8 +130,9 @@ export function WindowPicker({ visible, list, onPick, onRefresh, onClose }) {
             ))}
           </ScrollView>
         </Pressable>
+        </MotionPanel>
       </Pressable>
-    </Modal>
+    </MotionModal>
   );
 }
 
@@ -175,8 +178,9 @@ export function WindowBar({ win, onRefit, onExit }) {
 }
 
 const styles = StyleSheet.create({
-  shade: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", padding: 20 },
-  sheet: { backgroundColor: "#1c1c1f", borderRadius: 16, borderWidth: 1, borderColor: COLORS.line, maxHeight: "75%", overflow: "hidden" },
+  shade: { flex: 1, justifyContent: "center", padding: 20 },
+  panel: { maxHeight: "75%" },
+  sheet: { backgroundColor: "#1c1c1f", borderRadius: 16, borderWidth: 1, borderColor: COLORS.line, maxHeight: "100%", overflow: "hidden" },
   head: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.line },
   headTitle: { color: COLORS.text, fontSize: 16, fontWeight: "700" },
   list: { paddingVertical: 4 },

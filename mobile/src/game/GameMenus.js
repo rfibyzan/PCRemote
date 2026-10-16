@@ -7,6 +7,8 @@ import React from "react";
 import { PanResponder, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import Text from "../AppText";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
+import { PressScale, popIn } from "../motion";
 import { CONTROL_DEFS, CONTROL_IDS, LIMITS, chromeBox, controlOpacity } from "./layout";
 
 // Same neutral grey + indigo theme as PAD/TYPE/WIN (2026-10-15).
@@ -25,23 +27,23 @@ export function Stepper({ label, value, onMinus, onPlus, format = pct, small }) 
   return (
     <View style={styles.stepper}>
       {!!label && <Text style={styles.stepLabel}>{label}</Text>}
-      <Pressable onPress={onMinus} style={[styles.stepBtn, small && styles.stepBtnSm]} hitSlop={6}>
+      <PressScale onPress={onMinus} style={[styles.stepBtn, small && styles.stepBtnSm]} hitSlop={6}>
         <Text style={styles.stepBtnText}>−</Text>
-      </Pressable>
+      </PressScale>
       <Text style={styles.stepValue}>{format(value)}</Text>
-      <Pressable onPress={onPlus} style={[styles.stepBtn, small && styles.stepBtnSm]} hitSlop={6}>
+      <PressScale onPress={onPlus} style={[styles.stepBtn, small && styles.stepBtnSm]} hitSlop={6}>
         <Text style={styles.stepBtnText}>+</Text>
-      </Pressable>
+      </PressScale>
     </View>
   );
 }
 
 function Chip({ label, active, onPress, icon, danger }) {
   return (
-    <Pressable onPress={onPress} style={[styles.chip, active && styles.chipActive, danger && styles.chipDanger]} hitSlop={4}>
+    <PressScale onPress={onPress} style={[styles.chip, active && styles.chipActive, danger && styles.chipDanger]} hitSlop={4}>
       {!!icon && <MaterialCommunityIcons name={icon} size={15} color={active ? "#ffffff" : danger ? DANGER : TEXT} />}
       {!!label && <Text style={[styles.chipText, danger && styles.chipTextDanger, active && styles.chipTextActive]}>{label}</Text>}
-    </Pressable>
+    </PressScale>
   );
 }
 
@@ -135,35 +137,37 @@ export function GameChrome({ chrome, W, H, padOn, onExit, onSettings, onEdit, ed
   return (
     <View style={[styles.chromeAbs, pos]} onLayout={onLayout} pointerEvents="box-none">
       {showGroup ? (
-        <View style={styles.chrome}>
-          <Pressable onPress={act(onExit)} style={styles.chromeBtn} hitSlop={6}>
+        <Animated.View key="group" entering={popIn} style={styles.chrome}>
+          <PressScale onPress={act(onExit)} style={styles.chromeBtn} hitSlop={6}>
             <MaterialCommunityIcons name="close" size={18} color={TEXT} />
-          </Pressable>
-          <Pressable onPress={act(onSettings)} style={styles.chromeBtn} hitSlop={6}>
+          </PressScale>
+          <PressScale onPress={act(onSettings)} style={styles.chromeBtn} hitSlop={6}>
             <MaterialCommunityIcons name="cog-outline" size={18} color={TEXT} />
-          </Pressable>
-          <Pressable onPress={act(onEdit)} style={styles.chromeBtn} hitSlop={6}>
+          </PressScale>
+          <PressScale onPress={act(onEdit)} style={styles.chromeBtn} hitSlop={6}>
             <MaterialCommunityIcons name="gamepad-square-outline" size={18} color={TEXT} />
-          </Pressable>
+          </PressScale>
           <View style={[styles.padDot, { backgroundColor: padOn ? "#34c759" : "#6e6e73" }]} />
           {collapsed && (
             <Pressable onPress={() => { clearTimer(); setOpen(false); }} style={styles.chromeBtn} hitSlop={6}>
               <MaterialCommunityIcons name="chevron-left" size={18} color={MUTED} />
             </Pressable>
           )}
-        </View>
+        </Animated.View>
       ) : (
-        <Pressable
-          onPress={() => {
-            setOpen(true);
-            arm();
-          }}
-          style={[styles.chrome, styles.chromeDot]}
-          hitSlop={8}
-        >
-          <MaterialCommunityIcons name="dots-horizontal" size={20} color={TEXT} />
-          <View style={[styles.padDotSm, { backgroundColor: padOn ? "#34c759" : "#6e6e73" }]} />
-        </Pressable>
+        <Animated.View key="dot" entering={popIn}>
+          <PressScale
+            onPress={() => {
+              setOpen(true);
+              arm();
+            }}
+            style={[styles.chrome, styles.chromeDot]}
+            hitSlop={8}
+          >
+            <MaterialCommunityIcons name="dots-horizontal" size={20} color={TEXT} />
+            <View style={[styles.padDotSm, { backgroundColor: padOn ? "#34c759" : "#6e6e73" }]} />
+          </PressScale>
+        </Animated.View>
       )}
     </View>
   );
@@ -208,8 +212,8 @@ export function SettingsSheet({ layout, onChange, onClose, onReset, streamContro
   const toggleVisible = (id) =>
     onChange({ ...layout, controls: { ...layout.controls, [id]: { ...layout.controls[id], visible: !layout.controls[id].visible } } });
   return (
-    <View style={styles.sheetWrap} pointerEvents="box-none">
-      <View style={styles.sheet}>
+    <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(150)} style={styles.sheetWrap} pointerEvents="box-none">
+      <Animated.View entering={popIn} style={styles.sheet}>
         <View style={styles.sheetHead}>
           <Text style={styles.sheetTitle}>Pengaturan gamepad</Text>
           <Pressable onPress={onClose} hitSlop={8}>
@@ -266,8 +270,8 @@ export function SettingsSheet({ layout, onChange, onClose, onReset, streamContro
             <Chip icon="restore" label="Reset semua ke default" onPress={onReset} danger />
           </View>
         </ScrollView>
-      </View>
-    </View>
+      </Animated.View>
+    </Animated.View>
   );
 }
 

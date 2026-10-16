@@ -9,11 +9,14 @@
  * agent (~10 min); the refresh button rescans.
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, FlatList, Image, Modal, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
+import { Alert, FlatList, Image, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "./AppText";
+import Animated, { FadeInDown } from "react-native-reanimated";
 import { COLORS } from "./components";
+import { MotionModal, MotionPanel, MotionView, PressScale, useLatched } from "./motion";
+import { staggerDelay } from "./motionmath";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { filterApps, pushRecent, quickRow, togglePin } from "./appsmath";
@@ -67,6 +70,8 @@ export default function AppSheet({ visible, onClose, onOpened }) {
   });
   const [q, setQ] = useState("");
   const [menu, setMenu] = useState(null);
+  const shownMenu = useLatched(menu); // keeps the menu drawn while it fades out
+  const [fresh, setFresh] = useState(false); // grid cells fade in only right after opening
   const [loading, setLoading] = useState(false);
   const [stale, setStale] = useState(false); // no answer yet after OLD_AGENT_MS
   const [error, setError] = useState("");
@@ -118,6 +123,16 @@ export default function AppSheet({ visible, onClose, onOpened }) {
     };
   }, [visible]);
 
+  // Let grid cells fade in for a moment after the sheet opens or the list
+  // arrives; later mounts (scrolling, searching) appear at once.
+  const hasList = list != null;
+  useEffect(() => {
+    if (!visible) return undefined;
+    setFresh(true);
+    const t = setTimeout(() => setFresh(false), 900);
+    return () => clearTimeout(t);
+  }, [visible, hasList]);
+
   useEffect(() => {
     if (!loading) return undefined;
     const t = setTimeout(() => setStale(true), OLD_AGENT_MS);
@@ -148,9 +163,9 @@ export default function AppSheet({ visible, onClose, onOpened }) {
   const found = useMemo(() => filterApps(list, q), [list, q]);
   const searching = q.trim().length > 0;
 
-  const cell = (app) => (
-    <Pressable
-      key={app.id}
+  const cell = (app, index = 0) => (
+    <Animated.View key={app.id} entering={fresh && index < 40 ? FadeInDown.delay(staggerDelay(index, cols)).duration(220) : undefined}>
+    <PressScale
       onPress={() => open(app)}
       onLongPress={() => setMenu(app)}
       delayLongPress={350}
@@ -162,7 +177,8 @@ export default function AppSheet({ visible, onClose, onOpened }) {
       <Text style={styles.cellName} numberOfLines={1}>
         {app.name}
       </Text>
-    </Pressable>
+    </PressScale>
+    </Animated.View>
   );
 
   const header = (
@@ -220,16 +236,17 @@ export default function AppSheet({ visible, onClose, onOpened }) {
         keyExtractor={(a) => a.id}
         ListHeaderComponent={header}
         ListEmptyComponent={<Text style={styles.empty}>{error ? `Gagal memindai aplikasi: ${error}` : "Tidak ada aplikasi ditemukan."}</Text>}
-        renderItem={({ item }) => cell(item)}
+        renderItem={({ item, index }) => cell(item, index)}
         initialNumToRender={40}
       />
     );
   }
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <MotionModal visible={visible} dim={0.5} onRequestClose={onClose}>
       <Pressable style={styles.shade} onPress={onClose}>
-        <Pressable style={[styles.sheet, { width: sheetW }]} onPress={() => {}}>
+        <MotionPanel kind="sheet" style={[styles.sheet, { width: sheetW }]}>
+        <Pressable style={styles.fill} onPress={() => {}}>
           <View style={styles.grip} />
           <View style={styles.titleRow}>
             <Text style={styles.title}>Aplikasi PC</Text>
@@ -261,21 +278,23 @@ export default function AppSheet({ visible, onClose, onOpened }) {
           </View>
           <View style={styles.body}>{body}</View>
 
-          {!!menu && (
+          <MotionView visible={!!menu} kind="fade" style={StyleSheet.absoluteFill}>
+            {!!shownMenu && (
             <Pressable style={styles.menuShade} onPress={() => setMenu(null)}>
+              <MotionPanel kind="pop">
               <Pressable style={styles.menu} onPress={() => {}}>
                 <View style={styles.menuHead}>
-                  <AppIcon app={menu} size={40} />
+                  <AppIcon app={shownMenu} size={40} />
                   <Text style={styles.menuTitle} numberOfLines={2}>
-                    {menu.name}
+                    {shownMenu.name}
                   </Text>
                 </View>
-                <Pressable onPress={() => open(menu)} style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}>
+                <Pressable onPress={() => open(shownMenu)} style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}>
                   <MaterialCommunityIcons name="open-in-app" size={19} color={COLORS.text} />
                   <Text style={[styles.itemText, styles.bold]}>Buka</Text>
                 </Pressable>
-                {menu.admin && (
-                  <Pressable onPress={() => open(menu, true)} style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}>
+                {shownMenu.admin && (
+                  <Pressable onPress={() => open(shownMenu, true)} style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}>
                     <MaterialCommunityIcons name="shield-account-outline" size={19} color={COLORS.text} />
                     <View>
                       <Text style={styles.itemText}>Jalankan sebagai admin</Text>
@@ -287,31 +306,34 @@ export default function AppSheet({ visible, onClose, onOpened }) {
                   onPress={() => {
                     update({
                       ...prefs,
-                      pinned: togglePin(prefs.pinned, menu.id),
+                      pinned: togglePin(prefs.pinned, shownMenu.id),
                     });
                     setMenu(null);
                   }}
                   style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}
                 >
-                  <MaterialCommunityIcons name={state.pinned.includes(menu.id) ? "pin-off-outline" : "pin-outline"} size={19} color={COLORS.text} />
-                  <Text style={styles.itemText}>{state.pinned.includes(menu.id) ? "Lepas sematan" : "Sematkan ke Terakhir"}</Text>
+                  <MaterialCommunityIcons name={state.pinned.includes(shownMenu.id) ? "pin-off-outline" : "pin-outline"} size={19} color={COLORS.text} />
+                  <Text style={styles.itemText}>{state.pinned.includes(shownMenu.id) ? "Lepas sematan" : "Sematkan ke Terakhir"}</Text>
                 </Pressable>
               </Pressable>
+              </MotionPanel>
             </Pressable>
           )}
+          </MotionView>
         </Pressable>
+        </MotionPanel>
       </Pressable>
-    </Modal>
+    </MotionModal>
   );
 }
 
 const styles = StyleSheet.create({
   shade: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
     alignItems: "center",
   },
+  fill: { flex: 1 },
   sheet: {
     height: "82%",
     backgroundColor: COLORS.card,

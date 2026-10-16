@@ -12,7 +12,9 @@ import ViewerPanel from "../viewer";
 import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
+import Animated, { FadeIn } from "react-native-reanimated";
 import ShortcutEditor from "../shortcuteditor";
+import { PressScale, SlideTabs } from "../motion";
 import { useShortcuts, saveShortcuts } from "../shortcuts";
 import { comboKeys, comboLabel, moveShortcut, removeShortcut, upsertShortcut, MAX_SHORTCUTS } from "../shortcutmath";
 
@@ -123,7 +125,7 @@ export default function WinScreen() {
 
   function Btn({ label, icon, onPress, active, danger, wide, fn, small, a11y }) {
     return (
-      <Pressable
+      <PressScale
         onPress={onPress}
         hitSlop={HIT}
         accessibilityLabel={a11y || label}
@@ -131,21 +133,23 @@ export default function WinScreen() {
       >
         {icon ? <MaterialIcons name={icon} size={16} color={COLORS.text} /> : null}
         {label ? <Text style={[styles.cellText, active && styles.cellTextActive]} numberOfLines={1}>{label}</Text> : null}
-      </Pressable>
+      </PressScale>
     );
   }
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <ViewerPanel title="Win" touchpad={false} actions={false} onTap={releaseApps}>
-      <View style={styles.tabs}>
-        {SECTIONS.map((sec) => (
-          <Pressable key={sec} onPress={() => setSection(sec)} style={[styles.tab, section === sec && styles.tabActive]}>
-            <Text style={[styles.tabText, section === sec && styles.tabTextActive]}>{sec}</Text>
-          </Pressable>
-        ))}
-      </View>
-      <View style={styles.ctl}>
+      <SlideTabs
+        items={SECTIONS}
+        value={section}
+        onChange={setSection}
+        style={styles.tabs}
+        tabStyle={styles.tab}
+        activeColor={styles.tabActive.backgroundColor}
+        renderLabel={(sec, on) => <Text style={[styles.tabText, on && styles.tabTextActive]}>{sec}</Text>}
+      />
+      <Animated.View key={section} entering={FadeIn.duration(150)} style={styles.ctl}>
         {section === "Sistem" && (
           <View style={styles.grid}>
             <Btn icon="apps" label="Start" onPress={() => send(msg.key("win"))} />
@@ -188,7 +192,7 @@ export default function WinScreen() {
         {section === "Pintasan" && (
           <ScrollView contentContainerStyle={styles.grid} nestedScrollEnabled showsVerticalScrollIndicator={false}>
             {shortcuts.map((sc) => (
-              <Pressable
+              <PressScale
                 key={sc.id}
                 onPress={() => send(msg.combo(comboKeys(sc)))}
                 onLongPress={() => shortcutMenu(sc)}
@@ -199,13 +203,13 @@ export default function WinScreen() {
               >
                 <Text style={styles.scName} numberOfLines={1}>{sc.name}</Text>
                 <Text style={styles.scCombo} numberOfLines={1}>{comboLabel(sc)}</Text>
-              </Pressable>
+              </PressScale>
             ))}
             {shortcuts.length < MAX_SHORTCUTS ? (
-              <Pressable onPress={() => setEditing({})} hitSlop={HIT} style={({ pressed }) => [styles.cell, styles.scCell, styles.scAdd, pressed && styles.cellPressed]}>
+              <PressScale onPress={() => setEditing({})} hitSlop={HIT} style={({ pressed }) => [styles.cell, styles.scCell, styles.scAdd, pressed && styles.cellPressed]}>
                 <MaterialIcons name="add" size={16} color={COLORS.accent} />
                 <Text style={styles.scAddText}>{shortcuts.length ? "Tambah" : "Tambah pintasan"}</Text>
-              </Pressable>
+              </PressScale>
             ) : null}
           </ScrollView>
         )}
@@ -243,7 +247,7 @@ export default function WinScreen() {
             </View>
           </View>
         )}
-      </View>
+      </Animated.View>
       </ViewerPanel>
       <ShortcutEditor
         visible={editing != null}

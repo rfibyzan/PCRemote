@@ -10,10 +10,11 @@
  * Wrap the bar in Block where it sits over the viewer.
  */
 import React, { useEffect, useState } from "react";
-import { Alert, Image, Modal, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "./AppText";
 import { COLORS } from "./components";
+import { MotionModal, MotionPanel, PressScale, useLatched } from "./motion";
 import { msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
 import { pruneThumbs, tileName } from "./winbarmath";
@@ -27,6 +28,8 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
   const [list, setList] = useState(null);
   const [thumbs, setThumbs] = useState({});
   const [menu, setMenu] = useState(null);
+  const [menuFrom, setMenuFrom] = useState(null); // where the tile was held: the menu grows out of it
+  const shown = useLatched(menu);
   const [apps, setApps] = useState(false);
   const [err, setErr] = useState("");
   const features = getStatus().hello?.features;
@@ -75,7 +78,7 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
   return (
     <View style={styles.strip}>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
-        <Pressable
+        <PressScale
           onPress={() => setApps(true)}
           style={({ pressed }) => [styles.tile, styles.addTile, pressed && styles.pressed]}
           accessibilityLabel="Buka aplikasi di PC"
@@ -86,20 +89,23 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
           <Text style={styles.name} numberOfLines={1}>
             Aplikasi
           </Text>
-        </Pressable>
+        </PressScale>
         {list == null && <Text style={styles.empty}>Memuat jendela…</Text>}
         {list != null && !list.length && <Text style={styles.empty}>Tidak ada jendela terbuka.</Text>}
         {(list || []).map((w) => {
           const img = thumbs[w.id];
           const on = activeId != null && String(activeId) === String(w.id);
           return (
-            <Pressable
+            <PressScale
               key={w.id}
               onPress={() => {
                 onFocus?.(w);
                 setTimeout(() => send(msg.windows(true)), 400);
               }}
-              onLongPress={() => setMenu(w)}
+              onLongPress={(e) => {
+                setMenuFrom({ x: e.nativeEvent.pageX, y: e.nativeEvent.pageY });
+                setMenu(w);
+              }}
               delayLongPress={350}
               style={({ pressed }) => [styles.tile, on && styles.tileOn, pressed && styles.pressed]}
               accessibilityLabel={`${tileName(w)}: ${w.title}`}
@@ -114,7 +120,7 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
               <Text style={styles.name} numberOfLines={1}>
                 {tileName(w)}
               </Text>
-            </Pressable>
+            </PressScale>
           );
         })}
       </ScrollView>
@@ -126,16 +132,17 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
         </Text>
       )}
       <AppSheet visible={apps} onClose={() => setApps(false)} onOpened={() => setTimeout(() => send(msg.windows(true)), 1500)} />
-      <Modal visible={!!menu} transparent animationType="fade" onRequestClose={() => setMenu(null)}>
+      <MotionModal visible={!!menu} onRequestClose={() => setMenu(null)}>
         <Pressable style={styles.shade} onPress={() => setMenu(null)}>
-          {!!menu && (
+          {!!shown && (
+            <MotionPanel from={menuFrom}>
             <Pressable style={styles.sheet} onPress={() => {}}>
               <View style={styles.head}>
                 <View style={[styles.thumb, styles.headThumb]}>
-                  {thumbs[menu.id] ? (
+                  {thumbs[shown.id] ? (
                     <Image
                       source={{
-                        uri: `data:image/jpeg;base64,${thumbs[menu.id]}`,
+                        uri: `data:image/jpeg;base64,${thumbs[shown.id]}`,
                       }}
                       style={styles.thumbImg}
                       resizeMode="cover"
@@ -146,28 +153,29 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
                 </View>
                 <View style={styles.headText}>
                   <Text style={styles.headTitle} numberOfLines={1}>
-                    {tileName(menu)}
+                    {tileName(shown)}
                   </Text>
                   <Text style={styles.headSub} numberOfLines={2}>
-                    {menu.title}
+                    {shown.title}
                   </Text>
                 </View>
               </View>
               {[
                 ["stream", "Stream jendela ini", "fit-to-screen-outline"],
                 ["min", "Minimize", "window-minimize"],
-                ["max", menu.max ? "Pulihkan ukuran" : "Maksimalkan", menu.max ? "window-restore" : "window-maximize"],
+                ["max", shown.max ? "Pulihkan ukuran" : "Maksimalkan", shown.max ? "window-restore" : "window-maximize"],
                 ["close", "Tutup", "window-close"],
               ].map(([a, label, icon]) => (
-                <Pressable key={a} onPress={() => act(menu, a)} style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}>
+                <Pressable key={a} onPress={() => act(shown, a)} style={({ pressed }) => [styles.item, pressed && styles.itemPressed]}>
                   <MaterialCommunityIcons name={icon} size={19} color={a === "close" ? "#ff6b6b" : COLORS.text} />
                   <Text style={[styles.itemText, a === "close" && styles.itemDanger]}>{label}</Text>
                 </Pressable>
               ))}
             </Pressable>
+            </MotionPanel>
           )}
         </Pressable>
-      </Modal>
+      </MotionModal>
     </View>
   );
 }
@@ -219,7 +227,6 @@ const styles = StyleSheet.create({
   },
   shade: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
     justifyContent: "center",
     padding: 28,
   },

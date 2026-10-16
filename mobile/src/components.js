@@ -1,6 +1,7 @@
 /** Shared presentational components: monitor chips, screen views. */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Image, Pressable, StyleSheet, View } from "react-native";
+import { Image, StyleSheet, View } from "react-native";
+import { PressScale } from "./motion";
 import Text from "./AppText";
 import { useFocusEffect } from "expo-router";
 import { bytesToBase64 } from "./protocol";
@@ -26,22 +27,22 @@ export const COLORS = {
 export function MonitorChips({ monitors, current, onPick, row }) {
   return (
     <View style={[styles.chips, row && styles.chipsRow]}>
-      <Pressable onPress={() => onPick("all")} style={[styles.chip, String(current) === "all" && styles.chipActive]}>
+      <PressScale onPress={() => onPick("all")} style={[styles.chip, String(current) === "all" && styles.chipActive]}>
         <Text style={[styles.chipText, String(current) === "all" && styles.chipTextActive]}>All</Text>
-      </Pressable>
+      </PressScale>
       {(monitors || []).map((m, i) => {
         const active = String(current) === String(m.id);
         const n = Number(m.id);
         const label = `${Number.isFinite(n) ? n + 1 : i + 1}${m.primary ? "*" : ""}`;
         return (
-          <Pressable key={String(m.id)} onPress={() => onPick(m.id)} style={[styles.chip, active && styles.chipActive]}>
+          <PressScale key={String(m.id)} onPress={() => onPick(m.id)} style={[styles.chip, active && styles.chipActive]}>
             <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
-          </Pressable>
+          </PressScale>
         );
       })}
-      <Pressable onPress={() => onPick("cam")} style={[styles.chip, String(current) === "cam" && styles.chipActive]}>
+      <PressScale onPress={() => onPick("cam")} style={[styles.chip, String(current) === "cam" && styles.chipActive]}>
         <Text style={[styles.chipText, String(current) === "cam" && styles.chipTextActive]}>Cam</Text>
-      </Pressable>
+      </PressScale>
     </View>
   );
 }
