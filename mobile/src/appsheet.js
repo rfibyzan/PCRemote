@@ -15,7 +15,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "./AppText";
 import { COLORS } from "./components";
 import { msg } from "./protocol";
-import { addListener, send } from "./connection";
+import { addListener, getStatus, send } from "./connection";
 import { filterApps, pushRecent, quickRow, togglePin } from "./appsmath";
 
 const STORE = "pcr_apps";
@@ -52,7 +52,10 @@ export default function AppSheet({ visible, onClose, onOpened }) {
   const [q, setQ] = useState("");
   const [menu, setMenu] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [stale, setStale] = useState(false); // no answer: agent too old
+  const [stale, setStale] = useState(false); // no answer yet after OLD_AGENT_MS
+  const [error, setError] = useState("");
+  const features = getStatus().hello?.features;
+  const oldAgent = !Array.isArray(features) || !features.includes("apps");
 
   const sheetW = Math.min(width, 560);
   const cols = Math.max(4, Math.floor((sheetW - 24) / CELL));
@@ -79,12 +82,13 @@ export default function AppSheet({ visible, onClose, onOpened }) {
         setList(e.list);
         setLoading(false);
         setStale(false);
+        setError(typeof e.error === "string" ? e.error : e.error ? "Pemindaian gagal" : "");
       }
       if (e.t === "appOpen" && e.ok === false) {
         Alert.alert("Tidak bisa membuka", "Aplikasi ini tidak ada lagi di PC. Muat ulang daftar.");
       }
     });
-    load(false);
+    if (!oldAgent) load(false);
     return () => {
       off();
       setQ("");
@@ -155,7 +159,11 @@ export default function AppSheet({ visible, onClose, onOpened }) {
   if (list == null) {
     body = (
       <Text style={styles.empty}>
-        {stale ? "Agent belum mendukung daftar aplikasi. Perbarui agent di PC." : "Memuat aplikasi… (pertama kali bisa beberapa detik)"}
+        {oldAgent
+          ? "Agent di PC masih versi lama. Perbarui agent (tutup lalu jalankan lagi) untuk daftar aplikasi."
+          : stale
+            ? "Belum ada balasan dari agent. Coba muat ulang."
+            : "Memuat aplikasi… (pertama kali bisa beberapa detik)"}
       </Text>
     );
   } else if (searching) {
@@ -189,7 +197,7 @@ export default function AppSheet({ visible, onClose, onOpened }) {
         numColumns={cols}
         keyExtractor={(a) => a.id}
         ListHeaderComponent={header}
-        ListEmptyComponent={<Text style={styles.empty}>Tidak ada aplikasi ditemukan.</Text>}
+        ListEmptyComponent={<Text style={styles.empty}>{error ? `Gagal memindai aplikasi: ${error}` : "Tidak ada aplikasi ditemukan."}</Text>}
         renderItem={({ item }) => cell(item)}
         initialNumToRender={40}
       />
