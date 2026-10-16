@@ -185,6 +185,9 @@ export const msg = {
   // thumbs=true: agent also sends {t:"winThumbs"} (window bar).
   windows: (thumbs = false) => (thumbs ? { t: "windows", thumbs: 1 } : { t: "windows" }),
   winAct: (id, a) => ({ t: "winAct", id, a }),
+  // App launcher: Start-menu apps -> {t:"apps", list:[{id,name,icon,admin}]}.
+  apps: (refresh = false) => (refresh ? { t: "apps", refresh: 1 } : { t: "apps" }),
+  appOpen: (id, admin = false) => (admin ? { t: "appOpen", id, admin: 1 } : { t: "appOpen", id }),
   quality: (q) => ({ t: "quality", ...q }),
   crop: (x, y, w, h) => ({ t: "crop", x, y, w, h }),
   cam: (on) => ({ t: "cam", on: Boolean(on) }),
