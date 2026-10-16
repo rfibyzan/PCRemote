@@ -14,6 +14,7 @@ import { AppState } from "react-native";
 import { createConnLog, formatLog } from "./connlog";
 import { getDeviceInfo } from "./deviceinfo";
 import { newestAnnounce, parseRecent, removeRecent, upsertRecent } from "./recent";
+import { AUTH_TIMEOUT_MS, backoffDelay, openTimeoutFor, shouldRediscover } from "./reconnectmath";
 import { parseVideoPacket } from "./videoproto";
 import {
   DEFAULT_PORT,
@@ -362,8 +363,27 @@ export function connect(url, opts = {}) {
     // older runtimes ignore this and deliver text/base64 instead
   }
   state.ws = ws;
+  let opened = false;
   ws.onopen = () => {
     if (gen !== state._connectGen) return;
+    opened = true;
+    if (state._authTimer) clearTimeout(state._authTimer);
+    state._authTimer = setTimeout(() => {
+      if (gen !== state._connectGen) return;
+      if (state.ws === ws && !state.connected) {
+        // Ignore this socket's late onclose: we schedule the retry here.
+        state._connectGen += 1;
+        state.ws = null;
+        try {
+          ws.close();
+        } catch {
+          // already closing
+        }
+        state.lastError = "auth-timeout: PC tidak menjawab auth dalam 8 detik (kode salah / PC sibuk)";
+        setStatus("unreachable", state.lastError, "auth");
+        scheduleReconnect("auth-timeout");
+      }
+    }, AUTH_TIMEOUT_MS);
     setProgress("auth", "Socket terbuka, mengirim auth…");
     // Auth must bypass send()'s connected-guard: hello (which sets
     // connected) only arrives AFTER auth. Using send() here deadlocks
@@ -401,6 +421,19 @@ export function connect(url, opts = {}) {
       state.ws = null;
       state.connected = false;
       state.hello = null;
+      if (state._authTimer) {
+        clearTimeout(state._authTimer);
+        state._authTimer = null;
+      }
+      if (!opened && !state.kicked && !state._manualClose) {
+        // Never opened: this address is dead from here (other network,
+        // PC asleep, tunnel gone). Search again right away.
+        state.lastError = `tidak-terjangkau: ${shortHost(url)} tidak bisa dibuka (code=${ev?.code ?? "?"})`;
+        setStatus("unreachable", `PC tidak terjangkau di ${shortHost(url)}. Mencari ulang alamat PC…`, "ws-connecting");
+        log(state.lastError, "warn");
+        scheduleReconnect("unreachable");
+        return;
+      }
       const reason = ev?.reason || ev?.code ? `code=${ev?.code}` : "closed";
       state.lastError = `socket-tutup (${reason})`;
       emit({ t: "close", reason });
@@ -418,21 +451,27 @@ export function connect(url, opts = {}) {
       }
     }
   };
-  // Auth timeout: a silent socket is treated as unreachable.
+  // Open timeout: a socket that cannot even open means this address is
+  // unreachable (LAN ip from mobile data, PC asleep, dead tunnel). That is
+  // never "wrong code" — the auth timer only starts once the socket opens.
   if (state._authTimer) clearTimeout(state._authTimer);
+  const openMs = openTimeoutFor(state.link);
   state._authTimer = setTimeout(() => {
     if (gen !== state._connectGen) return;
-    if (state.ws === ws && !state.connected) {
+    if (state.ws === ws && !opened) {
+      state._connectGen += 1;
+      state.ws = null;
       try {
         ws.close();
       } catch {
         // already closing
       }
-      state.lastError = "auth-timeout: PC tidak menjawab auth dalam 8 detik (kode salah / PC sibuk / tunnel mati)";
-      setStatus("unreachable", state.lastError, "auth");
-      scheduleReconnect("auth-timeout");
+      state.lastError = `tidak-terjangkau: ${shortHost(url)} tidak terbuka dalam ${Math.round(openMs / 1000)} dtk`;
+      log(state.lastError, "warn");
+      setStatus("unreachable", `PC tidak terjangkau di ${shortHost(url)}. Mencari ulang alamat PC…`, "ws-connecting");
+      scheduleReconnect("unreachable");
     }
-  }, 8000);
+  }, openMs);
 }
 
 function startPing() {
@@ -485,30 +524,25 @@ function stopPing() {
  * because the tunnel URL changes when cloudflared restarts and the LAN IP
  * can change with DHCP. Returning to the app retries at once (AppState). */
 function scheduleReconnect(reason) {
-  if (state._manualClose || state.kicked || !state.url || state._reTimer) return;
+  if (state._manualClose || state.kicked || !state.url || state._reTimer || state._finding) return;
   const tries = (state._reTries = (state._reTries || 0) + 1);
   state.attempts = tries;
-  const delay = Math.min(15000, Math.round(1500 * Math.pow(1.5, Math.min(tries - 1, 8))));
+  const delay = backoffDelay(tries);
   const label = tries > MAX_RETRIES ? `percobaan ${tries}` : `${tries}/${MAX_RETRIES}`;
   if (tries > MAX_RETRIES && tries === MAX_RETRIES + 1) {
     const hint = /1006/.test(String(reason || state.lastError)) ? " 1006 biasanya = tunnel restart / agent mati / beda jaringan." : "";
     log(`Sudah ${MAX_RETRIES}x gagal (${reason || state.lastError}).${hint} Terus mencoba tiap 15 dtk. Cek PCRemote.exe di PC.`, "error");
   }
-  if (state.code && tries % 3 === 0) {
+  if (shouldRediscover({ tries, reason, hasCode: !!state.code })) {
     setStatus("reconnecting", `Mencoba lagi ${label} — mencari ulang alamat PC…`, "polling-announce");
-    state._reTimer = setTimeout(async () => {
+    // A dead address searches again at once; the periodic safety-net
+    // rediscovery keeps the backoff.
+    const dead = reason === "unreachable" || reason === "open-failed";
+    const wait = dead && tries <= 2 ? 300 : delay;
+    state._reTimer = setTimeout(() => {
       state._reTimer = null;
-      if (state._manualClose || state.kicked || state.connected) return;
-      let next = state.url;
-      try {
-        const fresh = await findPC(() => {}, { quiet: true });
-        if (fresh) next = fresh;
-        if (fresh && fresh !== state.url) log(`Alamat baru ditemukan: ${shortHost(fresh)}`, "ok");
-      } catch (e) {
-        log(`Cari ulang gagal: ${String(e?.message || e)}`, "warn");
-      }
-      if (!state._manualClose && !state.kicked && !state.connected) connect(next, { attempt: tries });
-    }, delay);
+      rediscoverAndConnect(tries);
+    }, wait);
     return;
   }
   setStatus("reconnecting", `Mencoba lagi ${label} dalam ${Math.round(delay / 1000)} dtk (${reason || state.lastError})…`, "ws-connecting");
@@ -520,6 +554,25 @@ function scheduleReconnect(reason) {
   }, delay);
 }
 
+/** Full search (saved hosts → announce → LAN → tunnel), then connect to
+ * whatever answered; falls back to the old URL when the search fails. */
+async function rediscoverAndConnect(tries) {
+  if (state._manualClose || state.kicked || state.connected || state._finding) return;
+  state._finding = true;
+  let next = state.url;
+  try {
+    const fresh = await findPC(() => {}, { quiet: true });
+    if (fresh) next = fresh;
+    if (fresh && fresh !== state.url) log(`Alamat baru ditemukan: ${shortHost(fresh)}`, "ok");
+  } catch (e) {
+    log(`Cari ulang gagal: ${String(e?.message || e)}`, "warn");
+  } finally {
+    state._finding = false;
+  }
+  if (!state._manualClose && !state.kicked && !state.connected) connect(next, { attempt: tries });
+}
+
+/** Manual "Coba lagi": start over, with a fresh search for the PC. */
 export function retryConnect() {
   state.kicked = false;
   if (state._reTimer) {
@@ -529,7 +582,24 @@ export function retryConnect() {
   state._reTries = 0;
   state._rediscoveries = 0;
   state.attempts = 0;
-  if (state.url) connect(state.url);
+  if (!state.url) return;
+  if (state.code) rediscoverAndConnect(0);
+  else connect(state.url);
+}
+
+/** Back in the app with a dropped link: the phone may have changed
+ * network meanwhile (home Wi-Fi ↔ mobile data), so search again instead
+ * of reusing the old address. Keeps the try count (no 1/10 ↔ 2/10 loop)
+ * and does nothing while an attempt is already underway. */
+function resumeConnect() {
+  if (state._finding) return;
+  if (state.ws && !state.connected && state.stage === "auth") return; // socket open, auth pending
+  if (state._reTimer) {
+    clearTimeout(state._reTimer);
+    state._reTimer = null;
+  }
+  if (state.code) rediscoverAndConnect(state._reTries || 0);
+  else connect(state.url, { attempt: state._reTries || 0 });
 }
 
 export function cancelFind() {
@@ -818,8 +888,8 @@ export async function boot() {
     // out the backoff (Android pauses timers in the background).
     appStateSub = AppState.addEventListener("change", (s) => {
       if (s !== "active" || state.connected || state.kicked || state._manualClose || !state.url) return;
-      log("Aplikasi aktif lagi, menyambung ulang sekarang…");
-      retryConnect();
+      log("Aplikasi aktif lagi, mencari ulang alamat PC…");
+      resumeConnect();
     });
   }
   emit({ t: "code", code: state.code });
