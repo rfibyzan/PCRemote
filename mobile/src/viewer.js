@@ -40,7 +40,8 @@ import { BAR_W, BarScroll, ScrollSettings, sendSwipeScroll } from "./scrollbar";
 import { msg } from "./protocol";
 import { pointerIcon } from "./pointer";
 import { addListener, getStatus, send } from "./connection";
-import { WindowBar, WindowPicker, useWindowStream } from "./windowstream";
+import { WindowBar, useWindowStream } from "./windowstream";
+import WindowThumbBar from "./winbar";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD, TOOLBAR_H } from "./tablayout";
 import {
   MAX_ZOOM,
@@ -191,7 +192,8 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   const crop = shared.crop;
   // Single-window stream: the picked app window (camera framed on it) or null.
   const win = shared.win || null;
-  const [winPick, setWinPick] = useState(false);
+  // Window bar (thumbnails of open windows) toggled from the toolbar / WIN tab.
+  const thumbs = !!shared.thumbs;
   const { monitors, current, camError, pick } = useMonitorSource();
   const cropRef = useRef(crop);
   cropRef.current = crop;
@@ -1527,6 +1529,22 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             />
           </Block>
         )}
+        {thumbs && current !== "cam" && (
+          <Block style={[styles.thumbWrap, bar && styles.shiftForBar]}>
+            <WindowThumbBar
+              activeId={win?.id ?? null}
+              onFocus={(w) => {
+                // In single-window mode the camera follows the new window too.
+                if (win) winStream.pickWindow(w);
+                else send(msg.winAct(w.id, "focus"));
+              }}
+              onStream={(w) => {
+                winStream.pickWindow(w);
+                setSel({ thumbs: false });
+              }}
+            />
+          </Block>
+        )}
         {!streamOpen && !full && current !== "cam" && (
           <Block style={[styles.lagWrap, !!win && styles.lagBelowWin, bar && styles.shiftForBar]} pointerEvents="box-none">
             <LagBanner />
@@ -1562,7 +1580,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             { id: "click", icon: "cursor-default-click-outline", label: "Click", on: mode === "Click", onPress: () => setSel({ mode: "Click" }) },
             { id: "look", icon: "eye-outline", label: "Look", on: mode === "Look", onPress: () => setSel({ mode: "Look" }) },
             { id: "bar", icon: "gesture-swipe-vertical", label: "Bar", on: bar, onPress: () => setSel({ bar: !bar }) },
-            camTools && { id: "win", icon: "application-outline", label: "Jendela", on: !!win, onPress: () => setWinPick(true) },
+            camTools && { id: "win", icon: "application-outline", label: "Jendela", on: thumbs || !!win, onPress: () => setSel({ thumbs: !thumbs }) },
             camTools && { id: "fit", icon: "fit-to-screen-outline", label: "Fit", onPress: win ? winStream.exit : resetCrop },
             camTools && { id: "aim", icon: "crosshairs", label: "Bidik", on: reticle, onPress: () => setReticle((v) => !v) },
             camTools && { id: "full", icon: "fullscreen", label: "Penuh", onPress: toggleFull },
@@ -1571,16 +1589,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
           onFold={() => setSel({ fold: !fold })}
         />
       )}
-      <WindowPicker
-        visible={winPick}
-        list={winStream.list}
-        onRefresh={winStream.refresh}
-        onClose={() => setWinPick(false)}
-        onPick={(w) => {
-          setWinPick(false);
-          winStream.pickWindow(w);
-        }}
-      />
       {!full && !fold && !typing && (
       <View style={styles.controls}>
       {actions && (
@@ -1708,6 +1716,7 @@ const styles = StyleSheet.create({
   minimap: { backgroundColor: "rgba(22,22,24,0.85)", borderRadius: 6, borderWidth: 1, borderColor: "#3a3a3e", overflow: "hidden" },
   viewport: { position: "absolute", borderWidth: 2, borderColor: "#7c7aff", backgroundColor: "rgba(124,122,255,0.18)" },
   bar: { position: "absolute", left: 0, top: 0, bottom: 0, width: BAR_W },
+  thumbWrap: { position: "absolute", left: 6, right: 6, bottom: 6 },
   error: { color: COLORS.danger, paddingHorizontal: 8, textAlign: "center", fontSize: 12 },
   btnRow: { flexDirection: "row", gap: 6, height: 34 },
   btn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, alignItems: "center", justifyContent: "center" },
