@@ -1,16 +1,25 @@
 /** TYPE (layout C): shared viewer on top, fixed control area below:
- *   free-text field (Enter never clears it)
+ *   row 0: "Ketik langsung" (default) or "Kolom teks" mode, toggle chip at the right
+ *     - Ketik langsung: opens the phone keyboard on a hidden input; every key
+ *       goes to the PC at once as REAL key presses (games/hotkeys see them).
+ *       While typing, the viewer chrome hides and a small pill (Ctrl/Esc/close)
+ *       floats over the stream.
+ *     - Kolom teks: type into a field, "Kirim" sends it as Unicode (long text).
  *   row 1, page A: Ctrl Alt Shift Win Esc Tab Del
  *   row 1, page B: Hold Paste Home End PgUp PgDn Ins
  *   row 2 (always): Bksp Enter ← ↑ ↓ → and ⋯ (flips page A/B)
  * Protocol/functions preserved: key tap, down-only hold, combo chords, text.
  */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import { Keyboard, Pressable, StyleSheet, TextInput, View } from "react-native";
+import * as SecureStore from "expo-secure-store";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "../AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { COLORS } from "../components";
-import ViewerPanel from "../viewer";
+import ViewerPanel, { Block } from "../viewer";
+import { setSel } from "../controls";
+import { SENTINELS, chordKey, diffInput, pushRecent } from "../typediff";
 import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
@@ -19,11 +28,66 @@ const MODS = ["ctrl", "alt", "shift", "win"];
 const FIELD_H = 36;
 // Last key page survives tab switches.
 let lastPage = "A";
+const STORE_TYPE = "pcremote.type"; // { mode: "live" | "field", hold: bool }
+const pref = { mode: "live", hold: true, loaded: false };
+function savePref() {
+  SecureStore.setItemAsync(STORE_TYPE, JSON.stringify({ mode: pref.mode, hold: pref.hold })).catch(() => {});
+}
 
 export default function TypeScreen() {
   const [held, setHeld] = useState([]);
-  const [holdMode, setHoldMode] = useState(true);
+  const [holdMode, setHoldModeState] = useState(pref.hold);
+  const [mode, setModeState] = useState(pref.mode);
   const [free, setFree] = useState("");
+  const [typing, setTyping] = useState(false);
+  const [recent, setRecent] = useState("");
+  const liveRef = useRef(null);
+  const liveVal = useRef(SENTINELS[0]);
+  const [liveText, setLiveText] = useState(SENTINELS[0]);
+  function setHoldMode(v) {
+    pref.hold = v;
+    savePref();
+    setHoldModeState(v);
+  }
+  function setMode(v) {
+    pref.mode = v;
+    savePref();
+    setModeState(v);
+  }
+  // Saved choices (Hold on/off, mode) survive restarts.
+  useEffect(() => {
+    if (pref.loaded) return;
+    SecureStore.getItemAsync(STORE_TYPE)
+      .then((raw) => {
+        pref.loaded = true;
+        const v = raw ? JSON.parse(raw) : null;
+        if (v && (v.mode === "live" || v.mode === "field")) {
+          pref.mode = v.mode;
+          setModeState(v.mode);
+        }
+        if (v && typeof v.hold === "boolean") {
+          pref.hold = v.hold;
+          setHoldModeState(v.hold);
+        }
+      })
+      .catch(() => {
+        pref.loaded = true;
+      });
+  }, []);
+  // Live typing owns the viewer chrome while the keyboard is up.
+  useEffect(() => {
+    setSel({ typing });
+  }, [typing]);
+  useEffect(() => {
+    const sub = Keyboard.addListener("keyboardDidHide", () => {
+      liveRef.current?.blur();
+      setTyping(false);
+    });
+    return () => {
+      sub.remove();
+      setSel({ typing: false });
+    };
+  }, []);
   const [page, setPageState] = useState(lastPage);
   function setPage(v) {
     lastPage = v;
@@ -88,45 +152,47 @@ export default function TypeScreen() {
     send(msg.combo(["ctrl", "v"]));
   }
 
-  // Free-text field: Enter must NEVER clear the buffer. Soft-keyboard return
-  // arrives as "\n" inside onChangeText (single-line renders it invisible, so
-  // the field looked "empty") or as onSubmitEditing. Both send Enter to the
-  // PC and keep the visible text intact (newlines stripped).
-  function handleFreeChange(t) {
-    const prev = free;
-    const next = String(t ?? "");
-    // Count newlines typed (usually 1 for Enter). Send one Enter per newline.
-    const enters = (next.match(/\n/g) || []).length - (prev.match(/\n/g) || []).length;
-    if (enters > 0) {
-      for (let i = 0; i < Math.min(enters, 3); i += 1) send(msg.key("enter"));
-      // Strip newlines so the field never looks mysteriously empty.
-      setFree(next.replace(/\n/g, ""));
-      // Any other added text besides the newline still needs sending.
-      const addedText = next.replace(/\n/g, "").slice(prev.replace(/\n/g, "").length);
-      if (addedText) send(msg.text(addedText));
+  // ---- Ketik langsung ----
+  function sendLive(added, removed) {
+    for (let i = 0; i < Math.min(removed, 50); i += 1) send(msg.key("backspace"));
+    if (!added) return;
+    if (held.length) {
+      // Held Ctrl/Alt/Shift/Win + a char = a real chord (Listary Ctrl+Shift+Alt+/).
+      let rest = "";
+      for (const ch of added) {
+        const k = chordKey(ch);
+        if (k) send(msg.combo([...held, k]));
+        else rest += ch;
+      }
+      if (rest) send(msg.text(rest, true));
       return;
     }
-    if (next.length >= prev.length) {
-      // Append-only fast path + paste/mid-edit fallback: send only the tail
-      // that is genuinely new instead of assuming slice(prev.length).
-      let start = 0;
-      const minLen = Math.min(prev.length, next.length);
-      while (start < minLen && prev[start] === next[start]) start += 1;
-      const added = next.slice(start);
-      setFree(next);
-      if (added) send(msg.text(added));
-    } else {
-      // Deletion: count removed chars (select-all-delete removes many).
-      const removed = prev.length - next.length;
-      setFree(next);
-      for (let i = 0; i < Math.min(Math.max(removed, 1), 50); i += 1) send(msg.key("backspace"));
-    }
+    send(msg.text(added, true));
+  }
+  function handleLiveChange(t) {
+    const { removed, added } = diffInput(liveVal.current, t);
+    sendLive(added, removed);
+    setRecent((r) => pushRecent(r, added, removed));
+    // Reset to a fresh sentinel so the next Backspace still has something to eat.
+    const nextSentinel = liveVal.current === SENTINELS[0] ? SENTINELS[1] : SENTINELS[0];
+    liveVal.current = nextSentinel;
+    setLiveText(nextSentinel);
+  }
+  function startLive() {
+    setRecent("");
+    setTyping(true);
+    setTimeout(() => liveRef.current?.focus(), 30);
+  }
+  function stopLive() {
+    liveRef.current?.blur();
+    Keyboard.dismiss();
+    setTyping(false);
   }
 
-  function handleFreeSubmit() {
-    // Hardware/soft return with blurOnSubmit=false lands here: PC gets Enter,
-    // phone buffer stays (no clearing).
-    send(msg.key("enter"));
+  function sendField() {
+    if (!free) return;
+    send(msg.text(free));
+    setFree("");
   }
 
   function Key({ label, active, onPress, onLongPress, wide, accent }) {
@@ -179,27 +245,87 @@ export default function TypeScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <ViewerPanel title="Type" touchpad={false} actions={false}>
+      <ViewerPanel
+        title="Type"
+        touchpad={false}
+        actions={false}
+        overlay={
+          <>
+            {/* Hidden input that carries the phone keyboard. Always mounted so
+                hiding the control area never drops the keyboard. */}
+            <TextInput
+              ref={liveRef}
+              style={styles.hiddenInput}
+              value={liveText}
+              onChangeText={handleLiveChange}
+              onSubmitEditing={() => {
+                sendLive("\n", 0);
+                setRecent((r) => pushRecent(r, "\n", 0));
+              }}
+              onBlur={() => setTyping(false)}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+              spellCheck={false}
+              keyboardType="visible-password"
+              importantForAutofill="no"
+              blurOnSubmit={false}
+              submitBehavior="submit"
+              returnKeyType="default"
+              caretHidden
+              contextMenuHidden
+            />
+            {typing && (
+              <Block style={styles.pill}>
+                <View style={styles.pillDot} />
+                <Text style={styles.pillRecent} numberOfLines={1}>{heldHint || recent.split("").join(" ") || "Mengetik ke PC"}</Text>
+                <Pressable onPress={() => tapModifier("ctrl")} style={[styles.pillKey, held.includes("ctrl") && styles.keyActive]} hitSlop={4}>
+                  <Text style={styles.pillKeyText}>Ctrl</Text>
+                </Pressable>
+                <Pressable onPress={() => tapKey("esc")} style={styles.pillKey} hitSlop={4}>
+                  <Text style={styles.pillKeyText}>Esc</Text>
+                </Pressable>
+                <Pressable onPress={stopLive} style={styles.pillKey} hitSlop={4} accessibilityLabel="Tutup keyboard">
+                  <MaterialCommunityIcons name="chevron-down" size={18} color={COLORS.text} />
+                </Pressable>
+              </Block>
+            )}
+          </>
+        }
+      >
         <View style={styles.freeRow}>
-          <TextInput
-            style={styles.free}
-            value={free}
-            onChangeText={handleFreeChange}
-            onSubmitEditing={handleFreeSubmit}
-            placeholder={heldHint || "Ketik seperti keyboard PC"}
-            placeholderTextColor={heldHint ? COLORS.accent : COLORS.muted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            multiline={false}
-            blurOnSubmit={false}
-            returnKeyType="send"
-            submitBehavior="submit"
-          />
-          {!!free && (
-            <Pressable onPress={() => setFree("")} style={styles.clearBtn} accessibilityLabel="Clear typed text">
-              <Text style={styles.clearText}>✕</Text>
+          {mode === "live" ? (
+            <Pressable onPress={startLive} style={({ pressed }) => [styles.liveBtn, pressed && styles.keyPressed]} accessibilityLabel="Ketik langsung ke PC">
+              <MaterialCommunityIcons name="keyboard-outline" size={18} color="#ffffff" />
+              <Text style={styles.liveBtnText}>{heldHint ? `Ketik langsung · ${heldHint}` : "Ketik langsung"}</Text>
             </Pressable>
+          ) : (
+            <>
+              <TextInput
+                style={styles.free}
+                value={free}
+                onChangeText={setFree}
+                onSubmitEditing={sendField}
+                placeholder="Teks panjang, lalu Kirim"
+                placeholderTextColor={COLORS.muted}
+                autoCapitalize="none"
+                autoCorrect={false}
+                blurOnSubmit={false}
+                returnKeyType="send"
+                submitBehavior="submit"
+              />
+              <Pressable onPress={sendField} style={[styles.sendBtn, !free && styles.sendBtnOff]} accessibilityLabel="Kirim teks ke PC">
+                <Text style={styles.liveBtnText}>Kirim</Text>
+              </Pressable>
+            </>
           )}
+          <Pressable
+            onPress={() => setMode(mode === "live" ? "field" : "live")}
+            style={styles.modeBtn}
+            accessibilityLabel={mode === "live" ? "Ganti ke kolom teks" : "Ganti ke ketik langsung"}
+          >
+            <MaterialCommunityIcons name={mode === "live" ? "form-textbox" : "keyboard-outline"} size={18} color={COLORS.text} />
+          </Pressable>
         </View>
         {rows.map((r, ri) => (
           <View key={ri} style={[styles.row, { height: keyH }]}>
@@ -228,6 +354,15 @@ const styles = StyleSheet.create({
   keyTextActive: { color: COLORS.accent },
   free: { flex: 1, height: FIELD_H, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 0 },
   freeRow: { flexDirection: "row", gap: 6, alignItems: "center", height: FIELD_H },
-  clearBtn: { backgroundColor: COLORS.chip, borderRadius: 10, width: FIELD_H, height: FIELD_H, alignItems: "center", justifyContent: "center" },
-  clearText: { color: COLORS.muted, fontWeight: "800", fontSize: 14 },
+  liveBtn: { flex: 1, height: FIELD_H, borderRadius: 10, backgroundColor: "#5e5ce6", flexDirection: "row", gap: 8, alignItems: "center", justifyContent: "center" },
+  liveBtnText: { color: "#ffffff", fontSize: 13, fontWeight: "700" },
+  sendBtn: { height: FIELD_H, paddingHorizontal: 14, borderRadius: 10, backgroundColor: "#5e5ce6", alignItems: "center", justifyContent: "center" },
+  sendBtnOff: { opacity: 0.5 },
+  modeBtn: { width: FIELD_H, height: FIELD_H, borderRadius: 10, backgroundColor: COLORS.chip, alignItems: "center", justifyContent: "center" },
+  hiddenInput: { position: "absolute", left: 0, bottom: 0, width: 2, height: 2, opacity: 0, color: "transparent" },
+  pill: { position: "absolute", right: 8, bottom: 8, maxWidth: "92%", flexDirection: "row", alignItems: "center", gap: 4, paddingLeft: 10, paddingRight: 4, paddingVertical: 4, borderRadius: 18, backgroundColor: "rgba(18,18,20,0.92)", borderWidth: 1, borderColor: "rgba(255,255,255,0.14)" },
+  pillDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#34c759" },
+  pillRecent: { color: COLORS.muted, fontSize: 11, maxWidth: 110, marginHorizontal: 4 },
+  pillKey: { minWidth: 40, height: 28, paddingHorizontal: 8, borderRadius: 14, backgroundColor: COLORS.chip, alignItems: "center", justifyContent: "center" },
+  pillKeyText: { color: COLORS.text, fontSize: 12, fontWeight: "700" },
 });

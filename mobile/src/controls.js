@@ -403,6 +403,7 @@ const sel = {
   gameLock: false, // true while GAME owns the crop (Fit/restore transaction)
   fold: false, // Lipat: PAD/TYPE/WIN control area hidden, viewer takes the space
   win: null, // single-window stream: {id, title, exe, mon, x, y, w, h} or null
+  typing: false, // TYPE live typing: keyboard up, viewer chrome hidden
 };
 const selListeners = new Set();
 
@@ -434,6 +435,7 @@ export function useSel() {
     clickBtn: sel.clickBtn,
     fold: sel.fold,
     win: sel.win || null,
+    typing: sel.typing,
     crop: { ...sel.crop },
   });
   useEffect(() => {
