@@ -2,11 +2,17 @@
  * Opt-in H.264 screen stream (beta). JPEG stays the default.
  *
  * Phone -> {t:"video", on:true, fps?, kbps?, width?}
- * Agent -> {t:"videoState", on, codec:"h264", encoder, w, h, mon, reason?}
+ * Agent -> {t:"videoState", on, codec:"h264", encoder, capture, w, h, mon, reason?}
+ *          encoder is the status label, e.g. "ddagrab+h264_nvenc".
  *       -> binary "PV" frames: 16-byte header (videoenc.js) + one Annex-B AU
  *
  * One ffmpeg per phone that asked for video, capturing that phone's current
- * monitor with gdigrab (cursor not drawn: the phone draws its own ring).
+ * monitor with ddagrab (Desktop Duplication) when ffmpeg has it and the
+ * monitor maps to a DXGI output, else gdigrab (cursor not drawn either way:
+ * the phone draws its own ring). gdigrab's per-frame CAPTUREBLT BitBlt makes
+ * the real cursor on the PC flicker, so a ddagrab session that dies before
+ * its first frame (or produces none within DDA_FIRST_FRAME_MS) falls back to
+ * gdigrab with the same encoder.
  * While a phone's video is ACTIVE (first AU produced), screenLoop skips JPEG
  * for it and only sends cursor updates. Anything that goes wrong (ffmpeg
  * missing, no working encoder, repeated crashes) ends with
@@ -17,6 +23,9 @@ import { findFfmpeg } from "./webcam.js";
 import {
   ENCODER_CANDIDATES,
   buildCaptureArgs,
+  chooseCapture,
+  ffmpegHasDdagrab,
+  streamLabel,
   buildProbeArgs,
   buildVideoHeader,
   createFlvDemuxer,
@@ -28,6 +37,25 @@ import {
 } from "./videoenc.js";
 
 const probeCache = new Map(); // `${bin}|${encoder}` -> Promise<boolean>
+const ddaCache = new Map(); // bin -> Promise<boolean>
+
+/** No AU from a ddagrab session this long after spawn -> fall back to gdigrab. */
+export const DDA_FIRST_FRAME_MS = 5000;
+
+/** Does this ffmpeg build have the ddagrab source (ffmpeg >= 6.1, Windows)? Probed once per binary. */
+function probeDdagrab(bin) {
+  if (!ddaCache.has(bin)) {
+    ddaCache.set(
+      bin,
+      new Promise((resolve) => {
+        execFile(bin, ["-hide_banner", "-filters"], { windowsHide: true, timeout: 12000, maxBuffer: 4_000_000 }, (err, stdout) => {
+          resolve(!err && ffmpegHasDdagrab(stdout));
+        });
+      }),
+    );
+  }
+  return ddaCache.get(bin);
+}
 
 function probeEncoder(bin, encoder) {
   const key = `${bin}|${encoder}`;
@@ -55,7 +83,7 @@ async function pickEncoder(bin, skip) {
   return "";
 }
 
-export function createVideoManager({ monitorFor, cursorFor, onAu = () => {}, log = () => {} }) {
+export function createVideoManager({ monitorFor, cursorFor, dxgiOutputs = () => [], onAu = () => {}, onStart = () => {}, log = () => {} }) {
   function sendJson(ws, obj) {
     if (ws.readyState === 1) ws.send(JSON.stringify(obj));
   }
@@ -71,6 +99,7 @@ export function createVideoManager({ monitorFor, cursorFor, onAu = () => {}, log
         active: false,
         starting: false,
         badEnc: new Set(),
+        badCap: new Set(),
         crashes: [],
         waitKey: true,
         seq: 0,
@@ -127,6 +156,7 @@ export function createVideoManager({ monitorFor, cursorFor, onAu = () => {}, log
     const bin = findFfmpeg();
     if (!bin) return fail(ws, "ffmpeg tidak ditemukan di PC");
     const encoder = await pickEncoder(bin, v.badEnc);
+    const ddaSupported = await probeDdagrab(bin);
     if (gen !== v.gen || !desired(ws)) return;
     if (!encoder) {
       const last = v.lastWhy ? ` (${v.lastWhy})` : "";
@@ -134,7 +164,16 @@ export function createVideoManager({ monitorFor, cursorFor, onAu = () => {}, log
     }
     const mon = monitorFor(ws);
     if (!mon || !mon.w || !mon.h) return fail(ws, "monitor tidak ditemukan");
-    const { args, out } = buildCaptureArgs({ encoder, rect: mon, ...v.req });
+    let outputs = [];
+    try {
+      outputs = ddaSupported ? dxgiOutputs() || [] : [];
+    } catch {
+      outputs = [];
+    }
+    const plan = chooseCapture({ supported: ddaSupported, bad: v.badCap, rect: mon, outputs, forced: process.env.PCREMOTE_CAPTURE });
+    const { args, out, capture } = buildCaptureArgs({ encoder, rect: mon, ...v.req, capture: plan.capture, dda: plan.dda });
+    const label = streamLabel(capture, encoder);
+    if (capture !== "ddagrab" && plan.why) log(`video: pakai gdigrab (${plan.why})`);
     let child;
     try {
       child = spawn(bin, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -146,7 +185,23 @@ export function createVideoManager({ monitorFor, cursorFor, onAu = () => {}, log
     v.waitKey = true;
     let produced = 0;
     let stderr = "";
+    let ddaTimedOut = false;
     const startedAt = Date.now();
+    // ddagrab that opens but never delivers a frame (secure desktop, odd
+    // driver): give up on it and let the exit handler restart on gdigrab.
+    const watchdog =
+      capture === "ddagrab"
+        ? setTimeout(() => {
+            if (gen !== v.gen || produced || v.proc !== child) return;
+            ddaTimedOut = true;
+            try {
+              child.kill();
+            } catch {
+              // already gone
+            }
+          }, DDA_FIRST_FRAME_MS)
+        : null;
+    if (watchdog && typeof watchdog.unref === "function") watchdog.unref();
     const { budget, hardCap } = videoBudget(v.req.kbps);
     const demux = createFlvDemuxer((au) => {
       if (gen !== v.gen || ws.readyState !== 1) return;
@@ -154,8 +209,13 @@ export function createVideoManager({ monitorFor, cursorFor, onAu = () => {}, log
       if (!v.active) {
         v.active = true;
         v.starting = false;
-        sendJson(ws, { t: "videoState", on: true, codec: "h264", encoder: encoderLabel(encoder), w: out.w, h: out.h, mon: mon.id });
-        log(`video: ${encoderLabel(encoder)} ${out.w}x${out.h} ${v.req.fps}fps ${v.req.kbps}kbps (monitor ${mon.id})`);
+        sendJson(ws, { t: "videoState", on: true, codec: "h264", encoder: label, capture, w: out.w, h: out.h, mon: mon.id });
+        log(`video: ${label} ${out.w}x${out.h} ${v.req.fps}fps ${v.req.kbps}kbps (monitor ${mon.id})`);
+        try {
+          onStart(ws, { capture, encoder: encoderLabel(encoder), label, w: out.w, h: out.h, mon: mon.id });
+        } catch {
+          // status only
+        }
       }
       const ok = shouldSendAu(v, { key: au.key, buffered: ws.bufferedAmount, budget, hardCap });
       if (!ok) {
@@ -197,11 +257,23 @@ export function createVideoManager({ monitorFor, cursorFor, onAu = () => {}, log
       stderr += `\n${err?.message || err}`;
     });
     child.once("exit", (code) => {
+      if (watchdog) clearTimeout(watchdog);
       if (gen !== v.gen) return; // replaced or stopped on purpose
       v.proc = null;
       v.sig = "";
       if (!desired(ws)) return deactivate(ws);
-      const why = ffmpegReason(stderr) || `ffmpeg keluar (${code})`;
+      const why = (ddaTimedOut ? `tidak ada frame dalam ${DDA_FIRST_FRAME_MS / 1000} detik` : "") || ffmpegReason(stderr) || `ffmpeg keluar (${code})`;
+      if (!produced && capture === "ddagrab") {
+        // Capture problem, not the encoder: same encoder on gdigrab.
+        v.badCap.add("ddagrab");
+        log(`video: ddagrab gagal (${why}), pindah ke gdigrab`);
+        if (v.active) {
+          v.active = false;
+          sendJson(ws, { t: "videoState", on: false, codec: "h264", restarting: true });
+        }
+        start(ws).catch((err) => fail(ws, String(err?.message || err)));
+        return;
+      }
       if (!produced) {
         // Never got a frame out of this encoder: try the next one.
         v.badEnc.add(encoder);
@@ -260,6 +332,7 @@ export function createVideoManager({ monitorFor, cursorFor, onAu = () => {}, log
       v.want = true;
       v.req = videoRequest(msg);
       v.badEnc = new Set();
+      v.badCap = new Set();
       v.crashes = [];
       v.lastWhy = "";
       if (!ws.wantsScreen || ws.wantsCam) {
