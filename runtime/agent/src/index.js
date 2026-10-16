@@ -26,6 +26,7 @@ import {
   setClipboard,
   tapAbsOnMonitor,
   typeText,
+  typeKeys,
   lastInjectTime,
 } from "./input.js";
 import { QUALITY, captureMonitor, cursorOnMonitor, cursorPos as monCursorPos, cursorShape, encodeProfile, frameFingerprint, listDxgiOutputs, listMonitors } from "./monitors.js";
@@ -389,7 +390,9 @@ async function handleCommand(ws, msg) {
       await keyCombo(Array.isArray(msg.keys) ? msg.keys : [], { hold: Boolean(msg.hold), release: Boolean(msg.release) });
       break;
     case "text":
-      typeText(msg.s);
+      // k = real key presses (games/hotkeys see them); else Unicode packets.
+      if (msg.k) typeKeys(msg.s);
+      else typeText(msg.s);
       break;
     case "media":
       media(msg.a);
