@@ -21,6 +21,7 @@ import ViewerPanel, { Block } from "../viewer";
 import { setSel } from "../controls";
 import { SENTINELS, chordKey, diffInput, pushRecent } from "../typediff";
 import { rowHeight } from "../tablayout";
+import { registerSetting, settingChanged } from "../settingsync";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
 
@@ -30,9 +31,28 @@ const FIELD_H = 36;
 let lastPage = "A";
 const STORE_TYPE = "pcremote.type"; // { mode: "live" | "field", hold: bool }
 const pref = { mode: "live", hold: true, loaded: false };
-function savePref() {
+const prefListeners = new Set();
+function storePref() {
   SecureStore.setItemAsync(STORE_TYPE, JSON.stringify({ mode: pref.mode, hold: pref.hold })).catch(() => {});
 }
+function savePref() {
+  storePref();
+  settingChanged("type", { mode: pref.mode, hold: pref.hold });
+}
+registerSetting("type", {
+  read: async () => {
+    const raw = await SecureStore.getItemAsync(STORE_TYPE);
+    return raw ? JSON.parse(raw) : null;
+  },
+  apply: (v) => {
+    if (!v) return;
+    if (v.mode === "live" || v.mode === "field") pref.mode = v.mode;
+    if (typeof v.hold === "boolean") pref.hold = v.hold;
+    pref.loaded = true;
+    storePref();
+    for (const l of [...prefListeners]) l();
+  },
+});
 
 export default function TypeScreen() {
   const [held, setHeld] = useState([]);
@@ -73,6 +93,15 @@ export default function TypeScreen() {
       .catch(() => {
         pref.loaded = true;
       });
+  }, []);
+  // Settings restored from the PC (settingsync) refresh the toggles.
+  useEffect(() => {
+    const onPref = () => {
+      setModeState(pref.mode);
+      setHoldModeState(pref.hold);
+    };
+    prefListeners.add(onPref);
+    return () => prefListeners.delete(onPref);
   }, []);
   // Live typing owns the viewer chrome while the keyboard is up.
   useEffect(() => {

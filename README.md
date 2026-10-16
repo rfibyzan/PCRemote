@@ -101,7 +101,18 @@ HP yang terhubung terlihat di dashboard (**HP terhubung**), dengan tombol **Putu
 | **PAD** | Layar PC di HP + mouse. Mode sentuh **Click / Look / Bar**, preset kualitas Low / Mid / High |
 | **TYPE** | Keyboard: ketik teks atau **Ketik langsung** (tombol asli, kombinasi Ctrl/Alt/Shift/Win) |
 | **GAME** | Gamepad virtual di atas layar PC (butuh ViGEmBus) |
-| **WIN** | Kelola jendela: tombol **Jendela** membuka bar thumbnail (tap = fokus, tahan = Stream / Minimize / Maksimalkan / Tutup) dan **+ Aplikasi** untuk membuka aplikasi PC |
+| **WIN** | Kelola jendela: tombol **Jendela** membuka bar thumbnail (tap = fokus, tahan = Stream / Minimize / Maksimalkan / Tutup) dan **+ Aplikasi** untuk membuka aplikasi PC. Seksi **Pintasan** berisi tombol shortcut buatan sendiri |
+
+**Pintasan sendiri (WIN › Pintasan).** Tekan **+ Tambah**, beri nama (mis. *Listary*), nyalakan
+**Ctrl / Shift / Alt / Win** yang dibutuhkan, pilih satu tombol utama (huruf, angka, simbol, F1–F12, Enter, panah, …),
+coba dengan **Tes kirim**, lalu **Simpan**. Sesudah itu cukup tap tombolnya, mis. *Listary* = `Ctrl+Shift+Alt+/`.
+Tahan tombol pintasan untuk **Edit / Geser kiri / Geser kanan / Hapus**.
+
+**Pengaturan disimpan juga di PC.** Agent versi baru menyimpan salinan pengaturan HP di
+`%APPDATA%\PCRemote\settings.json`: pintasan, layout gamepad, kualitas stream, mode video (H.264/JPEG),
+pengaturan TYPE, scrollbar, serta sematan & riwayat aplikasi. Setelah aplikasi dihapus/diinstal ulang,
+cukup pairing lagi dan semuanya kembali otomatis. Yang paling baru diubah yang dipakai.
+Kode kunci, daftar PC, dan ID HP tetap hanya di HP.
 
 Preset kualitas: Low 2 Mbps/30 fps/720p, Mid 5 Mbps/30 fps/1080p, High 10 Mbps/60 fps/1080p.
 
@@ -196,6 +207,53 @@ npx expo start --dev-client   # needs a dev build on the phone
 
 Build an APK: `npx eas-cli build --profile preview --platform android`
 (EAS account required). Lint: `npx expo lint`.
+
+### Tes perubahan sebagai developer (tanpa build ulang)
+
+Perubahan yang hanya JavaScript (seperti fitur Pintasan + sinkron pengaturan) **tidak perlu build ulang**
+dev client, karena tidak ada modul native baru. Cukup:
+
+1. PC: `git pull`, tutup PC Remote dari tray, lalu jalankan lagi agent terbaru
+   (`cd runtime\agent && npm install && npm start`, atau `PCRemote.exe` dari folder repo).
+2. HP + PC di Wi-Fi yang sama, lalu di PC:
+   ```bat
+   cd mobile
+   npm install
+   npx expo start --dev-client --lan --clear
+   ```
+3. Buka aplikasi **PC Remote (dev)** di HP → pilih server Metro (atau scan QR-nya).
+   Izinkan port 8081 di Windows Firewall bila HP tidak menemukan server.
+
+Build ulang dev client (`eas build --profile development --platform android`, atau lokal seperti di bawah dengan
+`APP_VARIANT=development`) **hanya** perlu bila ada perubahan native: paket native baru, `app.json`/`app.config.js`
+plugin, atau `mobile/modules/*`.
+
+Catatan: varian dev (`com.hyte70.pcremote.dev`) dan rilis (`com.hyte70.pcremote`) punya penyimpanan sendiri-sendiri,
+tetapi keduanya membaca pengaturan dari agent PC yang sama.
+
+### Build APK rilis penuh di PC (tanpa kuota EAS)
+
+Butuh: Node.js 22, JDK 17, Android SDK (lewat Android Studio, set `ANDROID_HOME`).
+
+```bat
+cd mobile
+npm install
+npx expo prebuild --platform android --clean
+cd android
+gradlew assembleRelease
+```
+
+Hasilnya `mobile\android\app\build\outputs\apk\release\app-release.apk`. Sebelum build, naikkan
+`version` dan `versionCode` di `mobile/app.json` (supaya bisa diinstal menimpa versi lama tanpa menghapus data).
+
+### Merilis ke GitHub
+
+1. Salin `app-release.apk` ke root repo sebagai `PCRemote.apk` (menimpa yang lama).
+2. Commit lewat branch + PR seperti biasa, lalu merge ke `main`.
+3. Buat tag versi: `git tag v1.1.0 && git push origin v1.1.0`.
+4. Workflow **Release** membuat GitHub Release berisi `PCRemote-v1.1.0-windows.zip`
+   (PCRemote.exe + runtime + agent + APK) dan `PCRemote-v1.1.0.apk` terpisah.
+   Bila secret `EXPO_TOKEN` ada dan kuota EAS tersedia, APK EAS dipakai menggantikan `PCRemote.apk`.
 
 ### Pairing
 

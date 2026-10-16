@@ -1,9 +1,9 @@
 /** WIN (layout C): shared viewer + fixed control area: section tabs
- * (Sistem | Edit | Media | Fn | Lainnya) over two rows of buttons. Every
+ * (Sistem | Edit | Media | Fn | Pintasan | Lainnya) over two rows of buttons. Every
  * section fits in those two rows except Lainnya, which scrolls inside the
  * area (the area itself never grows, so the viewer stays the same size). */
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import Text from "../AppText";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
@@ -12,6 +12,9 @@ import ViewerPanel from "../viewer";
 import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
+import ShortcutEditor from "../shortcuteditor";
+import { useShortcuts, saveShortcuts } from "../shortcuts";
+import { comboKeys, comboLabel, moveShortcut, removeShortcut, upsertShortcut, MAX_SHORTCUTS } from "../shortcutmath";
 
 const APPS = [
   { id: "explorer", label: "Files", icon: "folder" },
@@ -32,7 +35,7 @@ const MEDIA = [
   { a: "volup", icon: "volume-up" },
 ];
 const FKEYS = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"];
-const SECTIONS = ["Sistem", "Edit", "Media", "Fn", "Lainnya"];
+const SECTIONS = ["Sistem", "Edit", "Media", "Fn", "Pintasan", "Lainnya"];
 // Last section survives tab switches (WIN stays mounted, but keep it explicit).
 let lastSection = "Sistem";
 const TABS_H = 28;
@@ -56,6 +59,29 @@ export default function WinScreen() {
   const [appsHeld, setAppsHeld] = useState(false);
   const appsHeldRef = useRef(false);
   const fetchClipAt = useRef(0);
+  // Custom shortcuts: tap = send combo, hold = Edit / Geser / Hapus.
+  const shortcuts = useShortcuts();
+  const [editing, setEditing] = useState(null); // null | {} (new) | shortcut
+
+  function saveEdit(draft) {
+    saveShortcuts(upsertShortcut(shortcuts, draft));
+    setEditing(null);
+  }
+  function deleteShortcut(sc) {
+    Alert.alert("Hapus pintasan?", `${sc.name} (${comboLabel(sc)})`, [
+      { text: "Batal", style: "cancel" },
+      { text: "Hapus", style: "destructive", onPress: () => { saveShortcuts(removeShortcut(shortcuts, sc.id)); setEditing(null); } },
+    ]);
+  }
+  function shortcutMenu(sc) {
+    Alert.alert(sc.name, comboLabel(sc), [
+      { text: "Edit", onPress: () => setEditing(sc) },
+      { text: "Geser kiri", onPress: () => saveShortcuts(moveShortcut(shortcuts, sc.id, -1)) },
+      { text: "Geser kanan", onPress: () => saveShortcuts(moveShortcut(shortcuts, sc.id, 1)) },
+      { text: "Hapus", style: "destructive", onPress: () => deleteShortcut(sc) },
+      { text: "Batal", style: "cancel" },
+    ]);
+  }
 
   function releaseApps() {
     if (!appsHeldRef.current) return;
@@ -159,6 +185,30 @@ export default function WinScreen() {
             ))}
           </View>
         )}
+        {section === "Pintasan" && (
+          <ScrollView contentContainerStyle={styles.grid} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+            {shortcuts.map((sc) => (
+              <Pressable
+                key={sc.id}
+                onPress={() => send(msg.combo(comboKeys(sc)))}
+                onLongPress={() => shortcutMenu(sc)}
+                delayLongPress={380}
+                hitSlop={HIT}
+                accessibilityLabel={`${sc.name}, ${comboLabel(sc)}`}
+                style={({ pressed }) => [styles.cell, styles.scCell, pressed && styles.cellPressed]}
+              >
+                <Text style={styles.scName} numberOfLines={1}>{sc.name}</Text>
+                <Text style={styles.scCombo} numberOfLines={1}>{comboLabel(sc)}</Text>
+              </Pressable>
+            ))}
+            {shortcuts.length < MAX_SHORTCUTS ? (
+              <Pressable onPress={() => setEditing({})} hitSlop={HIT} style={({ pressed }) => [styles.cell, styles.scCell, styles.scAdd, pressed && styles.cellPressed]}>
+                <MaterialIcons name="add" size={16} color={COLORS.accent} />
+                <Text style={styles.scAddText}>{shortcuts.length ? "Tambah" : "Tambah pintasan"}</Text>
+              </Pressable>
+            ) : null}
+          </ScrollView>
+        )}
         {section === "Lainnya" && (
           <View style={styles.more}>
             <View style={styles.grid}>
@@ -195,6 +245,13 @@ export default function WinScreen() {
         )}
       </View>
       </ViewerPanel>
+      <ShortcutEditor
+        visible={editing != null}
+        initial={editing}
+        onSave={saveEdit}
+        onDelete={editing?.id ? () => deleteShortcut(editing) : null}
+        onClose={() => setEditing(null)}
+      />
     </SafeAreaView>
   );
 }
@@ -219,6 +276,11 @@ const styles = StyleSheet.create({
   dangerCell: { backgroundColor: "#7f1d1d" },
   cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 10 },
   cellTextActive: { color: COLORS.accent },
+  scCell: { width: "31.5%", alignItems: "flex-start", paddingHorizontal: 8 },
+  scName: { color: COLORS.text, fontWeight: "800", fontSize: 11 },
+  scCombo: { color: COLORS.muted, fontSize: 9 },
+  scAdd: { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.accent, borderStyle: "dashed", alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 4 },
+  scAddText: { color: COLORS.accent, fontWeight: "800", fontSize: 11 },
   row: { flexDirection: "row", gap: 6 },
   input: { flex: 1, height: CELL_H, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 0 },
   goIcon: { minWidth: 40 },

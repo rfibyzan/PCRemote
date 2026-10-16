@@ -15,6 +15,7 @@ import * as SecureStore from "expo-secure-store";
 import { COLORS } from "./components";
 import { STORE_SCROLL, msg } from "./protocol";
 import { send } from "./connection";
+import { registerSetting, settingChanged } from "./settingsync";
 import { FLING_MIN, SPEEDS, clampThumb, flingStep, makeNotchCounter, normScroll, wheelFromSwipe } from "./scrollmath";
 
 // ---- preference store -------------------------------------------------------
@@ -48,7 +49,21 @@ export function setScrollPref(patch) {
   pref = normScroll({ ...pref, ...patch });
   emit();
   SecureStore.setItemAsync(STORE_SCROLL, JSON.stringify(pref)).catch(() => {});
+  settingChanged("scroll", pref);
 }
+
+registerSetting("scroll", {
+  read: async () => {
+    const raw = await SecureStore.getItemAsync(STORE_SCROLL);
+    return raw ? JSON.parse(raw) : null;
+  },
+  apply: (v) => {
+    loaded = true;
+    pref = normScroll(v);
+    emit();
+    SecureStore.setItemAsync(STORE_SCROLL, JSON.stringify(pref)).catch(() => {});
+  },
+});
 
 export function useScrollPref() {
   const [p, setP] = useState(pref);

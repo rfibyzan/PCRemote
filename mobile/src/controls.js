@@ -10,6 +10,7 @@ import { router } from "expo-router";
 import { COLORS } from "./components";
 import { STORE_QUALITY, msg } from "./protocol";
 import { addListener, getStatus, send } from "./connection";
+import { registerSetting, settingChanged } from "./settingsync";
 import { useStreamStats } from "./cursor";
 import { diagnoseStream, lagStep, lighterQuality } from "./streamdiag";
 import { BASE_Q, clampFpsStep, clampQStep, fpsValue, qValue, qualityView } from "./videoproto";
@@ -181,6 +182,11 @@ export function getQuality() {
 }
 
 export function applyQuality(q, qs, fs) {
+  setQualityNow(q, qs, fs);
+  settingChanged("quality", { q: qState.q, qStep: qState.qStep, fpsStep: qState.fpsStep });
+}
+
+function setQualityNow(q, qs, fs) {
   qState.q = BASE_Q[q] != null ? q : "low";
   qState.qStep = clampQStep(qs);
   qState.fpsStep = clampFpsStep(fs);
@@ -200,6 +206,18 @@ export function applyQuality(q, qs, fs) {
   ).catch(() => {});
   emitQ();
 }
+
+registerSetting("quality", {
+  read: async () => {
+    const raw = await SecureStore.getItemAsync(STORE_QUALITY);
+    return raw ? JSON.parse(raw) : null;
+  },
+  apply: (v) => {
+    if (!v || BASE_Q[v.q] == null) return;
+    qState.loaded = true;
+    setQualityNow(v.q, v.qStep, v.fpsStep);
+  },
+});
 
 // Re-assert current quality + link whenever the socket (re)authenticates or
 // the path changes (wifi<->remote). Without this a reconnect silently drops
