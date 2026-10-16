@@ -98,31 +98,62 @@ export function MotionView({ visible, kind = "pop", origin = "center", style, ch
   );
 }
 
-const APress = Animated.createAnimatedComponent(Pressable);
 
-/** Pressable that dips to 96% while held and springs back. Same props as
- * Pressable; style may be a function of { pressed }. */
+// Keys that place a button in its parent; they stay on the outer Pressable.
+// Everything else (background, padding, border, inner layout) is drawn by the
+// inner Animated.View, which is what scales.
+const OUTER_KEYS = new Set([
+  "flex", "flexGrow", "flexShrink", "flexBasis", "alignSelf",
+  "margin", "marginTop", "marginBottom", "marginLeft", "marginRight", "marginHorizontal", "marginVertical", "marginStart", "marginEnd",
+  "position", "top", "bottom", "left", "right", "start", "end", "zIndex",
+  "width", "height", "minWidth", "maxWidth", "minHeight", "maxHeight", "aspectRatio",
+]);
+
+const EMPTY = [{}, {}];
+function splitStyle(style) {
+  if (!style) return EMPTY;
+  const flat = StyleSheet.flatten(style) || {};
+  const outer = {};
+  const inner = {};
+  for (const k in flat) (OUTER_KEYS.has(k) ? outer : inner)[k] = flat[k];
+  return [outer, inner];
+}
+
+/** A Pressable that shrinks a touch while held (Sill-style). An animated
+ * Pressable drops its style on this RN/Reanimated build (buttons lost their
+ * background), so the Pressable stays plain and an inner Animated.View draws
+ * the button and scales. `style` may be a function of { pressed }. */
 export function PressScale({ style, onPressIn, onPressOut, scaleTo = MOTION.pressScale, children, ...rest }) {
   const reduce = useReducedMotion();
   const s = useSharedValue(0);
-  const anim = useAnimatedStyle(() => ({ transform: [{ scale: interpolate(s.value, [0, 1], [1, scaleTo]) }] }));
+  const anim = useAnimatedStyle(() => (s.value === 0 ? IDLE : { transform: [{ scale: 1 - (1 - scaleTo) * s.value }] }));
+  const fnStyle = typeof style === "function";
+  // Pressable already tracks `pressed`; split the resting style once per
+  // render (layout keys never depend on pressed) and only re-split while held.
+  const [outer, innerRest] = splitStyle(fnStyle ? style({ pressed: false }) : style);
   return (
-    <APress
+    <Pressable
       {...rest}
       onPressIn={(e) => {
         if (!reduce) s.value = withTiming(1, { duration: 80 });
         onPressIn?.(e);
       }}
       onPressOut={(e) => {
-        s.value = withSpring(0, { duration: 260, dampingRatio: 0.55 });
+        if (!reduce) s.value = withSpring(0, { duration: 260, dampingRatio: 0.55 });
         onPressOut?.(e);
       }}
-      style={(st) => [typeof style === "function" ? style(st) : style, anim]}
+      style={outer}
     >
-      {children}
-    </APress>
+      {({ pressed }) => (
+        <Animated.View style={[styles.fill, pressed && fnStyle ? splitStyle(style({ pressed }))[1] : innerRest, anim]}>
+          {typeof children === "function" ? children({ pressed }) : children}
+        </Animated.View>
+      )}
+    </Pressable>
   );
 }
+
+const IDLE = { transform: [{ scale: 1 }] };
 
 /** Spring a numeric value (e.g. a sliding indicator's x). */
 export function useSpringValue(target) {
@@ -213,3 +244,8 @@ export function Pulse({ on, min = 0.55, grow = 1, ms = MOTION.pulseMs, style, ch
   }));
   return <Animated.View style={[style, anim]}>{children}</Animated.View>;
 }
+
+const styles = StyleSheet.create({
+  // The inner face fills whatever box the outer Pressable got from its parent.
+  fill: { flexGrow: 1, alignSelf: "stretch" },
+});

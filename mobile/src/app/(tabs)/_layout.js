@@ -33,7 +33,8 @@ export default function TabsLayout() {
         headerShown: false,
         // Short cross-fade between tabs (Sill-style); reduced motion = none.
         animation: "fade",
-        transitionSpec: { animation: "timing", config: { duration: 150 } },
+        transitionSpec: { animation: "timing", config: { duration: 120 } },
+        sceneStyle: { backgroundColor: "#0b0b0d" },
         tabBarStyle: { backgroundColor: "#141416", borderTopColor: "#2c2c30" },
         tabBarLabelStyle: familyFor("600") ? { fontFamily: familyFor("600") } : undefined,
         tabBarActiveTintColor: "#a5a1ff",

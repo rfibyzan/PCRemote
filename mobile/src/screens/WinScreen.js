@@ -12,7 +12,7 @@ import ViewerPanel from "../viewer";
 import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
-import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanimated";
+import Animated, { FadeIn, FadeOut, LayoutAnimationConfig, LinearTransition } from "react-native-reanimated";
 import ShortcutEditor from "../shortcuteditor";
 import { PressScale, SlideTabs, popIn } from "../motion";
 import { useShortcuts, saveShortcuts } from "../shortcuts";
@@ -141,6 +141,7 @@ export default function WinScreen() {
   }
 
   return (
+    <LayoutAnimationConfig skipEntering>
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
       <ViewerPanel title="Win" touchpad={false} actions={false} onTap={releaseApps}>
       <SlideTabs
@@ -263,6 +264,7 @@ export default function WinScreen() {
         onClose={() => setEditing(null)}
       />
     </SafeAreaView>
+    </LayoutAnimationConfig>
   );
 }
 
