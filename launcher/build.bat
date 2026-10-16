@@ -12,7 +12,7 @@ if not exist "%CSC%" (echo csc.exe not found. & pause & exit /b 1)
 NetstatTest.exe || goto fail
 del NetstatTest.exe
 
-"%CSC%" /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs || goto fail
+"%CSC%" /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs || goto fail
 echo Built ..\PCRemote.exe
 pause
 exit /b 0
