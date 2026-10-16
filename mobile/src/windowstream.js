@@ -88,7 +88,7 @@ export function useWindowStream({ win, current, onMonitor, fitTo, reset }) {
     setSel({ win: null });
     reset();
   }
-  return { list, refresh, pickWindow, exit };
+  return { list, refresh, pickWindow, exit, fitTo: (r) => ref.current.fitTo(r) };
 }
 
 function monLabel(mon) {

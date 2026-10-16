@@ -62,6 +62,9 @@ export const DEFAULT_SETTINGS = {
   stickMode: "fixed", // "fixed" | "floating"
   deadzone: 0.12,
   showStream: true,
+  // Menu group (exit / settings / layout): centre as a fraction of the
+  // overlay, movable in layout edit; collapsed = a single "⋯" button.
+  chrome: { x: 0.5, y: 0.93, collapsed: false },
 };
 
 export const LIMITS = {
@@ -83,7 +86,7 @@ export function defaultLayout() {
     const d = DEFAULT_CONTROLS[id];
     controls[id] = { x: d.x, y: d.y, size: 1, opacity: null, visible: d.visible !== false };
   }
-  return { version: LAYOUT_VERSION, ...DEFAULT_SETTINGS, controls };
+  return { version: LAYOUT_VERSION, ...DEFAULT_SETTINGS, chrome: { ...DEFAULT_SETTINGS.chrome }, controls };
 }
 
 /** Shape + clamp anything loaded from disk; unknown keys are dropped. */
@@ -98,6 +101,7 @@ export function cleanLayout(raw) {
     stickMode: raw.stickMode === "floating" ? "floating" : "fixed",
     deadzone: clamp(raw.deadzone ?? base.deadzone, ...LIMITS.deadzone),
     showStream: raw.showStream === undefined ? base.showStream : Boolean(raw.showStream),
+    chrome: cleanChrome(raw.chrome),
     controls: {},
   };
   for (const id of CONTROL_IDS) {
@@ -112,6 +116,30 @@ export function cleanLayout(raw) {
     };
   }
   return out;
+}
+
+function cleanChrome(c) {
+  const d = DEFAULT_SETTINGS.chrome;
+  if (!c || typeof c !== "object") return { ...d };
+  return { x: clamp(c.x ?? d.x, 0, 1), y: clamp(c.y ?? d.y, 0, 1), collapsed: Boolean(c.collapsed) };
+}
+
+/**
+ * Pixel box (left/top) for the menu group of size w x h centred on the
+ * saved fraction, kept fully on screen with a small margin.
+ */
+export function chromeBox(chrome, W, H, w, h, margin = 4) {
+  const c = chrome || DEFAULT_SETTINGS.chrome;
+  const left = clamp(c.x * W - w / 2, margin, Math.max(margin, W - w - margin));
+  const top = clamp(c.y * H - h / 2, margin, Math.max(margin, H - h - margin));
+  return { left, top };
+}
+
+/** Move the menu group so its centre is at overlay pixel (px, py). */
+export function moveChrome(layout, px, py, W, H) {
+  const x = clamp(px / Math.max(1, W), 0, 1);
+  const y = clamp(py / Math.max(1, H), 0, 1);
+  return { ...layout, chrome: { ...cleanChrome(layout.chrome), x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000 } };
 }
 
 /** Effective opacity for a control (own value, else global). */
