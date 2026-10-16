@@ -37,6 +37,7 @@ import { superviseTunnel } from "./tunnel.js";
 import { listWindows, windowAction } from "./windows.js";
 import { WINDOW_ACTIONS } from "./windowmath.js";
 import { windowThumbs } from "./thumbs.js";
+import { listApps, openApp } from "./apps.js";
 import { probeTunnel, wokeFromSleep } from "./keepalive.js";
 import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam.js";
 import { createGamepadSession } from "./gamepad.js";
@@ -421,6 +422,17 @@ async function handleCommand(ws, msg) {
         }
       }
       break;
+    case "apps":
+      // App launcher: Start-menu apps with icons (cached ~10 min, refresh=1 rescans).
+      listApps(!!msg.refresh)
+        .then((list) => send(ws, { t: "apps", list }))
+        .catch(() => send(ws, { t: "apps", list: [], error: true }));
+      break;
+    case "appOpen": {
+      const ok = openApp(String(msg.id || ""), !!msg.admin);
+      send(ws, { t: "appOpen", id: msg.id, ok });
+      break;
+    }
     case "winAct": {
       const a = String(msg.a || "");
       if (!WINDOW_ACTIONS.has(a)) break;
