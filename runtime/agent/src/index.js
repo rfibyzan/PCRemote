@@ -36,6 +36,7 @@ import { hideConsole, startTray, claimSingleInstance } from "./tray.js";
 import { superviseTunnel } from "./tunnel.js";
 import { listWindows, windowAction } from "./windows.js";
 import { WINDOW_ACTIONS } from "./windowmath.js";
+import { windowThumbs } from "./thumbs.js";
 import { probeTunnel, wokeFromSleep } from "./keepalive.js";
 import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam.js";
 import { createGamepadSession } from "./gamepad.js";
@@ -405,7 +406,20 @@ async function handleCommand(ws, msg) {
       break;
     case "windows":
       // Single-window stream: where every app window is, normalized to its monitor.
-      send(ws, { t: "windows", list: listWindows() });
+      {
+        const list = listWindows();
+        send(ws, { t: "windows", list });
+        // Window bar: small thumbnails follow the list (cached ~2 s per window).
+        if (msg.thumbs && !ws.thumbBusy) {
+          ws.thumbBusy = true;
+          windowThumbs(list)
+            .then((thumbs) => send(ws, { t: "winThumbs", thumbs }))
+            .catch(() => {})
+            .finally(() => {
+              ws.thumbBusy = false;
+            });
+        }
+      }
       break;
     case "winAct": {
       const a = String(msg.a || "");

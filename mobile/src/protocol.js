@@ -182,7 +182,8 @@ export const msg = {
   lock: () => ({ t: "lock" }),
   open: (target) => ({ t: "open", target }),
   monitor: (id) => ({ t: "monitor", id }),
-  windows: () => ({ t: "windows" }),
+  // thumbs=true: agent also sends {t:"winThumbs"} (window bar).
+  windows: (thumbs = false) => (thumbs ? { t: "windows", thumbs: 1 } : { t: "windows" }),
   winAct: (id, a) => ({ t: "winAct", id, a }),
   quality: (q) => ({ t: "quality", ...q }),
   crop: (x, y, w, h) => ({ t: "crop", x, y, w, h }),

@@ -141,12 +141,15 @@ function forceForeground(h) {
   if (tid && tid !== cur) AttachThreadInputW(cur, tid, 0);
 }
 
-/** focus | min | close one window by id. Returns false when it is gone. */
+/** focus | min | max | close one window by id. Returns false when it is gone. */
 export function windowAction(id, action) {
   const h = Number(id) || 0;
   if (!h || !IsWindow(h)) return false;
   if (action === "focus") forceForeground(h);
   else if (action === "min") ShowWindowW(h, 6); // SW_MINIMIZE
-  else if (action === "close") PostMessageW(h, WM_CLOSE, 0, 0);
+  else if (action === "max") {
+    ShowWindowW(h, 3); // SW_MAXIMIZE
+    forceForeground(h);
+  } else if (action === "close") PostMessageW(h, WM_CLOSE, 0, 0);
   return true;
 }

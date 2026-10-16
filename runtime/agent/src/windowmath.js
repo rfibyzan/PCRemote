@@ -49,4 +49,4 @@ export function exeName(path) {
   return base.replace(/\.exe$/i, "");
 }
 
-export const WINDOW_ACTIONS = new Set(["focus", "min", "close"]);
+export const WINDOW_ACTIONS = new Set(["focus", "min", "max", "close"]);

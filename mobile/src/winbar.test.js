@@ -1,0 +1,10 @@
+import { pruneThumbs, tileName } from "./winbarmath.js";
+let fail = 0;
+const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { fail++; console.log("FAIL", m, JSON.stringify(a)); } else console.log("PASS", m); };
+eq(tileName({ exe: "chrome.exe", title: "YouTube" }), "Chrome", "exe name");
+eq(tileName({ exe: "", title: "Roblox" }), "Roblox", "title fallback");
+eq(tileName({}), "Jendela", "empty");
+eq(pruneThumbs({ 1: "a", 2: "b" }, [{ id: 2 }]), { 2: "b" }, "prune closed");
+eq(pruneThumbs({}, null), {}, "prune empty");
+if (fail) process.exit(1);
+console.log("winbar tests passed");
