@@ -4,10 +4,10 @@
  * GameScreen.
  */
 import React from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { PanResponder, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import Text from "../AppText";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { CONTROL_DEFS, CONTROL_IDS, LIMITS, controlOpacity } from "./layout";
+import { CONTROL_DEFS, CONTROL_IDS, LIMITS, chromeBox, controlOpacity } from "./layout";
 
 // Same neutral grey + indigo theme as PAD/TYPE/WIN (2026-10-15).
 const ACCENT = "#5e5ce6"; // selected fill
@@ -45,34 +45,138 @@ function Chip({ label, active, onPress, icon, danger }) {
   );
 }
 
-/** Small floating pill at the bottom centre while playing. */
-export function GameChrome({ padOn, onExit, onSettings, onEdit }) {
-  return (
-    <View style={styles.chromeWrap} pointerEvents="box-none">
-      <View style={styles.chrome}>
-        <Pressable onPress={onExit} style={styles.chromeBtn} hitSlop={6}>
-          <MaterialCommunityIcons name="close" size={18} color={TEXT} />
-        </Pressable>
-        <Pressable onPress={onSettings} style={styles.chromeBtn} hitSlop={6}>
-          <MaterialCommunityIcons name="cog-outline" size={18} color={TEXT} />
-        </Pressable>
-        <Pressable onPress={onEdit} style={styles.chromeBtn} hitSlop={6}>
-          <MaterialCommunityIcons name="gamepad-square-outline" size={18} color={TEXT} />
-        </Pressable>
-        <View style={[styles.padDot, { backgroundColor: padOn ? "#34c759" : "#6e6e73" }]} />
+const AUTO_COLLAPSE_MS = 4000;
+
+/**
+ * Floating menu group (exit / settings / layout) while playing. Its centre
+ * comes from layout.chrome (movable in layout edit, default bottom centre).
+ * Collapsed: a single "⋯" button that opens the group and folds back after
+ * a few seconds without a tap.
+ */
+export function GameChrome({ chrome, W, H, padOn, onExit, onSettings, onEdit, editMode = false, onMove }) {
+  const [size, setSize] = React.useState({ w: 0, h: 0 });
+  const [open, setOpen] = React.useState(false);
+  const timer = React.useRef(null);
+  const collapsed = Boolean(chrome?.collapsed);
+  const showGroup = !collapsed || open;
+
+  const clearTimer = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+  };
+  const arm = () => {
+    clearTimer();
+    timer.current = setTimeout(() => setOpen(false), AUTO_COLLAPSE_MS);
+  };
+  React.useEffect(() => clearTimer, []);
+  React.useEffect(() => {
+    if (!collapsed || editMode) setOpen(false);
+  }, [collapsed, editMode]);
+
+  // Any button press keeps a collapsed group open a little longer, then the
+  // action runs (exit / settings / edit fold it right away).
+  const act = (fn) => () => {
+    clearTimer();
+    setOpen(false);
+    fn();
+  };
+
+  // Layout edit: the whole group is a drag handle.
+  const drag = React.useRef({ dx: 0, dy: 0 });
+  const live = React.useRef({ size, onMove });
+  live.current = { size, onMove };
+  const responder = React.useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: (e) => {
+          const { locationX, locationY } = e.nativeEvent;
+          const { w, h } = live.current.size;
+          drag.current = { dx: locationX - w / 2, dy: locationY - h / 2 };
+        },
+        onPanResponderMove: (e) => {
+          const { pageX, pageY } = e.nativeEvent;
+          live.current.onMove?.(pageX - drag.current.dx, pageY - drag.current.dy);
+        },
+      }),
+    []
+  );
+
+  const box = size.w ? chromeBox(chrome, W, H, size.w, size.h) : null;
+  const pos = box ? { left: box.left, top: box.top } : { left: -9999, top: -9999 };
+  const onLayout = (e) => {
+    const { width, height } = e.nativeEvent.layout;
+    if (width !== size.w || height !== size.h) setSize({ w: width, h: height });
+  };
+
+  if (editMode) {
+    return (
+      <View style={[styles.chromeAbs, pos]} onLayout={onLayout} {...responder.panHandlers}>
+        <View style={[styles.chrome, styles.chromeEdit]} pointerEvents="none">
+          <MaterialCommunityIcons name="drag" size={16} color={ACCENT_TEXT} style={styles.chromeGrip} />
+          {collapsed ? (
+            <View style={styles.chromeBtn}>
+              <MaterialCommunityIcons name="dots-horizontal" size={20} color={TEXT} />
+            </View>
+          ) : (
+            <>
+              <View style={styles.chromeBtn}><MaterialCommunityIcons name="close" size={18} color={TEXT} /></View>
+              <View style={styles.chromeBtn}><MaterialCommunityIcons name="cog-outline" size={18} color={TEXT} /></View>
+              <View style={styles.chromeBtn}><MaterialCommunityIcons name="gamepad-square-outline" size={18} color={TEXT} /></View>
+            </>
+          )}
+        </View>
       </View>
+    );
+  }
+
+  return (
+    <View style={[styles.chromeAbs, pos]} onLayout={onLayout} pointerEvents="box-none">
+      {showGroup ? (
+        <View style={styles.chrome}>
+          <Pressable onPress={act(onExit)} style={styles.chromeBtn} hitSlop={6}>
+            <MaterialCommunityIcons name="close" size={18} color={TEXT} />
+          </Pressable>
+          <Pressable onPress={act(onSettings)} style={styles.chromeBtn} hitSlop={6}>
+            <MaterialCommunityIcons name="cog-outline" size={18} color={TEXT} />
+          </Pressable>
+          <Pressable onPress={act(onEdit)} style={styles.chromeBtn} hitSlop={6}>
+            <MaterialCommunityIcons name="gamepad-square-outline" size={18} color={TEXT} />
+          </Pressable>
+          <View style={[styles.padDot, { backgroundColor: padOn ? "#34c759" : "#6e6e73" }]} />
+          {collapsed && (
+            <Pressable onPress={() => { clearTimer(); setOpen(false); }} style={styles.chromeBtn} hitSlop={6}>
+              <MaterialCommunityIcons name="chevron-left" size={18} color={MUTED} />
+            </Pressable>
+          )}
+        </View>
+      ) : (
+        <Pressable
+          onPress={() => {
+            setOpen(true);
+            arm();
+          }}
+          style={[styles.chrome, styles.chromeDot]}
+          hitSlop={8}
+        >
+          <MaterialCommunityIcons name="dots-horizontal" size={20} color={TEXT} />
+          <View style={[styles.padDotSm, { backgroundColor: padOn ? "#34c759" : "#6e6e73" }]} />
+        </Pressable>
+      )}
     </View>
   );
 }
 
 /** Toolbar shown in layout-edit mode. */
-export function EditToolbar({ layout, selected, position = "center", onResize, onOpacity, onOpacityGlobal, onHide, onReset, onCancel, onSave }) {
+export function EditToolbar({ layout, selected, position = "center", onToggleChrome, onResize, onOpacity, onOpacityGlobal, onHide, onReset, onCancel, onSave }) {
   const def = selected ? CONTROL_DEFS[selected] : null;
   const c = selected ? layout.controls[selected] : null;
   return (
     <View style={[styles.editWrap, styles[`edit_${position}`]]} pointerEvents="box-none">
       <View style={styles.editBox}>
-        <Text style={styles.editTitle}>{def ? def.label : "Geser tombol untuk memindahkan · ketuk untuk memilih"}</Text>
+        <Text style={styles.editTitle}>{def ? def.label : "Geser tombol atau menu untuk memindahkan · ketuk untuk memilih"}</Text>
         {def && (
           <View style={styles.row}>
             <Stepper label="Ukuran" value={c.size} onMinus={() => onResize(-0.1)} onPlus={() => onResize(0.1)} small />
@@ -82,6 +186,9 @@ export function EditToolbar({ layout, selected, position = "center", onResize, o
           </View>
         )}
         <View style={styles.row}>
+          {!!onToggleChrome && (
+            <Chip icon="dots-horizontal" label="Ciutkan menu" active={Boolean(layout.chrome?.collapsed)} onPress={onToggleChrome} />
+          )}
           <Chip icon="restore" label="Reset" onPress={onReset} danger />
           <Chip label="Batal" onPress={onCancel} />
           <Chip icon="check" label="Simpan" active onPress={onSave} />
@@ -119,6 +226,12 @@ export function SettingsSheet({ layout, onChange, onClose, onReset, streamContro
             <View style={styles.row}>
               <Chip icon="monitor" label="Tampilkan layar PC" active={layout.showStream} onPress={() => set({ showStream: !layout.showStream })} />
               <Chip icon="vibrate" label="Getar" active={layout.haptics} onPress={() => set({ haptics: !layout.haptics })} />
+              <Chip
+                icon="dots-horizontal"
+                label="Ciutkan menu"
+                active={Boolean(layout.chrome?.collapsed)}
+                onPress={() => set({ chrome: { ...layout.chrome, collapsed: !layout.chrome?.collapsed } })}
+              />
             </View>
           </View>
 
@@ -181,7 +294,11 @@ const styles = StyleSheet.create({
   stepBtnSm: { width: 30, height: 28 },
   stepBtnText: { color: TEXT, fontSize: 17, fontWeight: "500", marginTop: -2 },
   stepValue: { color: ACCENT_TEXT, fontSize: 12, fontWeight: "700", minWidth: 40, textAlign: "center" },
-  chromeWrap: { position: "absolute", left: 0, right: 0, bottom: 6, alignItems: "center" },
+  chromeAbs: { position: "absolute" },
+  chromeEdit: { borderWidth: 2, borderColor: ACCENT, borderStyle: "dashed" },
+  chromeGrip: { marginLeft: 6, marginRight: 2 },
+  chromeDot: { width: 44, height: 36, justifyContent: "center", paddingHorizontal: 0 },
+  padDotSm: { position: "absolute", right: 6, top: 6, width: 6, height: 6, borderRadius: 3 },
   chrome: {
     flexDirection: "row",
     alignItems: "center",
