@@ -240,7 +240,7 @@ cd mobile
 npm install
 npx expo prebuild --platform android --clean
 cd android
-gradlew assembleRelease
+.\gradlew assembleRelease   # PowerShell; di cmd cukup: gradlew assembleRelease
 ```
 
 Hasilnya `mobile\android\app\build\outputs\apk\release\app-release.apk`. Sebelum build, naikkan
