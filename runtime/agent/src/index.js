@@ -40,6 +40,7 @@ import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam
 import { createGamepadSession } from "./gamepad.js";
 import { createVideoManager } from "./video.js";
 import { createDeviceStore, isLocalRequest, linkOf, sanitizeDevice } from "./devices.js";
+import { QUIT_PATH, quitAllowed, scheduleQuit } from "./quit.js";
 import { creditByline, PROJECT_URL } from "./credits.js";
 import { createAutostartCache, helperBuildable, setAutostart } from "./autostart.js";
 
@@ -1012,6 +1013,9 @@ function printBanner() {
   );
 }
 
+// Filled in by main() once the tunnel/webcam exist; run by POST /api/quit.
+const quitHooks = [];
+
 function applyLock(lock) {
   state.code = lock.code;
   state.key = keyFromCode(state.code);
@@ -1063,6 +1067,15 @@ async function main() {
     if (req.method === "POST" && !admin) {
       res.writeHead(403);
       res.end();
+      return;
+    }
+    // PCRemote.exe asks an old agent to exit before it starts a new one, and
+    // on "Close PC Remote", instead of killing whatever owns the port.
+    if (url === QUIT_PATH && quitAllowed(req)) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{\"ok\":true,\"quit\":true}");
+      console.log("Quit requested from this PC; shutting down.");
+      scheduleQuit({ stop: quitHooks });
       return;
     }
     if (admin && url === "/revoke") {
@@ -1268,6 +1281,8 @@ async function main() {
     state.lastAnnounceSig = "";
     publishAnnounce();
   });
+
+  quitHooks.push(() => tunnel.stop(), () => stopWebcam());
 
   let lastBeat = Date.now();
   let tunnelFails = 0;
