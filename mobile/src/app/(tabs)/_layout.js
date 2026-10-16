@@ -43,7 +43,7 @@ export default function TabsLayout() {
       />
       <Tabs.Screen
         name="Type"
-        options={{ title: "TYPE", tabBarIcon: ({ color }) => <TypeIcon color={color} /> }}
+        options={{ title: "TYPE", tabBarHideOnKeyboard: true, tabBarIcon: ({ color }) => <TypeIcon color={color} /> }}
       />
       <Tabs.Screen
         name="Game"
