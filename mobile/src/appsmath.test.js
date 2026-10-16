@@ -1,0 +1,15 @@
+import { filterApps, pushRecent, quickRow, togglePin } from "./appsmath.js";
+let fail = 0;
+const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { fail++; console.log("FAIL", m, JSON.stringify(a)); } else console.log("PASS", m); };
+const L = [{ id: "c", name: "Google Chrome" }, { id: "r", name: "Roblox Player" }, { id: "s", name: "Roblox Studio" }, { id: "e", name: "Microsoft Edge" }, { id: "p", name: "Spotify" }];
+eq(filterApps(L, "ro").map((a) => a.id), ["r", "s", "c", "e"], "prefix first, then contains");
+eq(filterApps(L, "chr").map((a) => a.id), ["c"], "word start");
+eq(filterApps(L, "ot").map((a) => a.id), ["p"], "contains");
+eq(filterApps(L, "  ").length, 5, "empty query = all");
+eq(pushRecent(["a", "b", "c"], "b"), ["b", "a", "c"], "recent moves to front");
+eq(pushRecent(["a", "b"], "z", 2), ["z", "a"], "recent capped");
+eq(togglePin(["a"], "b"), ["a", "b"], "pin");
+eq(togglePin(["a", "b"], "a"), ["b"], "unpin");
+eq(quickRow(L, ["r", "gone", "c"], ["p", "r"]).map((a) => a.id), ["p", "r", "c"], "pinned first, missing dropped");
+if (fail) process.exit(1);
+console.log("apps tests passed");
