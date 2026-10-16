@@ -19,7 +19,7 @@ PCRemote/
 ## Download a release
 
 The easiest way: grab `PCRemote-vX.Y.Z-windows.zip` from
-[GitHub Releases](https://github.com/rfibyzan/PCRemote/releases/latest), unzip, run `PCRemote.exe`.
+[GitHub Releases](https://github.com/rfibyzan/PCRemote/releases/latest), unzip, run `PCRemote.exe`. The launcher source is in `launcher/` (rebuild it on Windows with `launcher\build.bat`; CI and releases compile it too).
 It already contains node.exe, ffmpeg.exe and cloudflared.exe. A release build checks for a newer
 release and shows a banner on the PC dashboard.
 

@@ -56,6 +56,29 @@ jobs:
           $vi = (Get-Item autostart\PCRemoteStart.exe).VersionInfo
           $vi | Format-List FileDescription, CompanyName, ProductName, FileVersion
           if ($vi.FileDescription -ne "PC Remote") { throw "FileDescription is '$($vi.FileDescription)'" }
+      - name: Build PCRemote.exe launcher (in-box .NET Framework csc)
+        shell: pwsh
+        working-directory: launcher
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
+          function Report($out) { $out | ForEach-Object { Write-Host $_; if ("$_" -match "error|FAIL") { Write-Host "::error::$_" } } }
+          $o = & $csc /nologo /noconfig /target:exe /r:System.dll /out:NetstatTest.exe NetstatTest.cs Netstat.cs 2>&1
+          $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
+          $o = .\NetstatTest.exe 2>&1
+          $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
+          $o = & $csc /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs 2>&1
+          $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
+          $vi = (Get-Item ..\PCRemote.exe).VersionInfo
+          $vi | Format-List FileDescription, ProductName, FileVersion
+          if ($vi.FileDescription -ne "PC Remote") { throw "FileDescription is '$($vi.FileDescription)'" }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path ..\PCRemote.exe))
+          if (-not ([Text.Encoding]::ASCII.GetString($bytes).Contains("requireAdministrator"))) { throw "manifest missing requireAdministrator" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PCRemote-launcher
+          path: PCRemote.exe
+      - run: node src/quit_test.js
       - run: node src/pointer_test.js
       - run: node src/unit_test.js
       - run: node src/devices_test.js
