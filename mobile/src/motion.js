@@ -98,21 +98,39 @@ export function MotionView({ visible, kind = "pop", origin = "center", style, ch
   );
 }
 
-const APress = Animated.createAnimatedComponent(Pressable);
 
 /** Pressable that dips to 96% while held and springs back. Same props as
  * Pressable; style may be a function of { pressed }. */
+// Keys that place a button in its parent; they stay on the outer Pressable.
+// Everything else (background, padding, border, inner layout) is drawn by the
+// inner Animated.View, which is what scales.
+const OUTER_KEYS = new Set([
+  "flex", "flexGrow", "flexShrink", "flexBasis", "alignSelf",
+  "margin", "marginTop", "marginBottom", "marginLeft", "marginRight", "marginHorizontal", "marginVertical", "marginStart", "marginEnd",
+  "position", "top", "bottom", "left", "right", "start", "end", "zIndex",
+  "width", "height", "minWidth", "maxWidth", "minHeight", "maxHeight", "aspectRatio",
+]);
+
+function splitStyle(style) {
+  const flat = StyleSheet.flatten(style) || {};
+  const outer = {};
+  const inner = {};
+  for (const k in flat) (OUTER_KEYS.has(k) ? outer : inner)[k] = flat[k];
+  return [outer, inner];
+}
+
+/** A Pressable that shrinks a touch while held (Sill-style). An animated
+ * Pressable drops its style on this RN/Reanimated build (buttons lost their
+ * background), so the Pressable stays plain and an inner Animated.View draws
+ * the button and scales. `style` may be a function of { pressed }. */
 export function PressScale({ style, onPressIn, onPressOut, scaleTo = MOTION.pressScale, children, ...rest }) {
   const reduce = useReducedMotion();
   const s = useSharedValue(0);
-  // Reanimated drops a function `style` on an animated Pressable (the button
-  // lost its background/padding), so track `pressed` here and always hand it
-  // a plain style array.
   const [pressed, setPressed] = useState(false);
   const anim = useAnimatedStyle(() => ({ transform: [{ scale: interpolate(s.value, [0, 1], [1, scaleTo]) }] }));
-  const base = typeof style === "function" ? style({ pressed }) : style;
+  const [outer, inner] = splitStyle(typeof style === "function" ? style({ pressed }) : style);
   return (
-    <APress
+    <Pressable
       {...rest}
       onPressIn={(e) => {
         setPressed(true);
@@ -124,10 +142,10 @@ export function PressScale({ style, onPressIn, onPressOut, scaleTo = MOTION.pres
         s.value = withSpring(0, { duration: 260, dampingRatio: 0.55 });
         onPressOut?.(e);
       }}
-      style={[base, anim]}
+      style={outer}
     >
-      {typeof children === "function" ? children({ pressed }) : children}
-    </APress>
+      <Animated.View style={[styles.fill, inner, anim]}>{typeof children === "function" ? children({ pressed }) : children}</Animated.View>
+    </Pressable>
   );
 }
 
@@ -220,3 +238,8 @@ export function Pulse({ on, min = 0.55, grow = 1, ms = MOTION.pulseMs, style, ch
   }));
   return <Animated.View style={[style, anim]}>{children}</Animated.View>;
 }
+
+const styles = StyleSheet.create({
+  // The inner face fills whatever box the outer Pressable got from its parent.
+  fill: { flexGrow: 1, alignSelf: "stretch" },
+});
