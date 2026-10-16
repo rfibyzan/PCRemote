@@ -22,8 +22,14 @@ Bagian **Untuk developer** ada di paling bawah.
 
 **Cara A: paket siap pakai (disarankan).**
 Buka [Releases](https://github.com/rfibyzan/PCRemote/releases/latest) lalu unduh
-`PCRemote-vX.Y.Z-windows.zip` (dan `PCRemote-vX.Y.Z.apk` untuk HP, jika ada).
-Paket ini sudah berisi semua yang dibutuhkan (`node.exe`, `ffmpeg.exe`, `cloudflared.exe`).
+dua file ini:
+
+| File | Untuk | Isi |
+|---|---|---|
+| `PCRemote-vX.Y.Z-windows.zip` | PC | `PCRemote.exe`, `HOW-TO.txt`, `PCRemote.apk`, dan folder `runtime` (sudah berisi `node.exe`, `ffmpeg.exe`, `cloudflared.exe`, agent + dependensinya) |
+| `PCRemote-vX.Y.Z.apk` | HP | Aplikasi Android (sama dengan `PCRemote.apk` di dalam zip) |
+
+Tidak perlu memasang Node.js atau apa pun lagi.
 
 **Cara B: dari kode sumber** (kalau belum ada rilis).
 1. Di halaman repo klik **Code › Download ZIP**.
@@ -40,7 +46,7 @@ Paket ini sudah berisi semua yang dibutuhkan (`node.exe`, `ffmpeg.exe`, `cloudfl
    cd <folder PCRemote>\runtime\agent
    npm install
    ```
-4. APK untuk HP: `PCRemote.apk` di folder utama.
+4. APK untuk HP: `PCRemote.apk` di folder utama (build rilis terbaru).
 
 ## 3. Ekstrak
 
@@ -54,6 +60,7 @@ Isi folder yang benar:
 PCRemote\
 ├── PCRemote.exe
 ├── HOW-TO.txt
+├── PCRemote.apk
 └── runtime\
     ├── node.exe
     ├── ffmpeg.exe
@@ -73,7 +80,7 @@ Dashboard menampilkan **Kode pairing** dan QR di bagian **Pasangkan HP**.
 
 ## 5. Pasang aplikasi di HP
 
-1. Salin file APK ke HP (kabel, Drive, atau chat ke diri sendiri), lalu buka.
+1. Salin file APK (`PCRemote-vX.Y.Z.apk` dari Releases, atau `PCRemote.apk` di folder) ke HP (kabel, Drive, atau chat ke diri sendiri), lalu buka.
 2. Izinkan **Install unknown apps** untuk aplikasi yang membuka APK itu (cukup sekali).
 3. Buka **PC Remote**.
 
@@ -140,7 +147,7 @@ PCRemote/
 │   ├── cloudflared.exe / node.exe / ffmpeg.exe  # NOT in git, see below
 │   └── agent/ViGEmClient.dll
 ├── launcher/        # PCRemote.exe source (.NET Framework, C# 5)
-├── PCRemote.apk     # sample build
+├── PCRemote.apk     # latest release build (local gradle), attached to Releases
 └── HOW-TO.txt       # short end-user setup
 ```
 
@@ -153,7 +160,7 @@ release and shows a banner on the PC dashboard.
 
 To publish one: `git tag v1.2.0 && git push origin v1.2.0` (or Actions → Release → Run workflow).
 `.github/workflows/release.yml` builds the zip; with the `EXPO_TOKEN` repo secret it also attaches the
-preview APK (built without the gitignored SF Pro files, so it uses Roboto).
+preview APK instead of the committed `PCRemote.apk` (built without the gitignored SF Pro files, so it uses Roboto).
 
 ### Required binaries (not committed — too large for GitHub)
 
