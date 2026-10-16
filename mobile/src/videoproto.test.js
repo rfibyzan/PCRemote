@@ -134,6 +134,11 @@ function header({ mon = 0, all = false, w = 1920, h = 1080, cx = 0.5, cy = 0.25,
   assert.equal(h.qText, "6.3 Mbps");
   assert.equal(h.qCaption, "Bitrate 1080p");
   assert.equal(h.fpsText, "40 fps");
+  // numeric fps = stats target (H.264 encoder fps, not the JPEG estimate)
+  assert.equal(h.fps, 40);
+  assert.equal(j.fps, 13);
+  assert.equal(qualityView({ q: "high" }, { video: true, link: "remote" }).fps, 60, "remote caps bitrate, not fps");
+  assert.equal(qualityView({ q: "lite" }, { video: true }).fps, videoFps("lite", 0));
   assert.equal(qualityView({ q: "lite" }, { video: true }).qCaption, "Bitrate 720p");
   assert.equal(qualityView({ q: "lite" }, { video: true }).qDown, -1, "H.264 can go below Low");
   assert.equal(qualityView({ q: "high" }, { video: true }).fpsUp, null, "H.264 60 fps max");

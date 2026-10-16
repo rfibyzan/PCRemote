@@ -249,7 +249,8 @@ function fmtRate(bps) {
  * frames actually displayed, PC = frames the PC sent. */
 export function StreamStats() {
   const { rate, fps, recv, pc } = useStreamStats();
-  const { q, fpsStep } = useQuality();
+  const { q, qStep, fpsStep } = useQuality();
+  const video = useVideoCodec();
   const ack = useQualityAck();
   const selCrop = useSel().crop;
   const [link, setLink] = React.useState(getStatus().link || "");
@@ -261,7 +262,13 @@ export function StreamStats() {
   const remote = isRemoteLink(ack.link || link);
   const cropped = ack.at ? ack.cropped : Boolean(selCrop && (selCrop.w < 0.995 || selCrop.h < 0.995));
   const effFromAgent = ack.effective?.fps;
-  const eff = Number.isFinite(Number(effFromAgent)) ? Number(effFromAgent) : effectiveFpsValue(q, fpsStep, { remote, cropped });
+  // H.264: the target is the encoder fps (qualityView), never the JPEG
+  // estimate or a qualityAck, which both describe the JPEG pipeline.
+  const eff = video
+    ? qualityView({ q, qStep, fpsStep }, { video: true, link: ack.link || link }).fps
+    : Number.isFinite(Number(effFromAgent))
+      ? Number(effFromAgent)
+      : effectiveFpsValue(q, fpsStep, { remote, cropped });
   const why = diagnoseStream({ target: eff, shown: fps, recv, pc });
   const pcPart = pc ? ` · PC ${Math.round(pc.sent)}` : "";
   return (
