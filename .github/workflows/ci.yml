@@ -79,6 +79,7 @@ jobs:
           name: PCRemote-launcher
           path: PCRemote.exe
       - run: node src/quit_test.js
+      - run: node src/keyplan_test.js
       - run: node src/pointer_test.js
       - run: node src/unit_test.js
       - run: node src/devices_test.js
