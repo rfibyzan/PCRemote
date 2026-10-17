@@ -23,8 +23,12 @@
 //   4. Own the tray icon: left click / "Open dashboard" opens
 //      http://127.0.0.1:<port>/, "Close PC Remote" stops the agent and exits.
 //   5. Agent exit code 0 = done (closed, or another PC Remote already runs);
-//      anything else = crash, restart after 5 s (30 s if it keeps crashing),
-//      like runtime\agent\start.bat.
+//      75 = restart asked (dashboard "Mulai ulang", POST /api/restart): start
+//      it again after 2 s; anything else = crash, restart after 5 s (30 s if
+//      it keeps crashing), like runtime\agent\start.bat.
+//   6. Tray "Restart agent": stop the agent the same way as Close, then start
+//      it again after 2 s while the launcher (and its tray) keeps running, so
+//      a remote user never has to reopen PC Remote by hand.
 //
 // Kept to C# 5 so the csc.exe that ships with .NET Framework 4.x compiles it.
 // Build: launcher\build.bat (or the CI / release workflows).
@@ -47,9 +51,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("PC Remote")]
 [assembly: AssemblyCompany("PCRemote")]
 [assembly: AssemblyCopyright("github.com/rfibyzan/PCRemote")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
-[assembly: AssemblyInformationalVersion("1.1.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyInformationalVersion("1.2.0")]
 
 namespace PCRemote
 {
@@ -69,6 +73,10 @@ namespace PCRemote
         private static Process agent;
         private static volatile bool stopping;
         private static volatile bool exitUi;
+        private static volatile bool restartRequested;
+        private static NotifyIcon trayIcon;
+        private const int RestartCode = 75;
+        private const int RestartDelayMs = 2000;
         private static volatile int agentPort;
 
         [STAThread]
@@ -143,6 +151,7 @@ namespace PCRemote
             tray.Icon = icon;
             ContextMenuStrip menu = new ContextMenuStrip();
             menu.Items.Add("Open dashboard", null, delegate { OpenDashboard(); });
+            menu.Items.Add("Restart agent", null, delegate { RequestRestart(); });
             menu.Items.Add("Close PC Remote", null, delegate { RequestStop(); });
             tray.ContextMenuStrip = menu;
             tray.MouseClick += delegate(object sender, MouseEventArgs e)
@@ -150,6 +159,7 @@ namespace PCRemote
                 if (e.Button == MouseButtons.Left) OpenDashboard();
             };
             tray.Visible = true;
+            trayIcon = tray;
 
             System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
             timer.Interval = 400;
@@ -189,6 +199,34 @@ namespace PCRemote
             });
             t.IsBackground = true;
             t.Start();
+        }
+
+        /// "Restart agent": stop it like Close, but keep the launcher; the
+        /// agent loop sees restartRequested and starts it again.
+        private static void RequestRestart()
+        {
+            if (stopping || restartRequested) return;
+            restartRequested = true;
+            Thread t = new Thread(delegate()
+            {
+                Process p;
+                lock (agentLock) p = agent;
+                if (p == null || HasExited(p))
+                {
+                    restartRequested = false; // the loop is already about to start it
+                    return;
+                }
+                StopAgent();
+            });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        private static void Balloon(string text)
+        {
+            NotifyIcon tray = trayIcon;
+            if (tray == null) return;
+            try { tray.ShowBalloonTip(3000, Title, text, ToolTipIcon.Info); } catch { }
         }
 
         private static void OpenDashboard()
@@ -250,7 +288,16 @@ namespace PCRemote
                 try { code = p.ExitCode; } catch { }
                 lock (agentLock) agent = null;
                 agentPort = 0;
-                if (stopping || code == 0) break;
+                if (stopping) break;
+                if (restartRequested || code == RestartCode)
+                {
+                    restartRequested = false;
+                    quickCrashes = 0;
+                    Balloon("Restarting the agent...");
+                    for (int waited = 0; waited < RestartDelayMs && !stopping; waited += 250) Thread.Sleep(250);
+                    continue;
+                }
+                if (code == 0) break;
 
                 double ran = (DateTime.UtcNow - started).TotalSeconds;
                 quickCrashes = ran < 30 ? quickCrashes + 1 : 0;
