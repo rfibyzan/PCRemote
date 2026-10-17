@@ -15,6 +15,7 @@ runtime/node.exe
 runtime/cloudflared.exe
 # Autostart helper, compiled on the PC (or in release.yml) from PCRemoteStart.cs
 runtime/agent/autostart/*.exe
+runtime/agent/audio/*.exe
 
 # Secrets & signing
 .env

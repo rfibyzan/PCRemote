@@ -36,6 +36,15 @@ jobs:
         run: |
           npm install --omit=dev --no-audit --no-fund
           node src/pointer_test.js
+      # PC sound helper (audio.js compiles it on the PC too when missing/stale).
+      - name: Build PCRemoteAudio.exe (PC sound helper, in-box .NET Framework csc)
+        working-directory: runtime/agent
+        shell: pwsh
+        run: |
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          # Same arguments as buildHelper() in src/audio.js
+          & $csc /nologo /noconfig /target:exe /platform:x64 /optimize+ /r:System.dll /out:audio\PCRemoteAudio.exe audio\PCRemoteAudio.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # Prebuilt helper ships in runtime/agent/autostart; the agent still
       # compiles it on the PC if it is missing or older than the source.
       - name: Build PCRemoteStart.exe (autostart helper, in-box .NET Framework csc)

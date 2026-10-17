@@ -16,6 +16,7 @@ import { getDeviceInfo } from "./deviceinfo";
 import { newestAnnounce, parseRecent, removeRecent, upsertRecent } from "./recent";
 import { AUTH_TIMEOUT_MS, LAN_WATCH_MS, backoffDelay, lanCandidates, openTimeoutFor, shouldRediscover } from "./reconnectmath";
 import { parseVideoPacket } from "./videoproto";
+import { isAudioPacket, parseAudioPacket } from "./audioproto";
 import {
   DEFAULT_PORT,
   NTFY_HOSTS,
@@ -286,6 +287,11 @@ function handleTextMessage(raw) {
   emit(m);
 }
 
+/** PC sound ("PA" Opus packets) goes to audio.js, or nowhere when off. */
+export function setAudioHandler(fn) {
+  state.audioHandler = fn || null;
+}
+
 /** H.264 access units ("PV" frames) go to one consumer, like JPEG frames. */
 export function setVideoHandler(fn) {
   state.videoHandler = fn || null;
@@ -296,6 +302,16 @@ export function releaseVideoHandler(fn) {
 }
 
 function handleBinaryMessage(data) {
+  if (isAudioPacket(data)) {
+    if (state.audioHandler) {
+      try {
+        state.audioHandler(parseAudioPacket(data));
+      } catch {
+        // a player hiccup must not break the socket loop
+      }
+    }
+    return;
+  }
   const video = parseVideoPacket(data);
   if (video) {
     if (state.videoHandler) {
