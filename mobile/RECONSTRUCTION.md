@@ -97,7 +97,9 @@ stable component identity (no per-frame remount).
 ## Known differences from v6 APK
 - Clean-room UI styling (same dark theme + labels, not pixel-identical).
   Since 2026-10-15: neutral grey + indigo theme, Sill-style toolbar under the
-  viewer (Click/Look/Bar/Fit/Bidik/Penuh + Lipat to hide the control area),
+  viewer (Click⇄Look one toggle/Bar/Jendela/Fit/Bidik/Penuh + Lipat to hide
+  the control area; since 2026-10-17 the PC sound on/off is a speaker icon in
+  the fps pill at the stream's top right, not a toolbar button),
   optional local SF Pro Display font (assets/fonts, not in git).
 - GAME content is new (v6 Game entry behavior could not be recovered
   from bytecode).
