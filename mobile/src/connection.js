@@ -14,7 +14,7 @@ import { AppState } from "react-native";
 import { createConnLog, formatLog } from "./connlog";
 import { getDeviceInfo } from "./deviceinfo";
 import { newestAnnounce, parseRecent, removeRecent, upsertRecent } from "./recent";
-import { AUTH_TIMEOUT_MS, backoffDelay, openTimeoutFor, shouldRediscover } from "./reconnectmath";
+import { AUTH_TIMEOUT_MS, LAN_WATCH_MS, backoffDelay, lanCandidates, openTimeoutFor, shouldRediscover } from "./reconnectmath";
 import { parseVideoPacket } from "./videoproto";
 import {
   DEFAULT_PORT,
@@ -363,7 +363,14 @@ export function connect(url, opts = {}) {
     // older runtimes ignore this and deliver text/base64 instead
   }
   state.ws = ws;
-  let opened = false;
+  attachSocket(ws, url, gen, false);
+}
+
+/** Wire a socket into the shared connection: auth on open, frames to
+ * listeners, reconnect on close. `alreadyOpen` is a socket the LAN
+ * handover opened and authed itself (no open/auth timers needed). */
+function attachSocket(ws, url, gen, alreadyOpen) {
+  let opened = alreadyOpen;
   ws.onopen = () => {
     if (gen !== state._connectGen) return;
     opened = true;
@@ -454,6 +461,7 @@ export function connect(url, opts = {}) {
   // Open timeout: a socket that cannot even open means this address is
   // unreachable (LAN ip from mobile data, PC asleep, dead tunnel). That is
   // never "wrong code" — the auth timer only starts once the socket opens.
+  if (alreadyOpen) return;
   if (state._authTimer) clearTimeout(state._authTimer);
   const openMs = openTimeoutFor(state.link);
   state._authTimer = setTimeout(() => {
@@ -472,6 +480,147 @@ export function connect(url, opts = {}) {
       scheduleReconnect("unreachable");
     }
   }, openMs);
+}
+
+/* ---------- Tunnel → home Wi-Fi handover ----------
+ * While connected through the tunnel, look for the PC on the local network
+ * every 30 s (and when the app comes back). When it answers, open and auth
+ * a second socket on the LAN address first, and only then swap it in and
+ * close the tunnel socket: no "Terputus", the tabs stay where they are, and
+ * the viewer re-subscribes on the fresh hello. A different PC on the same
+ * address fails auth and is ignored. */
+function startLanWatch() {
+  stopLanWatch();
+  if (state.link !== "remote") return;
+  state._lanTimer = setInterval(() => {
+    tryLanHandover("timer");
+  }, LAN_WATCH_MS);
+  // First look soon after connecting (the phone may already be home).
+  state._lanKick = setTimeout(() => tryLanHandover("connect"), 3000);
+}
+
+function stopLanWatch() {
+  if (state._lanTimer) {
+    clearInterval(state._lanTimer);
+    state._lanTimer = null;
+  }
+  if (state._lanKick) {
+    clearTimeout(state._lanKick);
+    state._lanKick = null;
+  }
+}
+
+async function tryLanHandover(why) {
+  if (!state.connected || state.link !== "remote" || state._handover || !state.code) return;
+  const candidates = lanCandidates({ hello: state.hello, lastHosts: state.lastHosts, defaultPort: DEFAULT_PORT });
+  if (!candidates.length) return;
+  state._handover = true;
+  const fromUrl = state.url;
+  const gen = state._connectGen;
+  try {
+    let http;
+    try {
+      http = await firstOk(candidates.map((h) => checkHealth(h, 1500).then(() => h)));
+    } catch {
+      return; // not home yet: stay quietly on the tunnel
+    }
+    if (!state.connected || state._connectGen !== gen || state.url !== fromUrl) return;
+    const lanUrl = httpToWs(http);
+    log(`Wi-Fi rumah terdeteksi (${shortHost(lanUrl)}${why === "resume" ? ", app aktif lagi" : ""}), pindah dari tunnel…`);
+    const { ws, hello } = await openAuthed(lanUrl, 6000);
+    if (!state.connected || state._connectGen !== gen || state.url !== fromUrl) {
+      try {
+        ws.close(1000, "handover-stale");
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    adoptSocket(ws, lanUrl, hello);
+  } catch (e) {
+    log(`Pindah ke Wi-Fi batal: ${String(e?.message || e)} — tetap via tunnel.`, "warn");
+  } finally {
+    state._handover = false;
+  }
+}
+
+/** Open + auth a socket without touching the live one. Resolves with the
+ * socket and its hello; rejects on timeout, close, or a refused code. */
+function openAuthed(url, ms) {
+  return new Promise((resolve, reject) => {
+    let ws;
+    let done = false;
+    const fail = (why) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+        ws.close();
+      } catch {
+        // ignore
+      }
+      reject(new Error(why));
+    };
+    const timer = setTimeout(() => fail(`timeout ${Math.round(ms / 1000)} dtk`), ms);
+    try {
+      ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+    } catch (e) {
+      fail(String(e?.message || e));
+      return;
+    }
+    ws.onopen = () => {
+      try {
+        ws.send(JSON.stringify(msg.auth(state.code, state.device || undefined)));
+      } catch (e) {
+        fail(String(e?.message || e));
+      }
+    };
+    ws.onmessage = (ev) => {
+      if (done || typeof ev.data !== "string") return;
+      let m;
+      try {
+        m = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (m.t === "hello") {
+        done = true;
+        clearTimeout(timer);
+        ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+        resolve({ ws, hello: m });
+      } else if (m.t === "error") {
+        fail(`PC menolak: ${m.m || "error"}`);
+      }
+    };
+    ws.onclose = () => fail("socket tertutup");
+    ws.onerror = () => {};
+  });
+}
+
+/** Swap the authed LAN socket in for the tunnel one. */
+function adoptSocket(ws, url, hello) {
+  const old = state.ws;
+  const gen = ++state._connectGen; // old socket's handlers go quiet
+  stopPing();
+  stopLanWatch();
+  if (state._authTimer) {
+    clearTimeout(state._authTimer);
+    state._authTimer = null;
+  }
+  state.ws = ws;
+  state.url = url;
+  state.link = detectLink(url);
+  state.connected = false; // the hello below marks it connected again
+  attachSocket(ws, url, gen, true);
+  try {
+    old?.close(1000, "handover");
+  } catch {
+    // already gone
+  }
+  log(`Pindah ke Wi-Fi ${shortHost(url)} selesai.`, "ok");
+  handleTextMessage(JSON.stringify(hello));
 }
 
 function startPing() {
@@ -629,6 +778,7 @@ addListener((event) => {
       return saveRecent();
     });
     startPing();
+    startLanWatch();
   }
   if (event.t === "kicked") {
     state.kicked = true;
@@ -656,8 +806,9 @@ addListener((event) => {
       setStatus("rejected", `Ditolak PC: ${m || "token salah"}.`, "auth");
     }
   }
-  if (event.t === "close" && state.connected) {
+  if (event.t === "close") {
     stopPing();
+    stopLanWatch();
   }
 });
 
@@ -675,6 +826,7 @@ export function disconnect(silent) {
   state.ws = null;
   state.connected = false;
   stopPing();
+  stopLanWatch();
   if (state._authTimer) {
     clearTimeout(state._authTimer);
     state._authTimer = null;
@@ -887,6 +1039,10 @@ export async function boot() {
     // Back in the app with a dropped link: retry now instead of waiting
     // out the backoff (Android pauses timers in the background).
     appStateSub = AppState.addEventListener("change", (s) => {
+      if (s === "active" && state.connected) {
+        tryLanHandover("resume");
+        return;
+      }
       if (s !== "active" || state.connected || state.kicked || state._manualClose || !state.url) return;
       log("Aplikasi aktif lagi, mencari ulang alamat PC…");
       resumeConnect();
