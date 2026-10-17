@@ -46,6 +46,7 @@ import { BAR_W, BarScroll, ScrollSettings, sendSwipeScroll } from "./scrollbar";
 import { msg } from "./protocol";
 import { pointerIcon } from "./pointer";
 import { addListener, getStatus, send } from "./connection";
+import { setAudioOn, useAudio } from "./audio";
 import { WindowBar, useWindowStream } from "./windowstream";
 import WindowThumbBar from "./winbar";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD, TOOLBAR_H } from "./tablayout";
@@ -206,6 +207,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // control area is identical on PAD / TYPE / WIN, so the viewer is too.
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
   const shared = useSel();
+  const snd = useAudio();
   const bar = shared.bar;
   // Lipat: hide the tab's control area so the stream gets that height too.
   const fold = !!shared.fold;
@@ -1618,6 +1620,15 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             camTools && { id: "fit", icon: "fit-to-screen-outline", label: "Fit", onPress: win ? winStream.exit : resetCrop },
             camTools && { id: "aim", icon: "crosshairs", label: "Bidik", on: reticle, onPress: () => setReticle((v) => !v) },
             camTools && { id: "full", icon: "fullscreen", label: "Penuh", onPress: toggleFull },
+            // PC sound: only with an APK that has the native player and an
+            // agent that streams it. Off = the PC stops sending audio.
+            snd.supported && snd.agent && {
+              id: "sound",
+              icon: snd.error ? "volume-alert" : snd.on ? "volume-high" : "volume-off",
+              label: "Suara",
+              on: snd.on,
+              onPress: () => setAudioOn(!snd.on),
+            },
           ]}
           fold={fold}
           onFold={() => setSel({ fold: !fold })}

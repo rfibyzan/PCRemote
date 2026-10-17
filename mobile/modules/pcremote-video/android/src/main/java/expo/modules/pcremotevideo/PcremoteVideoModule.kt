@@ -38,6 +38,32 @@ class PcremoteVideoModule : Module() {
       view != null
     }
 
+    // ---- PC sound (Opus "PA" packets) ----
+    Function("audioSupported") {
+      OpusPlayer.supported
+    }
+
+    Function("audioStart") {
+      OpusPlayer.start()
+    }
+
+    // Same copy-out rule as push(): the typed array is only valid here.
+    Function("audioPush") { data: Uint8Array ->
+      val size = data.byteLength
+      val bytes = ByteArray(size)
+      data.read(bytes, 0, size)
+      OpusPlayer.push(bytes)
+    }
+
+    Function("audioStop") {
+      OpusPlayer.stop()
+      true
+    }
+
+    OnDestroy {
+      OpusPlayer.stop()
+    }
+
     View(PcremoteVideoView::class) {
       Events("onVideoEvent")
 

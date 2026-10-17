@@ -43,6 +43,7 @@ import { probeTunnel, wokeFromSleep } from "./keepalive.js";
 import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam.js";
 import { createGamepadSession } from "./gamepad.js";
 import { createVideoManager } from "./video.js";
+import { createAudioManager } from "./audio.js";
 import { createDeviceStore, isLocalRequest, linkOf, sanitizeDevice } from "./devices.js";
 import { QUIT_PATH, quitAllowed, scheduleQuit } from "./quit.js";
 import { creditByline, PROJECT_URL } from "./credits.js";
@@ -251,6 +252,12 @@ function send(ws, obj) {
 
 // Opt-in H.264 stream (beta, src/video.js). JPEG stays the default; while a
 // phone's video is active, screenLoop skips JPEG for it (cursor only).
+// PC sound -> phones with "Suara" on (one shared capture, only while wanted).
+const audio = createAudioManager({
+  log: (m) => console.log(m),
+  onState: (ws, st) => send(ws, { t: "audio", ...st }),
+});
+
 const video = createVideoManager({
   monitorFor,
   cursorFor: (mon) => cursorOnMonitor(mon),
@@ -316,7 +323,7 @@ function helloPayload() {
     lan: state.lan,
     port: state.port,
     // Lets the phone tell an old agent apart from a failing feature.
-    features: ["winThumbs", "winMax", "apps", "settings", "lan"],
+    features: ["winThumbs", "winMax", "apps", "settings", "lan", "audio"],
   };
 }
 
@@ -454,6 +461,10 @@ async function handleCommand(ws, msg) {
       send(ws, { t: "winAct", id: msg.id, a, ok });
       break;
     }
+    case "audio":
+      ws.wantsAudio = Boolean(msg.on);
+      audio.sync(ws);
+      break;
     case "monitor":
       if (msg.id === "all") ws.view = "all";
       else {
@@ -1288,6 +1299,7 @@ async function main() {
       }
       state.clients.delete(ws);
       video.stop(ws);
+      audio.stop(ws);
       if (ws.gameSession) endGamepad(ws).catch(() => {});
       if (![...state.clients].some((c) => c.wantsCam)) stopWebcam();
     });
@@ -1344,7 +1356,7 @@ async function main() {
     publishAnnounce();
   });
 
-  quitHooks.push(() => tunnel.stop(), () => stopWebcam());
+  quitHooks.push(() => tunnel.stop(), () => stopWebcam(), () => audio.stopAll());
 
   let lastBeat = Date.now();
   let tunnelFails = 0;

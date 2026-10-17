@@ -47,3 +47,40 @@ export function VideoSurface(props) {
   if (!NativeView) return null;
   return <NativeView {...props} />;
 }
+
+// ---- PC sound: Opus packets -> MediaCodec -> AudioTrack (OpusPlayer.kt) ----
+// Older APKs have the video module but not these functions: all guarded.
+export const audioSupported = (() => {
+  try {
+    return Boolean(Native && typeof Native.audioSupported === "function" && Native.audioSupported());
+  } catch {
+    return false;
+  }
+})();
+
+export function audioStart() {
+  if (!audioSupported) return false;
+  try {
+    return Boolean(Native.audioStart());
+  } catch {
+    return false;
+  }
+}
+
+export function audioPush(bytes) {
+  if (!audioSupported) return false;
+  try {
+    return Boolean(Native.audioPush(bytes));
+  } catch {
+    return false;
+  }
+}
+
+export function audioStop() {
+  if (!audioSupported) return;
+  try {
+    Native.audioStop();
+  } catch {
+    // best-effort
+  }
+}

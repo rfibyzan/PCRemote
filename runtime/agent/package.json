@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node src/keyplan_test.js && node src/pointer_test.js && node src/autostart_test.js && node src/quit_test.js && node src/windows_test.js && node src/apps_test.js && node src/settings_test.js && node src/unit_test.js && node src/devices_test.js && node src/selftest.js",
+    "test": "node src/keyplan_test.js && node src/pointer_test.js && node src/autostart_test.js && node src/quit_test.js && node src/audio_test.js && node src/windows_test.js && node src/apps_test.js && node src/settings_test.js && node src/unit_test.js && node src/devices_test.js && node src/selftest.js",
     "test:unit": "node src/unit_test.js",
     "test:game": "node src/game_test.js",
     "test:input": "node src/unit_test.js",

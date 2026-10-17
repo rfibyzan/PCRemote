@@ -27,3 +27,4 @@ runtime/agent/autostart/*.exe
 .DS_Store
 Thumbs.db
 desktop.ini
+runtime/agent/audio/*.exe
