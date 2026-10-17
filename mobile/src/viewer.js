@@ -1590,9 +1590,26 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         )}
         {!streamOpen && (
           <Block style={styles.fpsPill}>
-            <Pressable onPress={() => setStreamOpen(true)} hitSlop={4} accessibilityLabel="Buka pengaturan stream">
+            <Pressable onPress={() => setStreamOpen(true)} hitSlop={4} style={styles.fpsStats} accessibilityLabel="Buka pengaturan stream">
               <StreamStats />
             </Pressable>
+            {/* PC sound (was "Suara" in the toolbar): only with an APK that has
+                the native player and an agent that streams it. Off = the PC
+                stops sending audio. */}
+            {snd.supported && snd.agent && (
+              <Pressable
+                onPress={() => setAudioOn(!snd.on)}
+                hitSlop={8}
+                style={styles.fpsSound}
+                accessibilityLabel={snd.on ? "Matikan suara PC" : "Nyalakan suara PC"}
+              >
+                <MaterialCommunityIcons
+                  name={snd.error ? "volume-alert" : snd.on ? "volume-high" : "volume-off"}
+                  size={14}
+                  color={snd.error ? "#ff9f0a" : snd.on ? "#ffffff" : "rgba(255,255,255,0.55)"}
+                />
+              </Pressable>
+            )}
           </Block>
         )}
         {streamOpen && <Pressable style={StyleSheet.absoluteFill} onPress={() => setStreamOpen(false)} accessibilityLabel="Tutup pengaturan stream" />}
@@ -1613,22 +1630,18 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       {!full && !typing && (
         <Toolbar
           items={[
-            { id: "click", icon: "cursor-default-click-outline", label: "Click", on: mode === "Click", onPress: () => setSel({ mode: "Click" }) },
-            { id: "look", icon: "eye-outline", label: "Look", on: mode === "Look", onPress: () => setSel({ mode: "Look" }) },
+            // One mode button: tap switches Click <-> Look; icon + label show the active mode.
+            {
+              id: "mode",
+              icon: looking ? "eye-outline" : "cursor-default-click-outline",
+              label: mode,
+              onPress: () => setSel({ mode: looking ? "Click" : "Look" }),
+            },
             { id: "bar", icon: "gesture-swipe-vertical", label: "Bar", on: bar, onPress: () => setSel({ bar: !bar }) },
             camTools && { id: "win", icon: "application-outline", label: "Jendela", on: thumbs || !!win, onPress: () => setSel({ thumbs: !thumbs }) },
             camTools && { id: "fit", icon: "fit-to-screen-outline", label: "Fit", onPress: win ? winStream.exit : resetCrop },
             camTools && { id: "aim", icon: "crosshairs", label: "Bidik", on: reticle, onPress: () => setReticle((v) => !v) },
             camTools && { id: "full", icon: "fullscreen", label: "Penuh", onPress: toggleFull },
-            // PC sound: only with an APK that has the native player and an
-            // agent that streams it. Off = the PC stops sending audio.
-            snd.supported && snd.agent && {
-              id: "sound",
-              icon: snd.error ? "volume-alert" : snd.on ? "volume-high" : "volume-off",
-              label: "Suara",
-              on: snd.on,
-              onPress: () => setAudioOn(!snd.on),
-            },
           ]}
           fold={fold}
           onFold={() => setSel({ fold: !fold })}
@@ -1681,7 +1694,9 @@ const styles = StyleSheet.create({
   topScrollContent: { flexDirection: "row", alignItems: "center", gap: 4 },
   gear: { backgroundColor: COLORS.chip, borderRadius: 999, width: 30, height: 28, alignItems: "center", justifyContent: "center" },
   gearText: { color: COLORS.muted, fontSize: 15, fontWeight: "800" },
-  fpsPill: { position: "absolute", top: 6, right: 6, maxWidth: "75%", backgroundColor: "rgba(22,22,24,0.8)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 8 },
+  fpsPill: { position: "absolute", top: 6, right: 6, maxWidth: "75%", backgroundColor: "rgba(22,22,24,0.8)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 6 },
+  fpsStats: { flexShrink: 1 },
+  fpsSound: { paddingLeft: 6, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: "rgba(255,255,255,0.25)" },
   streamPop: { position: "absolute", top: 4, left: 0, right: 0 },
   clickSeg: { position: "absolute", left: 6, bottom: 6, flexDirection: "row", gap: 4, backgroundColor: "rgba(22,22,24,0.7)", borderRadius: 999, padding: 3 },
   clickSegBtn: { width: 34, height: 26, borderRadius: 999, backgroundColor: "rgba(44,44,48,0.9)", alignItems: "center", justifyContent: "center" },
