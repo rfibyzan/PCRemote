@@ -181,19 +181,34 @@ namespace PCRemoteAudioProbe
             IAudioEndpointVolume vol = (IAudioEndpointVolume)volObj;
             bool wasMuted;
             vol.GetMute(out wasMuted);
+            float wasLevel;
+            vol.GetMasterVolumeLevelScalar(out wasLevel);
+            Console.WriteLine("Volume awal: " + Math.Round(wasLevel * 100) + "%");
             Console.WriteLine("Mute awal: " + (wasMuted ? "ya" : "tidak"));
             Console.WriteLine();
 
+            bool all = args.Length > 0 && args[0] == "--all";
             try
             {
                 Run("1-endpoint-nyala", vol, false, delegate { return EndpointClient(dev); });
                 Run("2-endpoint-mute", vol, true, delegate { return EndpointClient(dev); });
-                Run("3-process-mute", vol, true, delegate { return ProcessClient(); });
-                Run("4-process-nyala", vol, false, delegate { return ProcessClient(); });
+                Run("1b-endpoint-nyala", vol, false, delegate { return EndpointClient(dev); });
+                // Volume 0 instead of mute: some drivers apply mute before the
+                // loopback tap but the master volume after it.
+                vol.SetMasterVolumeLevelScalar(0f, ref ctx);
+                Run("5-endpoint-vol0", vol, false, delegate { return EndpointClient(dev); });
+                vol.SetMasterVolumeLevelScalar(wasLevel, ref ctx);
+                if (all)
+                {
+                    Run("3-process-mute", vol, true, delegate { return ProcessClient(); });
+                    Run("4-process-nyala", vol, false, delegate { return ProcessClient(); });
+                }
             }
             finally
             {
+                vol.SetMasterVolumeLevelScalar(wasLevel, ref ctx);
                 vol.SetMute(wasMuted, ref ctx);
+                Console.WriteLine("Volume dikembalikan ke: " + Math.Round(wasLevel * 100) + "%");
                 Console.WriteLine();
                 Console.WriteLine("Mute dikembalikan ke: " + (wasMuted ? "ya" : "tidak"));
             }
