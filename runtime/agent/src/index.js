@@ -311,8 +311,12 @@ function helloPayload() {
     screen: size,
     monitors: publicMonitors(),
     mode: "direct",
+    // LAN ips + port: a phone on the tunnel probes these to hop onto the
+    // home Wi-Fi mid-session (private addresses only, never sent elsewhere).
+    lan: state.lan,
+    port: state.port,
     // Lets the phone tell an old agent apart from a failing feature.
-    features: ["winThumbs", "winMax", "apps", "settings"],
+    features: ["winThumbs", "winMax", "apps", "settings", "lan"],
   };
 }
 
