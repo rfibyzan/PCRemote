@@ -1,6 +1,6 @@
 // node src/quit_test.js — POST /api/quit guard + shutdown order (no Windows deps).
 import assert from "node:assert/strict";
-import { QUIT_PATH, quitAllowed, scheduleQuit } from "./quit.js";
+import { QUIT_PATH, RESTART_CODE, RESTART_PATH, quitAllowed, restartSupported, scheduleQuit } from "./quit.js";
 
 const req = (method, ip, headers = {}) => ({ method, socket: { remoteAddress: ip }, headers });
 const local = { host: "127.0.0.1:18765", "x-pcremote": "1" };
@@ -35,5 +35,14 @@ scheduleQuit({
 });
 assert.deepEqual(calls, ["tunnel", "cam", "exit:0"], "hooks run, errors ignored, then exit 0");
 assert.equal(delay, 250);
+
+assert.equal(RESTART_PATH, "/api/restart");
+assert.equal(RESTART_CODE, 75);
+assert.ok(restartSupported({ PCREMOTE_LAUNCHER: "1" }), "PCRemote.exe restarts the agent");
+assert.ok(restartSupported({ PCREMOTE_SUPERVISED: "1" }), "start.bat restarts the agent");
+assert.ok(!restartSupported({}), "bare node would just exit");
+const rcalls = [];
+scheduleQuit({ stop: [() => rcalls.push("tunnel")], exit: (c) => rcalls.push(`exit:${c}`), code: RESTART_CODE, timer: (fn) => fn() });
+assert.deepEqual(rcalls, ["tunnel", "exit:75"], "restart runs the same hooks, then exits 75");
 
 console.log("quit_test: ok");

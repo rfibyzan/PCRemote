@@ -44,7 +44,7 @@ import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam
 import { createGamepadSession } from "./gamepad.js";
 import { createVideoManager } from "./video.js";
 import { createDeviceStore, isLocalRequest, linkOf, sanitizeDevice } from "./devices.js";
-import { QUIT_PATH, quitAllowed, scheduleQuit } from "./quit.js";
+import { QUIT_PATH, RESTART_CODE, RESTART_PATH, quitAllowed, restartSupported, scheduleQuit } from "./quit.js";
 import { creditByline, PROJECT_URL } from "./credits.js";
 import { createAutostartCache, helperBuildable, setAutostart } from "./autostart.js";
 
@@ -697,6 +697,17 @@ function dashboard(qrSvg = "") {
     <details id="logBox"><summary><span class="main">Log koneksi</span><span class="chev">›</span></summary><div class="log" id="log"></div></details>
   </div>
 
+  <div class="sec">Agent</div>
+  <div class="group">
+    <div class="row">
+      <div class="main">
+        <div class="t">Mulai ulang agent</div>
+        <div class="s" id="restartSub">${restartSupported() ? "Memuat ulang kode agent, HP tersambung lagi otomatis dalam beberapa detik" : "Hanya tersedia bila dijalankan lewat PCRemote.exe atau start.bat"}</div>
+      </div>
+      <button type="button" id="restart"${restartSupported() ? "" : " disabled"}>Mulai ulang</button>
+    </div>
+  </div>
+
   <div class="sec">Keamanan</div>
   <div class="group danger">
     <div class="row">
@@ -782,6 +793,22 @@ function dashboard(qrSvg = "") {
     if (!el) return;
     el.textContent = ok ? a : b; dot.className = "dot" + (ok ? " on" : "");
   }
+  document.getElementById("restart").onclick = function(){
+    var btn = this, sub = document.getElementById("restartSub");
+    btn.disabled = true; btn.textContent = "Memulai ulang…";
+    sub.textContent = "Agent berhenti, lalu dijalankan lagi…";
+    post("/api/restart", {}).then(function(r){
+      if (r && r.ok === false) { sub.textContent = "Gagal: " + (r.error || "tidak diketahui"); btn.disabled = false; btn.textContent = "Mulai ulang"; return; }
+      var tries = 0, wasDown = false;
+      var poll = setInterval(function(){
+        tries++;
+        fetch("/health", { cache: "no-store" }).then(function(x){ return x.json(); }).then(function(h){
+          if (h && h.ok && (wasDown || tries > 6)) { clearInterval(poll); location.reload(); }
+        }, function(){ wasDown = true; });
+        if (tries > 60) { clearInterval(poll); sub.textContent = "Agent belum kembali. Cek ikon PC Remote di tray."; }
+      }, 1000);
+    }, function(){ sub.textContent = "Gagal menghubungi agent"; btn.disabled = false; btn.textContent = "Mulai ulang"; });
+  };
   function refresh(){
     fetch("/api/state", { cache: "no-store" }).then(function(r){ return r.json(); }).then(render).catch(function(){});
   }
@@ -1138,6 +1165,20 @@ async function main() {
       res.end("{\"ok\":true,\"quit\":true}");
       console.log("Quit requested from this PC; shutting down.");
       scheduleQuit({ stop: quitHooks });
+      return;
+    }
+    // Dashboard "Mulai ulang": exit 75, the launcher / start.bat brings the
+    // agent back in ~2 s (phones reconnect on their own).
+    if (url === RESTART_PATH && quitAllowed(req)) {
+      const ok = restartSupported();
+      res.writeHead(ok ? 200 : 409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(ok ? { ok: true, restart: true } : { ok: false, error: "Agent tidak dijalankan lewat PCRemote.exe / start.bat" }));
+      if (!ok) return;
+      console.log("Restart requested from this PC; restarting.");
+      devices.log("Agent dimulai ulang dari dashboard", "warn");
+      // No "kicked" message: a kicked phone stays stopped. The sockets just
+      // drop with the process and phones reconnect / rediscover on their own.
+      scheduleQuit({ stop: quitHooks, code: RESTART_CODE, delayMs: 500 });
       return;
     }
     if (admin && url === "/revoke") {

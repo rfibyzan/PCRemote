@@ -27,3 +27,5 @@ runtime/agent/autostart/*.exe
 .DS_Store
 Thumbs.db
 desktop.ini
+
+PCRemote.old.exe
