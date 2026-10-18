@@ -3,6 +3,7 @@ import { Stack } from "expo-router";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useAppFonts } from "../fonts";
 import "../settingsync";
+import UpdateBanner from "../UpdateBanner";
 
 // Dark navigation theme: during the tab cross-fade the navigator background
 // shows through, and the default (light) theme flashed white.
@@ -24,6 +25,7 @@ export default function RootLayout() {
         <Stack.Screen name="pair" />
         <Stack.Screen name="devices" />
       </Stack>
+      <UpdateBanner />
       </ThemeProvider>
     </GestureHandlerRootView>
   );

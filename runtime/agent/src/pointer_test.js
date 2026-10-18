@@ -34,7 +34,7 @@ const u = (name, got, want) => {
 u("newer minor", compareVersions("v1.3.0", "v1.2.9"), 1);
 u("equal", compareVersions("1.2.0", "v1.2"), 0);
 u("older", compareVersions("v1.2.0", "v1.10.0"), -1);
-u("newer release", newerRelease("v1.0.0", { tag_name: "v1.1.0", html_url: "https://x/r" }), { tag: "v1.1.0", url: "https://x/r" });
+u("newer release", newerRelease("v1.0.0", { tag_name: "v1.1.0", html_url: "https://x/r" }), { tag: "v1.1.0", url: "https://x/r", asset: null });
 u("same release", newerRelease("v1.1.0", { tag_name: "v1.1.0" }), null);
 u("dev checkout never nags", newerRelease("", { tag_name: "v9.0.0" }), null);
 u("prerelease ignored", newerRelease("v1.0.0", { tag_name: "v2.0.0", prerelease: true }), null);
