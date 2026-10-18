@@ -4,7 +4,9 @@
  * change is diffed against the previous value and turned into keys for the
  * PC. Pure: tested in typediff.test.js.
  */
-export const SENTINELS = ["\u00b7\u00b7", "\u00b7\u02d9"]; // alternated so a reset always re-renders
+// Two bases told apart by their first char. 8 long so a burst of Backspaces
+// while the reset lags still has text to eat (an empty field sends nothing).
+export const SENTINELS = ["\u00b7".repeat(8), "\u02d9".repeat(8)];
 
 /** Diff prev -> next: { removed (backspaces), added (text) }. */
 export function diffInput(prev, next) {
@@ -19,25 +21,27 @@ export function diffInput(prev, next) {
 /**
  * Robust live diff. The hidden input is reset to a sentinel after every
  * change, but when the JS thread lags (bad connection, busy decoder) the
- * phone keyboard keeps typing into the OLD native text before the reset
- * lands. Diffing against only what we assumed (the sentinel) then "adds"
- * sentinel dots that reach the PC as stray ' or ˙ marks.
+ * keyboard keeps typing into the OLD text before the reset lands, and a
+ * reset lands silently (no onChangeText). Diffing against the wrong base
+ * either leaks sentinel dots to the PC (stray ' marks) or swallows keys.
  *
- * So compare the new text against every value the field can really hold
- * (the last text the keyboard reported, and the sentinel we last set) and take the
- * smallest edit. Sentinel characters never go to the PC.
+ * The two sentinels start with different chars, and each reset picks the
+ * one whose first char differs from the text the field held. So the first
+ * char of the new text tells which base it grew from: the sentinel we last
+ * set (reset landed) or the last text the keyboard reported (not yet).
+ * Sentinel characters never go to the PC.
  */
 export function liveDiff(lastNative, next, sentinel = SENTINELS[0]) {
-  const cands = [lastNative, sentinel];
-  let best = null;
-  for (const c of cands) {
-    if (c == null) continue;
-    const d = diffInput(c, next);
-    const cost = d.removed + d.added.length;
-    if (!best || cost < best.cost || (cost === best.cost && d.removed < best.removed)) best = { ...d, cost };
-  }
-  const added = best.added.replace(SENTINEL_RE, "");
-  return { removed: best.removed, added };
+  const last = String(lastNative ?? "");
+  const b = String(next ?? "");
+  const landed = b.length > 0 && b[0] === sentinel[0] && last[0] !== sentinel[0];
+  const d = diffInput(landed ? sentinel : last, b);
+  return { removed: d.removed, added: d.added.replace(SENTINEL_RE, "") };
+}
+
+/** The sentinel to reset to after the field reported `native`. */
+export function nextSentinel(native) {
+  return String(native ?? "")[0] === SENTINELS[0][0] ? SENTINELS[1] : SENTINELS[0];
 }
 const SENTINEL_RE = /[\u00b7\u02d9]/g;
 
