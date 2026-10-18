@@ -15,9 +15,9 @@ import { Keyboard, Pressable, StyleSheet, TextInput, View } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "../AppText";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { COLORS } from "../components";
-import ViewerPanel, { Block } from "../viewer";
+import { Block } from "../viewer";
+import { useViewerSlot } from "../viewerslot";
 import { setSel } from "../controls";
 import { SENTINELS, chordKey, diffInput, pushRecent } from "../typediff";
 import { rowHeight } from "../tablayout";
@@ -272,13 +272,7 @@ export default function TypeScreen() {
   const keyH = rowHeight(2, [FIELD_H]);
   const heldHint = held.length ? held.map((k) => k[0].toUpperCase() + k.slice(1)).join("+") + " + …" : null;
 
-  return (
-    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <ViewerPanel
-        title="Type"
-        touchpad={false}
-        actions={false}
-        overlay={
+  const overlay = (
           <>
             {/* Hidden input that carries the phone keyboard. Always mounted so
                 hiding the control area never drops the keyboard. */}
@@ -320,8 +314,9 @@ export default function TypeScreen() {
               </Block>
             )}
           </>
-        }
-      >
+  );
+  const controls = (
+    <>
         <View style={styles.freeRow}>
           {mode === "live" ? (
             <Pressable onPress={startLive} style={({ pressed }) => [styles.liveBtn, pressed && styles.keyPressed]} accessibilityLabel="Ketik langsung ke PC">
@@ -366,9 +361,10 @@ export default function TypeScreen() {
             )}
           </View>
         ))}
-      </ViewerPanel>
-    </SafeAreaView>
+    </>
   );
+  useViewerSlot("Type", { title: "Type", overlay, controls });
+  return null;
 }
 
 const styles = StyleSheet.create({

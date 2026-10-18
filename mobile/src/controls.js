@@ -428,6 +428,7 @@ const sel = {
   win: null, // single-window stream: {id, title, exe, mon, x, y, w, h} or null
   typing: false, // TYPE live typing: keyboard up, viewer chrome hidden
   thumbs: false, // window bar (thumbnails) open over the viewer
+  full: false, // shared viewer in fullscreen: tabs layout hides the tab bar
 };
 const selListeners = new Set();
 
@@ -461,6 +462,7 @@ export function useSel() {
     win: sel.win || null,
     typing: sel.typing,
     thumbs: sel.thumbs,
+    full: sel.full,
     crop: { ...sel.crop },
   });
   useEffect(() => {

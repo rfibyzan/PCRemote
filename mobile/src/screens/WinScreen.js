@@ -5,10 +5,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import Text from "../AppText";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialIcons } from "@expo/vector-icons";
 import { COLORS } from "../components";
-import ViewerPanel from "../viewer";
+import { useViewerSlot } from "../viewerslot";
 import { rowHeight } from "../tablayout";
 import { msg } from "../protocol";
 import { addListener, send } from "../connection";
@@ -140,10 +139,8 @@ export default function WinScreen() {
     );
   }
 
-  return (
+  const controls = (
     <LayoutAnimationConfig skipEntering>
-    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <ViewerPanel title="Win" touchpad={false} actions={false} onTap={releaseApps}>
       <SlideTabs
         items={SECTIONS}
         value={section}
@@ -255,7 +252,12 @@ export default function WinScreen() {
           </View>
         )}
       </Animated.View>
-      </ViewerPanel>
+    </LayoutAnimationConfig>
+  );
+  useViewerSlot("Win", { title: "Win", onTap: releaseApps, controls });
+  // The shortcut editor is a Modal, so it shows from this (empty) tab scene.
+  return (
+    <>
       <ShortcutEditor
         visible={editing != null}
         initial={editing}
@@ -263,8 +265,7 @@ export default function WinScreen() {
         onDelete={editing?.id ? () => deleteShortcut(editing) : null}
         onClose={() => setEditing(null)}
       />
-    </SafeAreaView>
-    </LayoutAnimationConfig>
+    </>
   );
 }
 

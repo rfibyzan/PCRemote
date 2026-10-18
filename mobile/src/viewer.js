@@ -32,7 +32,7 @@ import Reanimated, {
   FadeOut,
   LayoutAnimationConfig,
 } from "react-native-reanimated";
-import { useFocusEffect, useNavigation } from "expo-router";
+import { useFocusEffect } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { COLORS, MonitorChips, ScreenView, getLastFullFrame } from "./components";
@@ -50,6 +50,7 @@ import { setAudioOn, useAudio } from "./audio";
 import { WindowBar, useWindowStream } from "./windowstream";
 import WindowThumbBar from "./winbar";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD, TOOLBAR_H } from "./tablayout";
+import { useSlot } from "./viewerslot";
 import {
   MAX_ZOOM,
   camFor,
@@ -95,7 +96,6 @@ const DRAG_ARM_MS = 70;
 // (view px per 16 ms tick).
 const EDGE_BAND = 32;
 const EDGE_SPEED = 9;
-const TAB_BAR_STYLE = { backgroundColor: "#1c1c1f", borderTopColor: "#2c2c30" };
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -203,7 +203,11 @@ function Toolbar({ items, fold, onFold }) {
   );
 }
 
-export default function ViewerPanel({ title = "", touchpad = true, actions = true, onTap = null, children = null, overlay = null }) {
+export default function ViewerPanel({ active = "" }) {
+  // One viewer for PAD / TYPE / WIN (lives in the tabs layout): the active
+  // tab's slot supplies what differs per tab.
+  const slot = useSlot(active) || {};
+  const { title = "", touchpad = false, actions = false, onTap = null, controls: children = null, overlay = null } = slot;
   // Layout C: header row + viewer (flex: 1) + fixed CONTROL_H area. The
   // control area is identical on PAD / TYPE / WIN, so the viewer is too.
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
@@ -274,7 +278,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // Reticle: precise aim mode. Fullscreen: viewer only, landscape.
   const [reticle, setReticle] = useState(false);
   const [full, setFull] = useState(false);
-  const navigation = useNavigation();
   // Newest frame matches the region asked for (sharp) or not yet (loading).
   const [sharp, setSharp] = useState(true);
   const sharpRef = useRef(true);
@@ -390,6 +393,22 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       hide.remove();
     };
   }, []);
+  // Tab switch inside the shared viewer: the stream keeps running, only the
+  // per-tab bits change. Drop stray touches, edge pan and fullscreen, and
+  // release a held button so nothing stays down on the PC.
+  const prevActive = useRef(active);
+  useEffect(() => {
+    if (prevActive.current === active) return;
+    prevActive.current = active;
+    if (vTouch.current) cancelOneFinger(vTouch.current);
+    vTouch.current = null;
+    stopEdgePan();
+    setFull(false);
+    setStreamOpen(false);
+    if (dragRef.current) releaseHoldSilent();
+    // the helpers only touch refs and module state
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
   const prevClickBtn = useRef(clickBtn);
   useEffect(() => {
     if (prevClickBtn.current !== clickBtn && dragRef.current) releaseHoldSilent();
@@ -1288,17 +1307,11 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       fullMounted.current = true;
       return;
     }
-    try {
-      navigation?.setOptions?.({ tabBarStyle: full ? { display: "none" } : TAB_BAR_STYLE });
-    } catch {
-      // not inside a tab navigator
-    }
-    // Only the focused tab may lock: a blur that exits fullscreen must not
-    // override the next tab's own lock (GAME = landscape).
-    if (full || navigation?.isFocused?.() !== false) applyOrientation(full ? "landscape" : "portrait");
-    // navigation is stable for the screen.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // The tabs layout hides the tab bar while full.
+    setSel({ full });
+    applyOrientation(full ? "landscape" : "portrait");
   }, [full]);
+  useEffect(() => () => setSel({ full: false }), []);
 
   function onFrame(f) {
     // Dropped frames still carry fresh cursor/size metadata, but they were
