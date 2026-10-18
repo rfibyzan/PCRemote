@@ -1,4 +1,4 @@
-import { SENTINELS, chordKey, diffInput, pushRecent } from "./typediff.js";
+import { SENTINELS, chordKey, diffInput, liveDiff, pushRecent } from "./typediff.js";
 let fail = 0;
 const eq = (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { fail++; console.log("FAIL", m, JSON.stringify(a)); } else console.log("PASS", m); };
 const S = SENTINELS[0];
@@ -15,5 +15,14 @@ eq(chordKey("ab"), null, "multi char no chord");
 eq(pushRecent("dun", "ia", 0), "dunia", "recent append");
 eq(pushRecent("dunia", "", 2), "dun", "recent backspace");
 eq(pushRecent("abcdefgh", "ij", 0), "cdefghij", "recent capped");
+const [A, B] = SENTINELS;
+eq(liveDiff(A, A + "f", A), { removed: 0, added: "f" }, "live: normal key");
+eq(liveDiff(A + "f", A + "fa", B), { removed: 0, added: "a" }, "live: reset not landed yet");
+eq(liveDiff(A + "f", B + "a", B), { removed: 0, added: "a" }, "live: reset landed, next key");
+eq(liveDiff(A + "fa", A + "farhan", B), { removed: 0, added: "rhan" }, "live: burst on stale text");
+eq(liveDiff(B, B.slice(0, 1), B), { removed: 1, added: "" }, "live: backspace on sentinel");
+eq(liveDiff(A + "f", A, B), { removed: 1, added: "" }, "live: backspace before reset");
+eq(liveDiff(A + "f", B, B), { removed: 0, added: "" }, "live: reset echo is a no-op");
+eq(liveDiff(A, A + "\n", A), { removed: 0, added: "\n" }, "live: newline");
 if (fail) { console.log(fail, "failed"); process.exit(1); }
 console.log("typediff tests passed");

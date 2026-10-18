@@ -19,7 +19,7 @@ import { COLORS } from "../components";
 import { Block } from "../viewer";
 import { useViewerSlot } from "../viewerslot";
 import { setSel } from "../controls";
-import { SENTINELS, chordKey, diffInput, pushRecent } from "../typediff";
+import { SENTINELS, chordKey, liveDiff, pushRecent } from "../typediff";
 import { rowHeight } from "../tablayout";
 import { registerSetting, settingChanged } from "../settingsync";
 import { msg } from "../protocol";
@@ -63,6 +63,7 @@ export default function TypeScreen() {
   const [recent, setRecent] = useState("");
   const liveRef = useRef(null);
   const liveVal = useRef(SENTINELS[0]);
+  const liveSentinel = useRef(SENTINELS[0]); // the reset we last asked for
   const [liveText, setLiveText] = useState(SENTINELS[0]);
   function setHoldMode(v) {
     pref.hold = v;
@@ -199,12 +200,16 @@ export default function TypeScreen() {
     send(msg.text(added, true));
   }
   function handleLiveChange(t) {
-    const { removed, added } = diffInput(liveVal.current, t);
+    // liveVal = what the native field really holds (last onChangeText), which
+    // may still be the old text if our sentinel reset has not landed yet.
+    const { removed, added } = liveDiff(liveVal.current, t, liveSentinel.current);
+    liveVal.current = t;
+    if (!removed && !added) return;
     sendLive(added, removed);
     setRecent((r) => pushRecent(r, added, removed));
     // Reset to a fresh sentinel so the next Backspace still has something to eat.
-    const nextSentinel = liveVal.current === SENTINELS[0] ? SENTINELS[1] : SENTINELS[0];
-    liveVal.current = nextSentinel;
+    const nextSentinel = liveSentinel.current === SENTINELS[0] ? SENTINELS[1] : SENTINELS[0];
+    liveSentinel.current = nextSentinel;
     setLiveText(nextSentinel);
   }
   function startLive() {

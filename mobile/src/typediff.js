@@ -16,6 +16,31 @@ export function diffInput(prev, next) {
   return { removed: a.length - p, added: b.slice(p) };
 }
 
+/**
+ * Robust live diff. The hidden input is reset to a sentinel after every
+ * change, but when the JS thread lags (bad connection, busy decoder) the
+ * phone keyboard keeps typing into the OLD native text before the reset
+ * lands. Diffing against only what we assumed (the sentinel) then "adds"
+ * sentinel dots that reach the PC as stray ' or ˙ marks.
+ *
+ * So compare the new text against every value the field can really hold
+ * (the last text the keyboard reported, and the sentinel we last set) and take the
+ * smallest edit. Sentinel characters never go to the PC.
+ */
+export function liveDiff(lastNative, next, sentinel = SENTINELS[0]) {
+  const cands = [lastNative, sentinel];
+  let best = null;
+  for (const c of cands) {
+    if (c == null) continue;
+    const d = diffInput(c, next);
+    const cost = d.removed + d.added.length;
+    if (!best || cost < best.cost || (cost === best.cost && d.removed < best.removed)) best = { ...d, cost };
+  }
+  const added = best.added.replace(SENTINEL_RE, "");
+  return { removed: best.removed, added };
+}
+const SENTINEL_RE = /[\u00b7\u02d9]/g;
+
 // Characters the agent's key map knows by name (input.js NAMED_KEYS), so a
 // held Ctrl/Alt/Shift/Win + this char can go as a real chord.
 const CHORD_RE = /^[a-z0-9\-=,./;'[\]\\`]$/i;
