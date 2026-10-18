@@ -15,7 +15,7 @@
  * BAR: scroll strip (scrollbar.js; natural direction by default, ⚙ toggle). The camera is shared across PAD/TYPE/WIN.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Vibration, View } from "react-native";
+import { Image, Keyboard, Pressable, ScrollView, StyleSheet, Vibration, View } from "react-native";
 import Text from "./AppText";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -221,6 +221,12 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // monitor point. Live typing zooms the short view onto it.
   const typePtRef = useRef(null);
   const typeSavedCam = useRef(null);
+  // Edge-to-edge Android does not resize the window for the soft keyboard: it
+  // draws over the lower part of the stream, and the camera cannot pan past
+  // the monitor edge, so a field just above the PC taskbar stayed hidden.
+  // While typing, the viewer box gives up exactly the covered height.
+  const [kbPad, setKbPad] = useState(0);
+  const kbPadRef = useRef(0);
   const mode = shared.mode === "Click" ? "Click" : "Look";
   const looking = mode === "Look";
   const clickBtn = shared.clickBtn;
@@ -359,6 +365,31 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     // focusTyping/unfocusTyping only touch refs and shared values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typing]);
+  useEffect(() => {
+    const setPad = (v) => {
+      kbPadRef.current = v;
+      setKbPad(v);
+    };
+    const show = Keyboard.addListener("keyboardDidShow", (e) => {
+      const top = e?.endCoordinates?.screenY;
+      if (!Number.isFinite(top)) return;
+      try {
+        wrapRef.current?.measure((x, y, w, h, px, py) => {
+          if (!Number.isFinite(py) || !Number.isFinite(h)) return;
+          // Bottom of the box as it would be without our own pad.
+          const bottom = py + h + kbPadRef.current;
+          setPad(Math.max(0, Math.round(bottom - top + 4)));
+        });
+      } catch {
+        // best-effort: without a measurement the old behaviour stays
+      }
+    });
+    const hide = Keyboard.addListener("keyboardDidHide", () => setPad(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
   const prevClickBtn = useRef(clickBtn);
   useEffect(() => {
     if (prevClickBtn.current !== clickBtn && dragRef.current) releaseHoldSilent();
@@ -1408,7 +1439,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         </Pressable>
       </Reanimated.View>
       )}
-      <View style={[styles.viewerBox, full && styles.viewerBoxFull]}>
+      <View style={[styles.viewerBox, full && styles.viewerBoxFull, typing && kbPad > 0 && { minHeight: 0, marginBottom: 6 + kbPad }]}>
         <GestureDetector gesture={lookGesture}>
         <View
           ref={wrapRef}
