@@ -19,7 +19,7 @@ import { COLORS } from "../components";
 import { Block } from "../viewer";
 import { useViewerSlot } from "../viewerslot";
 import { setSel } from "../controls";
-import { SENTINELS, chordKey, liveDiff, pushRecent } from "../typediff";
+import { SENTINELS, chordKey, liveDiff, nextSentinel, pushRecent } from "../typediff";
 import { rowHeight } from "../tablayout";
 import { registerSetting, settingChanged } from "../settingsync";
 import { msg } from "../protocol";
@@ -63,7 +63,7 @@ export default function TypeScreen() {
   const [recent, setRecent] = useState("");
   const liveRef = useRef(null);
   const liveVal = useRef(SENTINELS[0]);
-  const liveSentinel = useRef(SENTINELS[0]); // the reset we last asked for
+  const liveSentinel = useRef(SENTINELS[1]); // the reset we last asked for
   const [liveText, setLiveText] = useState(SENTINELS[0]);
   function setHoldMode(v) {
     pref.hold = v;
@@ -208,9 +208,9 @@ export default function TypeScreen() {
     sendLive(added, removed);
     setRecent((r) => pushRecent(r, added, removed));
     // Reset to a fresh sentinel so the next Backspace still has something to eat.
-    const nextSentinel = liveSentinel.current === SENTINELS[0] ? SENTINELS[1] : SENTINELS[0];
-    liveSentinel.current = nextSentinel;
-    setLiveText(nextSentinel);
+    const reset = nextSentinel(t);
+    liveSentinel.current = reset;
+    setLiveText(reset);
   }
   function startLive() {
     setRecent("");
