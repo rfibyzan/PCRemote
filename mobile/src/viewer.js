@@ -15,7 +15,7 @@
  * BAR: scroll strip (scrollbar.js; natural direction by default, ⚙ toggle). The camera is shared across PAD/TYPE/WIN.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image, Pressable, ScrollView, StyleSheet, Vibration, View } from "react-native";
+import { Image, Keyboard, Pressable, ScrollView, StyleSheet, Vibration, View } from "react-native";
 import Text from "./AppText";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -32,7 +32,7 @@ import Reanimated, {
   FadeOut,
   LayoutAnimationConfig,
 } from "react-native-reanimated";
-import { useFocusEffect, useNavigation } from "expo-router";
+import { useFocusEffect } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { COLORS, MonitorChips, ScreenView, getLastFullFrame } from "./components";
@@ -50,6 +50,7 @@ import { setAudioOn, useAudio } from "./audio";
 import { WindowBar, useWindowStream } from "./windowstream";
 import WindowThumbBar from "./winbar";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD, TOOLBAR_H } from "./tablayout";
+import { useSlot } from "./viewerslot";
 import {
   MAX_ZOOM,
   camFor,
@@ -95,7 +96,6 @@ const DRAG_ARM_MS = 70;
 // (view px per 16 ms tick).
 const EDGE_BAND = 32;
 const EDGE_SPEED = 9;
-const TAB_BAR_STYLE = { backgroundColor: "#1c1c1f", borderTopColor: "#2c2c30" };
 
 function clamp01(v) {
   return Math.max(0, Math.min(1, Number(v) || 0));
@@ -203,7 +203,11 @@ function Toolbar({ items, fold, onFold }) {
   );
 }
 
-export default function ViewerPanel({ title = "", touchpad = true, actions = true, onTap = null, children = null, overlay = null }) {
+export default function ViewerPanel({ active = "" }) {
+  // One viewer for PAD / TYPE / WIN (lives in the tabs layout): the active
+  // tab's slot supplies what differs per tab.
+  const slot = useSlot(active) || {};
+  const { title = "", touchpad = false, actions = false, onTap = null, controls: children = null, overlay = null } = slot;
   // Layout C: header row + viewer (flex: 1) + fixed CONTROL_H area. The
   // control area is identical on PAD / TYPE / WIN, so the viewer is too.
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
@@ -221,6 +225,12 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // monitor point. Live typing zooms the short view onto it.
   const typePtRef = useRef(null);
   const typeSavedCam = useRef(null);
+  // Edge-to-edge Android does not resize the window for the soft keyboard: it
+  // draws over the lower part of the stream, and the camera cannot pan past
+  // the monitor edge, so a field just above the PC taskbar stayed hidden.
+  // While typing, the viewer box gives up exactly the covered height.
+  const [kbPad, setKbPad] = useState(0);
+  const kbPadRef = useRef(0);
   const mode = shared.mode === "Click" ? "Click" : "Look";
   const looking = mode === "Look";
   const clickBtn = shared.clickBtn;
@@ -268,7 +278,6 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // Reticle: precise aim mode. Fullscreen: viewer only, landscape.
   const [reticle, setReticle] = useState(false);
   const [full, setFull] = useState(false);
-  const navigation = useNavigation();
   // Newest frame matches the region asked for (sharp) or not yet (loading).
   const [sharp, setSharp] = useState(true);
   const sharpRef = useRef(true);
@@ -359,6 +368,47 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     // focusTyping/unfocusTyping only touch refs and shared values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typing]);
+  useEffect(() => {
+    const setPad = (v) => {
+      kbPadRef.current = v;
+      setKbPad(v);
+    };
+    const show = Keyboard.addListener("keyboardDidShow", (e) => {
+      const top = e?.endCoordinates?.screenY;
+      if (!Number.isFinite(top)) return;
+      try {
+        wrapRef.current?.measure((x, y, w, h, px, py) => {
+          if (!Number.isFinite(py) || !Number.isFinite(h)) return;
+          // Bottom of the box as it would be without our own pad.
+          const bottom = py + h + kbPadRef.current;
+          setPad(Math.max(0, Math.round(bottom - top + 4)));
+        });
+      } catch {
+        // best-effort: without a measurement the old behaviour stays
+      }
+    });
+    const hide = Keyboard.addListener("keyboardDidHide", () => setPad(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+  // Tab switch inside the shared viewer: the stream keeps running, only the
+  // per-tab bits change. Drop stray touches, edge pan and fullscreen, and
+  // release a held button so nothing stays down on the PC.
+  const prevActive = useRef(active);
+  useEffect(() => {
+    if (prevActive.current === active) return;
+    prevActive.current = active;
+    if (vTouch.current) cancelOneFinger(vTouch.current);
+    vTouch.current = null;
+    stopEdgePan();
+    setFull(false);
+    setStreamOpen(false);
+    if (dragRef.current) releaseHoldSilent();
+    // the helpers only touch refs and module state
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
   const prevClickBtn = useRef(clickBtn);
   useEffect(() => {
     if (prevClickBtn.current !== clickBtn && dragRef.current) releaseHoldSilent();
@@ -1257,17 +1307,11 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
       fullMounted.current = true;
       return;
     }
-    try {
-      navigation?.setOptions?.({ tabBarStyle: full ? { display: "none" } : TAB_BAR_STYLE });
-    } catch {
-      // not inside a tab navigator
-    }
-    // Only the focused tab may lock: a blur that exits fullscreen must not
-    // override the next tab's own lock (GAME = landscape).
-    if (full || navigation?.isFocused?.() !== false) applyOrientation(full ? "landscape" : "portrait");
-    // navigation is stable for the screen.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // The tabs layout hides the tab bar while full.
+    setSel({ full });
+    applyOrientation(full ? "landscape" : "portrait");
   }, [full]);
+  useEffect(() => () => setSel({ full: false }), []);
 
   function onFrame(f) {
     // Dropped frames still carry fresh cursor/size metadata, but they were
@@ -1408,7 +1452,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         </Pressable>
       </Reanimated.View>
       )}
-      <View style={[styles.viewerBox, full && styles.viewerBoxFull]}>
+      <View style={[styles.viewerBox, full && styles.viewerBoxFull, typing && kbPad > 0 && { minHeight: 0, marginBottom: 6 + kbPad }]}>
         <GestureDetector gesture={lookGesture}>
         <View
           ref={wrapRef}

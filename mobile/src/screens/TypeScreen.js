@@ -15,9 +15,9 @@ import { Keyboard, Pressable, StyleSheet, TextInput, View } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "../AppText";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { COLORS } from "../components";
-import ViewerPanel, { Block } from "../viewer";
+import { Block } from "../viewer";
+import { useViewerSlot } from "../viewerslot";
 import { setSel } from "../controls";
 import { SENTINELS, chordKey, diffInput, pushRecent } from "../typediff";
 import { rowHeight } from "../tablayout";
@@ -272,13 +272,7 @@ export default function TypeScreen() {
   const keyH = rowHeight(2, [FIELD_H]);
   const heldHint = held.length ? held.map((k) => k[0].toUpperCase() + k.slice(1)).join("+") + " + …" : null;
 
-  return (
-    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <ViewerPanel
-        title="Type"
-        touchpad={false}
-        actions={false}
-        overlay={
+  const overlay = (
           <>
             {/* Hidden input that carries the phone keyboard. Always mounted so
                 hiding the control area never drops the keyboard. */}
@@ -320,8 +314,9 @@ export default function TypeScreen() {
               </Block>
             )}
           </>
-        }
-      >
+  );
+  const controls = (
+    <>
         <View style={styles.freeRow}>
           {mode === "live" ? (
             <Pressable onPress={startLive} style={({ pressed }) => [styles.liveBtn, pressed && styles.keyPressed]} accessibilityLabel="Ketik langsung ke PC">
@@ -366,9 +361,10 @@ export default function TypeScreen() {
             )}
           </View>
         ))}
-      </ViewerPanel>
-    </SafeAreaView>
+    </>
   );
+  useViewerSlot("Type", { title: "Type", overlay, controls });
+  return null;
 }
 
 const styles = StyleSheet.create({
@@ -389,7 +385,8 @@ const styles = StyleSheet.create({
   sendBtnOff: { opacity: 0.5 },
   modeBtn: { width: FIELD_H, height: FIELD_H, borderRadius: 10, backgroundColor: COLORS.chip, alignItems: "center", justifyContent: "center" },
   hiddenInput: { position: "absolute", left: 0, bottom: 0, width: 2, height: 2, opacity: 0, color: "transparent" },
-  pill: { position: "absolute", right: 8, bottom: 8, maxWidth: "92%", flexDirection: "row", alignItems: "center", gap: 4, paddingLeft: 10, paddingRight: 4, paddingVertical: 4, borderRadius: 18, backgroundColor: "rgba(18,18,20,0.92)", borderWidth: 1, borderColor: "rgba(255,255,255,0.14)" },
+  // Top: the field being typed into usually sits at the bottom of the view.
+  pill: { position: "absolute", right: 8, top: 8, maxWidth: "92%", flexDirection: "row", alignItems: "center", gap: 4, paddingLeft: 10, paddingRight: 4, paddingVertical: 4, borderRadius: 18, backgroundColor: "rgba(18,18,20,0.92)", borderWidth: 1, borderColor: "rgba(255,255,255,0.14)" },
   pillDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#34c759" },
   pillRecent: { color: COLORS.muted, fontSize: 11, maxWidth: 110, marginHorizontal: 4 },
   pillKey: { minWidth: 40, height: 28, paddingHorizontal: 8, borderRadius: 14, backgroundColor: COLORS.chip, alignItems: "center", justifyContent: "center" },
