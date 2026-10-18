@@ -456,11 +456,22 @@ export async function beginDragOnMonitor(mon, nx, ny, button = "left") {
   click(button, true, false);
 }
 
+// Drag keeps a relative delta (games/Roblox track drags by mouse deltas) but
+// re-pins the cursor to the exact finger pixel every move. A bare relative
+// move is scaled by Windows pointer acceleration ("Enhance pointer
+// precision") and rounding, so a long text selection drifted off the finger.
 export function moveDragOnMonitor(mon, nx, ny) {
   const pt = monitorPoint(mon, nx, ny);
-  if (lastPos) sendRelative(pt.x - lastPos.x, pt.y - lastPos.y);
-  else sendAbsolute(pt.x, pt.y);
-  lastPos = { x: pt.x, y: pt.y };
+  const tx = Math.round(pt.x);
+  const ty = Math.round(pt.y);
+  if (!lastPos) {
+    sendAbsolute(tx, ty);
+    return;
+  }
+  sendRelative(tx - lastPos.x, ty - lastPos.y);
+  lastInjectAt = Date.now();
+  SetCursorPos(tx, ty);
+  lastPos = { x: tx, y: ty };
 }
 
 export async function endDragOnMonitor(mon, nx, ny, button = "left") {
