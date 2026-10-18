@@ -414,17 +414,34 @@ export function moveAbsOnMonitor(mon, nx, ny) {
 // the click lands where the cursor was on the previous frame, e.g. on the
 // button tapped just before. So a tap moves first, waits at least one frame,
 // then holds the button for at least one frame. Tunable through env vars.
+// Roblox also ignores a pure absolute jump (SetCursorPos / ABSOLUTE move) for
+// its hover/click target until a relative mouse delta arrives, so every
+// click-at-point is followed by a 1 px out-and-back relative nudge (net zero),
+// and the settle covers two frames at 30 fps.
 function envMs(name, fallback) {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && v >= 0 ? v : fallback;
 }
-export const TAP_SETTLE_MS = envMs("PCREMOTE_TAP_SETTLE_MS", 50);
-export const TAP_HOLD_MS = envMs("PCREMOTE_TAP_HOLD_MS", 45);
+export const TAP_SETTLE_MS = envMs("PCREMOTE_TAP_SETTLE_MS", 70);
+export const TAP_HOLD_MS = envMs("PCREMOTE_TAP_HOLD_MS", 50);
+
+// Absolute jump + net-zero relative nudge, re-pinned to the exact pixel.
+async function moveForClick(pt) {
+  sendAbsolute(pt.x, pt.y);
+  focusWindowAt(pt.x, pt.y);
+  await wait(8);
+  sendInputs([
+    mousePacket(1, 0, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE),
+    mousePacket(-1, 0, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE),
+  ]);
+  lastInjectAt = Date.now();
+  SetCursorPos(pt.x, pt.y);
+  lastPos = { x: pt.x, y: pt.y };
+}
 
 export async function tapAbsOnMonitor(mon, nx, ny, button = "left") {
   const pt = monitorPoint(mon, nx, ny);
-  sendAbsolute(pt.x, pt.y);
-  focusWindowAt(pt.x, pt.y);
+  await moveForClick(pt);
   await wait(TAP_SETTLE_MS);
   click(button, true, false);
   await wait(TAP_HOLD_MS);
@@ -434,8 +451,7 @@ export async function tapAbsOnMonitor(mon, nx, ny, button = "left") {
 export async function beginDragOnMonitor(mon, nx, ny, button = "left") {
   buttonsDown = 0;
   const pt = monitorPoint(mon, nx, ny);
-  sendAbsolute(pt.x, pt.y);
-  focusWindowAt(pt.x, pt.y);
+  await moveForClick(pt);
   await wait(TAP_SETTLE_MS);
   click(button, true, false);
 }

@@ -65,6 +65,7 @@ import {
   regionFor,
   resolveCrop,
   rubber,
+  typingCam,
   viewToMonitor,
   visibleRect,
   zoomAt,
@@ -214,6 +215,12 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
   // TYPE live typing: the phone keyboard is up, so toolbar + control area
   // step aside and the stream keeps all the height above the keyboard.
   const typing = !!shared.typing;
+  const typingRef = useRef(typing);
+  typingRef.current = typing;
+  // Where text goes on the PC: the last click (tap, reticle, drag end), as a
+  // monitor point. Live typing zooms the short view onto it.
+  const typePtRef = useRef(null);
+  const typeSavedCam = useRef(null);
   const mode = shared.mode === "Click" ? "Click" : "Look";
   const looking = mode === "Look";
   const clickBtn = shared.clickBtn;
@@ -344,6 +351,14 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [looking]);
+  // Live typing: once the keyboard has settled, zoom onto the typing point;
+  // when it closes, go back to the camera from before.
+  useEffect(() => {
+    const id = setTimeout(() => (typing ? focusTyping() : unfocusTyping()), typing ? 350 : 300);
+    return () => clearTimeout(id);
+    // focusTyping/unfocusTyping only touch refs and shared values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typing]);
   const prevClickBtn = useRef(clickBtn);
   useEffect(() => {
     if (prevClickBtn.current !== clickBtn && dragRef.current) releaseHoldSilent();
@@ -935,6 +950,30 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
     const r = retRef.current;
     const v = viewToMonitor(g.vw / 2 + r.x, g.vh / 2 + r.y, camRef.current, g.fit, g.vw, g.vh);
     send(msg.abs(clamp01(v.x), clamp01(v.y), btn || clickBtnRef.current));
+    noteTypePoint(clamp01(v.x), clamp01(v.y));
+  }
+
+  function noteTypePoint(x, y) {
+    typePtRef.current = { x, y };
+    if (typingRef.current) focusTyping();
+  }
+
+  // Keyboard up: zoom so the field being typed into stays readable above it.
+  // Falls back to the PC cursor when nothing was clicked yet.
+  function focusTyping() {
+    const g = geom();
+    const p = typePtRef.current || curRef.current;
+    if (!g || !p || current === "cam") return;
+    if (!typeSavedCam.current) typeSavedCam.current = camToNorm(camRef.current, g.fit, g.vw, g.vh);
+    animateCamTo(typingCam(camRef.current, p.x, p.y, g.fit, g.vw, g.vh));
+  }
+
+  function unfocusTyping() {
+    const saved = typeSavedCam.current;
+    typeSavedCam.current = null;
+    const g = geom();
+    if (!saved || !g) return;
+    animateCamTo(normToCam(saved, g.fit, g.vw, g.vh));
   }
 
   function onViewerTouchStart(e) {
@@ -1055,6 +1094,7 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
         return;
       }
       send(msg.abs(m.x, m.y, clickBtnRef.current));
+      noteTypePoint(m.x, m.y);
       // Record for double/triple-tap: 2nd quick tap = word select
       // (double-click), 3rd = line select. A 2nd tap that moves becomes a
       // word-drag via the doubleTap flag set at touch start.
@@ -1384,7 +1424,10 @@ export default function ViewerPanel({ title = "", touchpad = true, actions = tru
             // Keep the same monitor point centred when the view resizes
             // (soft keyboard, rotation), clamped to the new edges.
             const a = monitorAspect();
-            if (a && prev.w && prev.h && (prev.w !== width || prev.h !== height)) {
+            if (typingRef.current && (typePtRef.current || curRef.current) && prev.w && (prev.w !== width || prev.h !== height)) {
+              // Keyboard just resized the view: re-aim at the typing point.
+              focusTyping();
+            } else if (a && prev.w && prev.h && (prev.w !== width || prev.h !== height)) {
               const n = camToNorm(camRef.current, fitCanvas(prev.w, prev.h, a), prev.w, prev.h);
               applyCamInstant(normToCam(n, fitCanvas(width, height, a), width, height));
             } else if (!prev.w) {

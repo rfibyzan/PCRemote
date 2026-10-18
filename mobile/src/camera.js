@@ -127,6 +127,18 @@ export function camFor(s, cx, cy, fit, vw, vh) {
 }
 
 /**
+ * Live typing with the phone keyboard up: the view is short, so zoom in until
+ * about TYPE_SPAN of the monitor width fills it and centre the point where the
+ * text goes (the last click). Never zooms out from a closer camera.
+ */
+export const TYPE_SPAN = 0.45;
+export function typingCam(cur, cx, cy, fit, vw, vh) {
+  const want = vw / (TYPE_SPAN * Math.max(1, fit.bw));
+  const s = Math.max(cur?.s || 1, want);
+  return camFor(s, cx, cy, fit, vw, vh);
+}
+
+/**
  * Camera that frames a monitor-normalized rect {x, y, w, h} (single-window
  * stream): the whole rect fits the view, centred. Clamped like any camera.
  */

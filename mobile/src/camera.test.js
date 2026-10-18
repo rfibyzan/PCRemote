@@ -13,6 +13,7 @@ import {
   regionFor,
   resolveCrop,
   rubber,
+  typingCam,
   viewToMonitor,
   visibleRect,
   zoomAt,
@@ -133,6 +134,18 @@ ok(resolveCrop(null, sent).w === 1, "missing header = whole monitor");
   const c3 = camForRect({ x: 0, y: 0, w: 0.5, h: 0.5 }, tall, 300, 600);
   const v3 = visibleRect(c3, tall, 300, 600);
   ok(v3.x <= 1e-6 && v3.w >= 0.5 - 1e-6, "portrait view: window width fits");
+}
+
+// typingCam: short view (keyboard up) zooms to the typing point
+{
+  const f = fitCanvas(400, 200, 16 / 9);
+  const c = typingCam({ s: 1, tx: 0, ty: 0 }, 0.5, 0.95, f, 400, 200);
+  const v = visibleRect(c, f, 400, 200);
+  ok(v.w <= 0.46 && v.w >= 0.3, "typing view shows about 45% of the width");
+  ok(v.y <= 0.95 && v.y + v.h >= 0.95, "low text field (y=0.95) is visible");
+  ok(v.x <= 0.5 && v.x + v.w >= 0.5, "typing point horizontally visible");
+  const closer = typingCam({ s: 6, tx: 0, ty: 0 }, 0.2, 0.2, f, 400, 200);
+  ok(near(closer.s, 6), "never zooms out from a closer camera");
 }
 
 console.log(`${pass}/${pass + fail} passed`);
