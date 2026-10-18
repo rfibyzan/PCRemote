@@ -31,7 +31,8 @@ import {
 } from "./input.js";
 import { QUALITY, captureMonitor, cursorOnMonitor, cursorPos as monCursorPos, cursorShape, encodeProfile, frameFingerprint, listDxgiOutputs, listMonitors } from "./monitors.js";
 import { createPresence, presenceStep } from "./pointerstate.js";
-import { agentVersion, checkForUpdate } from "./updates.js";
+import { CHECK_EVERY_MS, agentVersion, checkForUpdate } from "./updates.js";
+import { downloadAndStage, progressText, takeUpdateResult } from "./updater.js";
 import { hideConsole, startTray, claimSingleInstance } from "./tray.js";
 import { superviseTunnel } from "./tunnel.js";
 import { listWindows, windowAction } from "./windows.js";
@@ -95,6 +96,12 @@ const state = {
   lastAnnounceAt: 0,
   name: (hostname() || "PC").slice(0, 40),
   clients: new Set(),
+  // Release update: newest release when newer than this one, last check,
+  // the running one-click update, and what the last update did.
+  update: null,
+  updateCheck: { at: 0, error: "" },
+  updateJob: null,
+  updateResult: null,
 };
 const devices = createDeviceStore();
 const autostart = createAutostartCache();
@@ -153,6 +160,43 @@ function apiState() {
     autostart: autostart.get(),
     now: Date.now(),
   };
+}
+
+async function runUpdateCheck() {
+  const r = await checkForUpdate();
+  state.updateCheck = { at: Date.now(), error: r.ok ? "" : r.error };
+  if (r.ok) {
+    state.update = r.update;
+    if (r.update) console.log(`PC Remote ${r.update.tag} is available (running ${agentVersion()}): ${r.update.url}`);
+  }
+  return r;
+}
+
+function updateCheckText() {
+  const v = agentVersion();
+  if (!v) return "Versi dev (git). Perbarui dengan git pull.";
+  const c = state.updateCheck;
+  if (!c.at) return `Versi ${v}`;
+  const when = new Date(c.at).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+  if (c.error) return `Versi ${v} · gagal mengecek pukul ${when} (${c.error})`;
+  return state.update ? `Versi ${v} · ${state.update.tag} tersedia` : `Versi ${v} · sudah terbaru (dicek pukul ${when})`;
+}
+
+/** Banner on top of the dashboard: the result of the last update (once),
+ * else the newer release with "Perbarui sekarang". */
+function updateBanner() {
+  const r = state.updateResult;
+  if (r && Date.now() - Number(r.at || 0) < 10 * 60 * 1000) {
+    return r.ok
+      ? `<div class="update ok"><span>PC Remote diperbarui ke ${escapeHtml(String(r.tag))} ✓</span></div>`
+      : `<div class="update bad"><span>Pembaruan ke ${escapeHtml(String(r.tag))} gagal, versi lama dipakai lagi. Lihat update.log di folder PC Remote.</span></div>`;
+  }
+  const u = state.update;
+  if (!u) return "";
+  const notes = `<a href="${escapeHtml(u.url)}" target="_blank" rel="noopener">Catatan rilis ›</a>`;
+  if (!u.asset) return `<div class="update"><span>Versi baru ${escapeHtml(u.tag)} tersedia</span>${notes}</div>`;
+  const mb = u.asset.size ? ` · ${(u.asset.size / 1048576).toFixed(0)} MB` : "";
+  return `<div class="update"><span class="msg">Versi baru ${escapeHtml(u.tag)} tersedia<small id="updateSub">Unduh dan pasang otomatis${mb}. Pengaturan dan pairing tetap.</small></span><span class="acts">${notes}<button type="button" id="doUpdate" data-tag="${escapeHtml(u.tag)}">Perbarui sekarang</button></span></div>`;
 }
 
 function readJson(req) {
@@ -324,6 +368,9 @@ function helloPayload() {
     port: state.port,
     // Lets the phone tell an old agent apart from a failing feature.
     features: ["winThumbs", "winMax", "apps", "settings", "lan", "audio"],
+    // Release tag ("v1.3.0"), "" in a git checkout: the phone compares it
+    // with its own version and suggests updating the app.
+    version: agentVersion(),
   };
 }
 
@@ -586,6 +633,11 @@ function dashboard(qrSvg = "") {
   .update { display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--accbg); border-radius:12px; padding:13px 18px; font-size:16px; font-weight:500; margin:0 0 24px; }
   .update a { color:#aaa5ff; text-decoration:none; white-space:nowrap; }
   .update a:hover { text-decoration:underline; }
+  .update .acts { display:flex; align-items:center; gap:14px; }
+  .update .msg { display:flex; flex-direction:column; gap:3px; }
+  .update .msg small { font-size:13px; font-weight:400; color:#c9c7ff; }
+  .update.ok { background:rgba(52,199,89,.14); }
+  .update.bad { background:rgba(248,113,113,.14); }
   .sec { display:flex; justify-content:space-between; align-items:baseline; margin:0 16px 8px; color:var(--mut); font-size:13px; font-weight:500; text-transform:uppercase; letter-spacing:.3px; }
   .sec .new { color:var(--acc); font-size:12px; font-weight:700; }
   .group { background:var(--card); border-radius:14px; margin-bottom:30px; overflow:hidden; }
@@ -667,7 +719,7 @@ function dashboard(qrSvg = "") {
 </style></head>
 <body><div class="wrap">
   <div class="head"><h1>PC Remote<small>${escapeHtml(state.name)}</small></h1><span class="phones"><span class="dot ${n ? "on" : "off"}" id="count-dot"></span><span id="count">${n} HP terhubung</span></span></div>
-  ${state.update ? `<div class="update"><span>Versi baru ${escapeHtml(state.update.tag)} tersedia</span><a href="${escapeHtml(state.update.url)}" target="_blank" rel="noopener">Download ›</a></div>` : ""}
+  ${updateBanner()}
 
   <div class="sec">Pasangkan HP</div>
   <div class="group pair">
@@ -716,6 +768,13 @@ function dashboard(qrSvg = "") {
         <div class="s" id="restartSub">${restartSupported() ? "Memuat ulang kode agent, HP tersambung lagi otomatis dalam beberapa detik" : "Hanya tersedia bila dijalankan lewat PCRemote.exe atau start.bat"}</div>
       </div>
       <button type="button" id="restart"${restartSupported() ? "" : " disabled"}>Mulai ulang</button>
+    </div>
+    <div class="row">
+      <div class="main">
+        <div class="t">Pembaruan</div>
+        <div class="s" id="checkSub">${escapeHtml(updateCheckText())}</div>
+      </div>
+      <button type="button" id="checkUpd"${agentVersion() ? "" : " disabled"}>Cek sekarang</button>
     </div>
   </div>
 
@@ -819,6 +878,40 @@ function dashboard(qrSvg = "") {
         if (tries > 60) { clearInterval(poll); sub.textContent = "Agent belum kembali. Cek ikon PC Remote di tray."; }
       }, 1000);
     }, function(){ sub.textContent = "Gagal menghubungi agent"; btn.disabled = false; btn.textContent = "Mulai ulang"; });
+  };
+  var checkBtn = document.getElementById("checkUpd");
+  checkBtn.onclick = function(){
+    var sub = document.getElementById("checkSub");
+    checkBtn.disabled = true; checkBtn.textContent = "Mengecek…";
+    post("/api/update/check", {}).then(function(r){
+      if (r && r.update) { location.reload(); return; }
+      sub.textContent = (r && r.text) || "Gagal mengecek";
+      checkBtn.disabled = false; checkBtn.textContent = "Cek sekarang";
+    }, function(){ sub.textContent = "Gagal menghubungi agent"; checkBtn.disabled = false; checkBtn.textContent = "Cek sekarang"; });
+  };
+  var updBtn = document.getElementById("doUpdate");
+  if (updBtn) updBtn.onclick = function(){
+    var sub = document.getElementById("updateSub");
+    if (!confirm("Perbarui PC Remote ke " + updBtn.getAttribute("data-tag") + "?\\nHP akan terputus sebentar, lalu tersambung lagi otomatis.")) return;
+    updBtn.disabled = true; updBtn.textContent = "Memperbarui…";
+    post("/api/update", {}).then(function(r){
+      if (r && r.ok === false) { sub.textContent = "Gagal: " + (r.error || "tidak diketahui"); updBtn.disabled = false; updBtn.textContent = "Perbarui sekarang"; return; }
+      var wasDown = false, tries = 0;
+      var poll = setInterval(function(){
+        tries++;
+        if (!wasDown) {
+          fetch("/api/update/status", { cache: "no-store" }).then(function(x){ return x.json(); }).then(function(j){
+            if (j && j.text) sub.textContent = j.text;
+            if (j && j.phase === "error") { clearInterval(poll); updBtn.disabled = false; updBtn.textContent = "Coba lagi"; }
+          }, function(){ wasDown = true; sub.textContent = "Memasang, PC Remote akan mulai ulang…"; });
+        } else {
+          fetch("/health", { cache: "no-store" }).then(function(x){ return x.json(); }).then(function(h){
+            if (h && h.ok) { clearInterval(poll); location.reload(); }
+          }, function(){});
+        }
+        if (tries > 900) { clearInterval(poll); sub.textContent = "PC Remote belum kembali. Buka lagi PCRemote.exe, lihat update.log di folder PC Remote."; }
+      }, 1000);
+    }, function(){ sub.textContent = "Gagal menghubungi agent"; updBtn.disabled = false; updBtn.textContent = "Perbarui sekarang"; });
   };
   function refresh(){
     fetch("/api/state", { cache: "no-store" }).then(function(r){ return r.json(); }).then(render).catch(function(){});
@@ -1125,6 +1218,8 @@ function applyLock(lock) {
 async function main() {
   applyLock(loadLock());
   state.lan = lanAddresses();
+  state.updateResult = takeUpdateResult();
+  if (state.updateResult) devices.log(state.updateResult.ok ? `Diperbarui ke ${state.updateResult.tag}` : `Pembaruan ke ${state.updateResult.tag} gagal (versi lama dipakai)`, "warn");
 
   if (process.platform === "win32" && !claimSingleInstance()) {
     console.log("PC Remote is already running.");
@@ -1176,6 +1271,47 @@ async function main() {
       res.end("{\"ok\":true,\"quit\":true}");
       console.log("Quit requested from this PC; shutting down.");
       scheduleQuit({ stop: quitHooks });
+      return;
+    }
+    // Dashboard "Cek sekarang" / "Perbarui sekarang" (release installs only).
+    if (url === "/api/update/check" && quitAllowed(req)) {
+      void runUpdateCheck().then(() => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: !state.updateCheck.error, update: state.update, text: updateCheckText() }));
+      });
+      return;
+    }
+    if (url === "/api/update" && quitAllowed(req)) {
+      const err = !agentVersion() ? "Versi git: perbarui dengan git pull" : !state.update ? "Tidak ada versi baru" : !state.update.asset ? "Rilis ini tidak punya paket Windows" : "";
+      if (err) {
+        res.writeHead(409, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: false, error: err }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{\"ok\":true}");
+      if (state.updateJob && state.updateJob.phase !== "error") return; // already running
+      const target = state.update;
+      state.updateJob = { phase: "download", done: 0, total: target.asset.size || 0 };
+      console.log(`Updating to ${target.tag} from ${target.asset.name}`);
+      devices.log(`Memperbarui ke ${target.tag}`, "warn");
+      void downloadAndStage(target, { onProgress: (p) => (state.updateJob = p) }).then(
+        () => {
+          console.log("Update staged; exiting so apply-update.ps1 can swap the files.");
+          scheduleQuit({ stop: quitHooks, code: 0, delayMs: 800 });
+        },
+        (e) => {
+          state.updateJob = { phase: "error", error: e?.message || String(e) };
+          console.warn(`Update failed: ${state.updateJob.error}`);
+          devices.log(`Pembaruan gagal: ${state.updateJob.error}`, "warn");
+        },
+      );
+      return;
+    }
+    if (req.method === "GET" && url === "/api/update/status") {
+      const j = state.updateJob;
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      res.end(JSON.stringify({ phase: j?.phase || "idle", text: progressText(j) }));
       return;
     }
     // Dashboard "Mulai ulang": exit 75, the launcher / start.bat brings the
@@ -1348,15 +1484,10 @@ async function main() {
 
   try {
     state.port = await listenOnFreePort(server, DEFAULT_PORT);
-    // Release builds check GitHub once at start and then twice a day.
-    const runUpdateCheck = () =>
-      checkForUpdate().then((u) => {
-        state.update = u;
-        if (u) console.log(`PC Remote ${u.tag} is available (running ${agentVersion()}): ${u.url}`);
-      });
+    // Release builds check GitHub at start and then every 6 hours.
     if (agentVersion()) {
-      runUpdateCheck();
-      setInterval(runUpdateCheck, 12 * 60 * 60 * 1000).unref?.();
+      void runUpdateCheck();
+      setInterval(runUpdateCheck, CHECK_EVERY_MS).unref?.();
     }
   } catch (err) {
     if (err.code === "EADDRINUSE") {
