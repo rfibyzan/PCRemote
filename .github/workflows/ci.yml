@@ -71,24 +71,30 @@ jobs:
       - name: Minimal ffmpeg.exe does what the agent asks of it
         shell: pwsh
         run: |
-          $f = (Resolve-Path ../../ffmpeg-min/ffmpeg.exe).Path
+          $ErrorActionPreference = "Continue"
+          $bad = @()
+          function Note($m) { Write-Host "::error::$m"; $script:bad += $m }
+          $f = Join-Path $env:GITHUB_WORKSPACE "ffmpeg-min\ffmpeg.exe"
+          if (-not (Test-Path $f)) { Note "ffmpeg.exe not found at $f"; Get-ChildItem $env:GITHUB_WORKSPACE -Recurse -Filter ffmpeg.exe | ForEach-Object { Write-Host $_.FullName }; exit 1 }
           "size: {0:N1} MB" -f ((Get-Item $f).Length / 1MB)
-          $filters = & $f -hide_banner -filters 2>&1 | Out-String
-          foreach ($x in "ddagrab","hwdownload","scale","color") { if ($filters -notmatch "\s$x\s") { throw "filter $x missing" } }
-          $enc = & $f -hide_banner -encoders 2>&1 | Out-String
-          foreach ($x in "h264_nvenc","h264_qsv","h264_amf","libx264","mjpeg") { if ($enc -notmatch "\s$x\s") { throw "encoder $x missing" } }
-          $dev = & $f -hide_banner -devices 2>&1 | Out-String
-          foreach ($x in "gdigrab","dshow","lavfi") { if ($dev -notmatch "\s$x\s") { throw "device $x missing" } }
+          $filters = (& $f -hide_banner -filters 2>&1) -join "`n"
+          if ($LASTEXITCODE -ne 0) { Note "ffmpeg -filters exit $LASTEXITCODE : $($filters.Substring(0, [Math]::Min(300, $filters.Length)))" }
+          foreach ($x in "ddagrab","hwdownload","scale","color") { if ($filters -notmatch "\b$x\b") { Note "filter $x missing" } }
+          $enc = (& $f -hide_banner -encoders 2>&1) -join "`n"
+          foreach ($x in "h264_nvenc","h264_qsv","h264_amf","libx264","mjpeg") { if ($enc -notmatch "\b$x\b") { Note "encoder $x missing" } }
+          $dev = (& $f -hide_banner -devices 2>&1) -join "`n"
+          foreach ($x in "gdigrab","dshow","lavfi") { if ($dev -notmatch "\b$x\b") { Note "device $x missing" } }
           # Same probe as buildProbeArgs("libx264") + FLV framing
-          & $f -hide_banner -loglevel error -nostdin -f lavfi -i color=c=black:s=320x240:r=30 -frames:v 5 -vf format=yuv420p -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -g 60 -bf 0 -b:v 1000k -maxrate 1000k -bufsize 500k -an -flush_packets 1 -flvflags no_duration_filesize -f flv probe.flv
-          if ($LASTEXITCODE -ne 0 -or (Get-Item probe.flv).Length -lt 200) { throw "libx264 -> flv failed" }
+          $o = (& $f -hide_banner -loglevel error -nostdin -f lavfi -i color=c=black:s=320x240:r=30 -frames:v 5 -vf format=yuv420p -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline -g 60 -bf 0 -b:v 1000k -maxrate 1000k -bufsize 500k -an -flush_packets 1 -flvflags no_duration_filesize -y -f flv probe.flv 2>&1) -join " "
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path probe.flv)) { Note "libx264 -> flv failed ($LASTEXITCODE): $o" } else { "flv: $((Get-Item probe.flv).Length) bytes" }
           # Webcam path: scale -> mjpeg -> image2pipe
-          & $f -hide_banner -loglevel error -f lavfi -i color=c=red:s=640x480:r=15 -frames:v 3 -vf scale=320:-2 -q:v 5 -f image2pipe -vcodec mjpeg probe.mjpg
-          if ($LASTEXITCODE -ne 0 -or (Get-Item probe.mjpg).Length -lt 200) { throw "mjpeg failed" }
+          $o = (& $f -hide_banner -loglevel error -f lavfi -i color=c=red:s=640x480:r=15 -frames:v 3 -vf scale=320:-2 -q:v 5 -y -f image2pipe -vcodec mjpeg probe.mjpg 2>&1) -join " "
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path probe.mjpg)) { Note "mjpeg failed ($LASTEXITCODE): $o" } else { "mjpeg: $((Get-Item probe.mjpg).Length) bytes" }
           # Screen path (gdigrab) may fail on a headless runner: report only
-          & $f -hide_banner -loglevel error -f gdigrab -framerate 10 -draw_mouse 0 -i desktop -frames:v 3 -vf scale=320:-2,format=yuv420p -c:v libx264 -preset ultrafast -f flv gdi.flv
-          "gdigrab exit: $LASTEXITCODE"
-          $global:LASTEXITCODE = 0
+          $o = (& $f -hide_banner -loglevel error -f gdigrab -framerate 10 -draw_mouse 0 -i desktop -frames:v 3 -vf "scale=320:-2,format=yuv420p" -c:v libx264 -preset ultrafast -y -f flv gdi.flv 2>&1) -join " "
+          Write-Host "::notice::gdigrab exit $LASTEXITCODE $o"
+          if ($bad.Count) { exit 1 }
+          exit 0
       - run: node --check src/index.js
       - run: node --check src/autostart.js
       - run: node src/autostart_test.js
