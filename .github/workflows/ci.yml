@@ -92,7 +92,9 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path probe.mjpg)) { Note "mjpeg failed ($LASTEXITCODE): $o" } else { "mjpeg: $((Get-Item probe.mjpg).Length) bytes" }
           # Screen path (gdigrab) may fail on a headless runner: report only
           $o = (& $f -hide_banner -loglevel error -f gdigrab -framerate 10 -draw_mouse 0 -i desktop -frames:v 3 -vf "scale=320:-2,format=yuv420p" -c:v libx264 -preset ultrafast -y -f flv gdi.flv 2>&1) -join " "
-          Write-Host "::notice::gdigrab exit $LASTEXITCODE $o"
+          $gs = if (Test-Path gdi.flv) { (Get-Item gdi.flv).Length } else { 0 }
+          Write-Host "::notice::gdigrab exit $LASTEXITCODE, $gs bytes $o"
+          if ($o -match "no decoder") { Note "gdigrab: $o" }
           if ($bad.Count) { exit 1 }
           exit 0
       - run: node --check src/index.js

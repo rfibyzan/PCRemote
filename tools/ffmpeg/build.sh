@@ -84,7 +84,7 @@ cd "ffmpeg-$FFMPEG_VER"
   --enable-w32threads --enable-d3d11va --enable-dxva2 \
   --enable-ffnvcodec --enable-nvenc --enable-amf --enable-libvpl --enable-libx264 \
   --enable-encoder=h264_nvenc,h264_amf,h264_qsv,libx264,mjpeg,rawvideo,wrapped_avframe \
-  --enable-decoder=mjpeg,rawvideo \
+  --enable-decoder=mjpeg,rawvideo,wrapped_avframe,bmp \
   --enable-parser=h264,hevc,mjpeg \
   `# hevc parser only to link aom_film_grain.o (ffmpeg 7.1 h2645_sei bug)` \
   --enable-indev=gdigrab,dshow,lavfi \
