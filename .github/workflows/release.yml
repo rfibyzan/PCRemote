@@ -2,7 +2,7 @@ name: Release
 
 # Push a tag like v1.2.0 (or run it by hand from the Actions tab) and this
 # builds the ready-to-use Windows folder as a zip on GitHub Releases (plus a
-# small PCRemote-<tag>-update.zip for the dashboard's "Perbarui sekarang"):
+# no separate update zip: "Perbarui sekarang" uses the same -windows.zip):
 #   PCRemote.exe, HOW-TO.txt, runtime/node.exe, runtime/ffmpeg.exe (minimal,
 #   tools/ffmpeg/build.sh), runtime/agent (with node_modules + version.txt).
 #   cloudflared.exe is downloaded by the agent on first start. The committed
@@ -117,12 +117,8 @@ jobs:
           Copy-Item PCRemote.apk "dist/PCRemote-$env:TAG.apk"
           Copy-Item runtime/agent "$out/runtime/agent" -Recurse
           Set-Content "$out/runtime/agent/version.txt" $env:TAG -NoNewline
-          # Small zip for the dashboard's one-click update (src/updater.js):
-          # PCRemote.exe + runtime/agent only; node/ffmpeg/cloudflared stay.
-          $up = "dist/update/PCRemote"
-          New-Item -ItemType Directory -Force "$up/runtime" | Out-Null
-          Copy-Item "$out/PCRemote.exe", "$out/HOW-TO.txt" $up
-          Copy-Item "$out/runtime/agent" "$up/runtime/agent" -Recurse
+          # One zip only: the dashboard's one-click update (updates.js
+          # pickUpdateAsset) falls back to this -windows.zip when no -update.zip exists.
           # node.exe = the same Node version the dependencies were installed with
           $v = node -p "process.version"
           Invoke-WebRequest "https://nodejs.org/dist/$v/win-x64/node.exe" -OutFile "$out/runtime/node.exe"
@@ -133,7 +129,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "ffmpeg.exe does not run" }
           Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum | ForEach-Object { "folder: {0:N1} MB" -f ($_.Sum / 1MB) }
           # 7-Zip max compression (Deflate, still a normal .zip for Windows/updater).
-          Push-Location dist/update; 7z a -tzip -mx=9 "../PCRemote-$env:TAG-update.zip" PCRemote | Out-Null; Pop-Location
           Push-Location dist; 7z a -tzip -mx=9 "PCRemote-$env:TAG-windows.zip" PCRemote | Out-Null; Pop-Location
           Get-ChildItem dist/*.zip | ForEach-Object { "{0}: {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
       - uses: softprops/action-gh-release@v2
@@ -143,7 +138,6 @@ jobs:
           generate_release_notes: true
           files: |
             dist/PCRemote-${{ env.TAG }}-windows.zip
-            dist/PCRemote-${{ env.TAG }}-update.zip
             dist/PCRemote-${{ env.TAG }}.apk
 
   apk:
