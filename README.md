@@ -26,8 +26,8 @@ dua file ini:
 
 | File | Untuk | Isi |
 |---|---|---|
-| `PCRemote-vX.Y.Z-windows.zip` | PC | `PCRemote.exe`, `HOW-TO.txt`, `PCRemote.apk`, dan folder `runtime` (sudah berisi `node.exe`, `ffmpeg.exe`, `cloudflared.exe`, agent + dependensinya) |
-| `PCRemote-vX.Y.Z.apk` | HP | Aplikasi Android (sama dengan `PCRemote.apk` di dalam zip) |
+| `PCRemote-vX.Y.Z-windows.zip` | PC | `PCRemote.exe`, `HOW-TO.txt`, dan folder `runtime` (berisi `node.exe`, `ffmpeg.exe` minimal, agent + dependensinya). `cloudflared.exe` diunduh otomatis saat start pertama. |
+| `PCRemote-vX.Y.Z.apk` | HP | Aplikasi Android (tidak lagi ikut di zip PC) |
 
 Tidak perlu memasang Node.js atau apa pun lagi.
 
@@ -180,8 +180,8 @@ Place these next to `runtime/` as in a release folder:
 | File | Where to get it |
 |---|---|
 | `runtime/node.exe` | Node.js LTS (https://nodejs.org) |
-| `runtime/ffmpeg.exe` | Full static build (https://www.gyan.dev/ffmpeg/builds/) |
-| `runtime/cloudflared.exe` | https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ |
+| `runtime/ffmpeg.exe` | Minimal build: `bash tools/ffmpeg/build.sh` (mingw-w64), or any full build (https://www.gyan.dev/ffmpeg/builds/) |
+| `runtime/cloudflared.exe` | Optional: the agent downloads it on first start. Manual: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ |
 
 `ViGEmClient.dll` ships in `runtime/agent/` (MIT, see `ViGEmClient.LICENSE.txt`);
 install [ViGEmBus](https://github.com/ViGEm/ViGEmBus) on the PC for gamepad support.

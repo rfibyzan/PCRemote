@@ -30,3 +30,7 @@ Thumbs.db
 desktop.ini
 
 PCRemote.old.exe
+
+# ffmpeg minimal build (tools/ffmpeg/build.sh)
+tools/ffmpeg/work/
+tools/ffmpeg/out/
