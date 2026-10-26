@@ -3,10 +3,11 @@ name: Release
 # Push a tag like v1.2.0 (or run it by hand from the Actions tab) and this
 # builds the ready-to-use Windows folder as a zip on GitHub Releases (plus a
 # small PCRemote-<tag>-update.zip for the dashboard's "Perbarui sekarang"):
-#   PCRemote.exe, HOW-TO.txt, runtime/node.exe, runtime/ffmpeg.exe,
-#   runtime/cloudflared.exe, runtime/agent (with node_modules + version.txt),
-#   PCRemote.apk. The committed PCRemote.apk (latest local release build) is
-#   also attached on its own as PCRemote-<tag>.apk.
+#   PCRemote.exe, HOW-TO.txt, runtime/node.exe, runtime/ffmpeg.exe (minimal,
+#   tools/ffmpeg/build.sh), runtime/agent (with node_modules + version.txt).
+#   cloudflared.exe is downloaded by the agent on first start. The committed
+#   PCRemote.apk (latest local release build) is attached on its own as
+#   PCRemote-<tag>.apk (not inside the PC zip).
 # If the repo secret EXPO_TOKEN exists, the preview APK is built on EAS and
 # replaces that attachment. Note: SF Pro is gitignored, so a CI-built APK uses Roboto.
 on:
@@ -25,10 +26,37 @@ env:
   TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  # Minimal static ffmpeg.exe (tools/ffmpeg/build.sh): only the capture,
+  # encoders and muxers the agent uses, ~10-20 MB instead of ~100+ MB.
+  ffmpeg:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: tools/ffmpeg/out/ffmpeg.exe
+          key: ffmpeg-min-${{ hashFiles('tools/ffmpeg/build.sh') }}
+      - name: Toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 nasm cmake pkg-config
+      - name: Build ffmpeg.exe
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash tools/ffmpeg/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-min
+          path: tools/ffmpeg/out/ffmpeg.exe
+
+  windows:
+    runs-on: windows-latest
+    needs: ffmpeg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-min
+          path: ffmpeg-min
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -84,7 +112,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           $out = "dist/PCRemote"
           New-Item -ItemType Directory -Force "$out/runtime" | Out-Null
-          Copy-Item PCRemote.exe, HOW-TO.txt, PCRemote.apk $out
+          # APK is NOT in the PC zip any more (-35 MB): it is its own release asset.
+          Copy-Item PCRemote.exe, HOW-TO.txt $out
           Copy-Item PCRemote.apk "dist/PCRemote-$env:TAG.apk"
           Copy-Item runtime/agent "$out/runtime/agent" -Recurse
           Set-Content "$out/runtime/agent/version.txt" $env:TAG -NoNewline
@@ -94,15 +123,19 @@ jobs:
           New-Item -ItemType Directory -Force "$up/runtime" | Out-Null
           Copy-Item "$out/PCRemote.exe", "$out/HOW-TO.txt" $up
           Copy-Item "$out/runtime/agent" "$up/runtime/agent" -Recurse
-          Compress-Archive -Path $up -DestinationPath "dist/PCRemote-$env:TAG-update.zip"
           # node.exe = the same Node version the dependencies were installed with
           $v = node -p "process.version"
           Invoke-WebRequest "https://nodejs.org/dist/$v/win-x64/node.exe" -OutFile "$out/runtime/node.exe"
-          Invoke-WebRequest "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "$out/runtime/cloudflared.exe"
-          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
-          Copy-Item (Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName "$out/runtime/ffmpeg.exe"
-          Compress-Archive -Path $out -DestinationPath "dist/PCRemote-$env:TAG-windows.zip"
+          # cloudflared is NOT bundled (-52 MB): src/tunnel.js downloads it to
+          # runtime\cloudflared.exe on first start when it is missing.
+          Copy-Item ffmpeg-min/ffmpeg.exe "$out/runtime/ffmpeg.exe"
+          & "$out/runtime/ffmpeg.exe" -hide_banner -filters | Select-String ddagrab
+          if ($LASTEXITCODE -ne 0) { throw "ffmpeg.exe does not run" }
+          Get-ChildItem $out -Recurse -File | Measure-Object Length -Sum | ForEach-Object { "folder: {0:N1} MB" -f ($_.Sum / 1MB) }
+          # 7-Zip max compression (Deflate, still a normal .zip for Windows/updater).
+          Push-Location dist/update; 7z a -tzip -mx=9 "../PCRemote-$env:TAG-update.zip" PCRemote | Out-Null; Pop-Location
+          Push-Location dist; 7z a -tzip -mx=9 "PCRemote-$env:TAG-windows.zip" PCRemote | Out-Null; Pop-Location
+          Get-ChildItem dist/*.zip | ForEach-Object { "{0}: {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
