@@ -1,5 +1,7 @@
 import { spawn, execSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tunnelBackoffMs } from "./keepalive.js";
@@ -60,6 +62,43 @@ function findBinary() {
   return "cloudflared";
 }
 
+/** cloudflared is no longer bundled in the release zip (-52 MB): fetched once on first start. */
+export const CLOUDFLARED_URL =
+  "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
+
+/** Where a downloaded cloudflared.exe lives: next to node.exe (runtime/). */
+export function downloadTarget() {
+  const dir = process.env.PCREMOTE_RUNTIME || join(agentRoot, "..");
+  return join(dir, "cloudflared.exe");
+}
+
+let downloading = null;
+/** Download cloudflared.exe to runtime/ once; resolves to its path or "" on failure. */
+export function downloadCloudflared(target = downloadTarget(), url = CLOUDFLARED_URL) {
+  if (downloading) return downloading;
+  downloading = (async () => {
+    const tmp = `${target}.part`;
+    try {
+      mkdirSync(dirname(target), { recursive: true });
+      console.log("cloudflared belum ada, mengunduh sekali (~50 MB)...");
+      const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10 * 60_000) });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
+      if (statSync(tmp).size < 5_000_000) throw new Error("file terlalu kecil");
+      renameSync(tmp, target);
+      console.log(`cloudflared terunduh: ${target}`);
+      return target;
+    } catch (err) {
+      console.warn("unduh cloudflared gagal:", err.message);
+      try { rmSync(tmp, { force: true }); } catch { /* ignore */ }
+      return "";
+    } finally {
+      downloading = null;
+    }
+  })();
+  return downloading;
+}
+
 function killProcessTree(pid) {
   if (!pid) return;
   try {
@@ -96,7 +135,7 @@ function spawnTunnel(bin, port, onUrl) {
 }
 
 export function superviseTunnel(port, onUrl) {
-  const bin = findBinary();
+  let bin = findBinary();
   let child = null;
   let stopped = false;
   let delay = 2000;
@@ -104,6 +143,21 @@ export function superviseTunnel(port, onUrl) {
 
   function spawnOnce() {
     if (stopped || child) return;
+    if (bin === "cloudflared" && process.platform === "win32") {
+      // Not bundled and not installed: fetch it, then try again.
+      spawnedAt = Date.now();
+      downloadCloudflared().then((path) => {
+        if (path) bin = path;
+        else {
+          const wait = delay;
+          delay = tunnelBackoffMs(delay);
+          setTimeout(spawnOnce, wait);
+          return;
+        }
+        spawnOnce();
+      });
+      return;
+    }
     spawnedAt = Date.now();
     child = spawnTunnel(bin, port, (url) => {
       delay = 2000;
