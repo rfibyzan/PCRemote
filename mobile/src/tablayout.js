@@ -9,7 +9,7 @@
  * tabs inside that area, stream settings live in a popover over the viewer.
  * Pure: no React Native imports, tested in tablayout.test.js.
  */
-export const CONTROL_H = 128; // dp, the tab's control area under the toolbar
+export const CONTROL_H = 176; // dp, the tab's control area under the toolbar (v2: 48 dp buttons)
 export const TOOLBAR_H = 44; // dp, shared Sill-style toolbar under the viewer (Lipat hides CONTROL_H)
 export const CONTROL_GAP = 6;
 export const CONTROL_PAD = 6; // bottom padding inside CONTROL_H

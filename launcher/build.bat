@@ -18,7 +18,7 @@ rem move it aside so you can rebuild while remoting in through PC Remote.
 if exist ..\PCRemote.old.exe del /q ..\PCRemote.old.exe >nul 2>&1
 if exist ..\PCRemote.exe move /y ..\PCRemote.exe ..\PCRemote.old.exe >nul || goto fail
 
-"%CSC%" /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs || goto fail
+"%CSC%" /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:..\runtime\agent\webview2\Microsoft.Web.WebView2.Core.dll /r:..\runtime\agent\webview2\Microsoft.Web.WebView2.WinForms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs AppIdentity.cs DashboardWindow.cs DashForm.cs || goto fail
 echo Built ..\PCRemote.exe
 rem "build.bat run": start the new launcher now. It replaces the running
 rem PC Remote (old launcher + agent) by itself; phones reconnect in seconds.

@@ -4,6 +4,9 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useAppFonts } from "../fonts";
 import "../settingsync";
 import UpdateBanner from "../UpdateBanner";
+import { useEffect } from "react";
+import { startClipSync } from "../clipsync";
+import { startFileTransfer } from "../filexfer";
 
 // Dark navigation theme: during the tab cross-fade the navigator background
 // shows through, and the default (light) theme flashed white.
@@ -13,6 +16,12 @@ export default function RootLayout() {
   // Optional local UI font (src/fonts): wait for it so the first frame never
   // flips fonts. Without font files this is ready immediately.
   const fontsReady = useAppFonts();
+  // Automatic clipboard sync with the PC (clipsync.js), app-wide.
+  useEffect(() => {
+    startClipSync();
+    // Files from the PC (Explorer "Send to") can arrive on any screen.
+    startFileTransfer();
+  }, []);
   if (!fontsReady) return null;
   // Gesture handler root: the Look viewer's pan/pinch/double-tap run on the
   // UI thread through react-native-gesture-handler + Reanimated.

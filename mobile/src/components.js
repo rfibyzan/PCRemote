@@ -97,7 +97,7 @@ export function getLastFullFrame(monKey) {
   return _lastFullByMon[k] || _lastByMon[k]?.uri || null;
 }
 
-export function ScreenView({ style, imageStyle, onFrame, monKey, placed = false, resolveCrop = null }) {
+function ScreenViewImpl({ style, imageStyle, onFrame, monKey, placed = false, resolveCrop = null }) {
   const keyFor = (k) => (k === undefined || k === null ? "all" : String(k));
   const [uris, setUris] = useState(() => [_lastByMon[keyFor(monKey)]?.uri || null, null]);
   // Monitor rect each slot shows (placed mode only).
@@ -327,6 +327,12 @@ export function ScreenView({ style, imageStyle, onFrame, monKey, placed = false,
     </View>
   );
 }
+
+// Memo: the parent viewer re-renders ~10x/s while panning/zooming. With
+// stable props (the viewer passes a ref-backed onFrame) the two image layers
+// are not re-diffed on every parent render; frames still update through this
+// component's own state. Callbacks are read through refs, never stale.
+export const ScreenView = React.memo(ScreenViewImpl);
 
 const styles = StyleSheet.create({
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 6, padding: 8 },

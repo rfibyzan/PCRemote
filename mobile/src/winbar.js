@@ -8,6 +8,8 @@
  * agent answers with the list and then {t:"winThumbs", thumbs:{id: base64}}.
  * Minimized windows (and old agents) have no thumbnail: an icon shows instead.
  * Wrap the bar in Block where it sits over the viewer.
+ * panel: the v2 layout - "Jendela di PC" header with ✕ and a 3-per-row grid
+ * that scrolls vertically, shown in the control area under the viewer.
  */
 import React, { useEffect, useState } from "react";
 import { Alert, Image, Pressable, ScrollView, StyleSheet, View } from "react-native";
@@ -25,7 +27,7 @@ const POLL_MS = 2000;
 const TW = 104;
 const TH = 62;
 
-export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
+export default function WindowThumbBar({ activeId = null, onFocus, onStream, panel = false, onClose }) {
   const [list, setList] = useState(null);
   const [thumbs, setThumbs] = useState({});
   const [menu, setMenu] = useState(null);
@@ -77,14 +79,30 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
   }
 
   return (
-    <View style={styles.strip}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
+    <View style={panel ? styles.panel : styles.strip}>
+      {panel && (
+        <View style={styles.panelHead}>
+          <Text style={styles.panelTitle}>Jendela di PC</Text>
+          <Text style={styles.panelHint}>tahan = menu</Text>
+          <Pressable onPress={onClose} hitSlop={10} accessibilityLabel="Tutup daftar jendela">
+            <MaterialCommunityIcons name="close" size={18} color={COLORS.muted} />
+          </Pressable>
+        </View>
+      )}
+      <ScrollView
+        horizontal={!panel}
+        showsHorizontalScrollIndicator={false}
+        showsVerticalScrollIndicator={panel}
+        nestedScrollEnabled
+        style={panel ? styles.panelScroll : undefined}
+        contentContainerStyle={panel ? styles.grid : styles.row}
+      >
         <PressScale
           onPress={() => setApps(true)}
-          style={({ pressed }) => [styles.tile, styles.addTile, pressed && styles.pressed]}
+          style={({ pressed }) => [styles.tile, panel && styles.tileGrid, styles.addTile, pressed && styles.pressed]}
           accessibilityLabel="Buka aplikasi di PC"
         >
-          <View style={styles.thumb}>
+          <View style={[styles.thumb, panel && styles.thumbGrid]}>
             <MaterialCommunityIcons name="plus" size={28} color={COLORS.accent} />
           </View>
           <Text style={styles.name} numberOfLines={1}>
@@ -108,10 +126,10 @@ export default function WindowThumbBar({ activeId = null, onFocus, onStream }) {
                 setMenu(w);
               }}
               delayLongPress={350}
-              style={({ pressed }) => [styles.tile, on && styles.tileOn, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.tile, panel && styles.tileGrid, on && styles.tileOn, pressed && styles.pressed]}
               accessibilityLabel={`${tileName(w)}: ${w.title}`}
             >
-              <View style={styles.thumb}>
+              <View style={[styles.thumb, panel && styles.thumbGrid]}>
                 {img ? (
                   // Fades in once when the first thumbnail lands; later refreshes swap in place.
                   <Animated.View key="img" entering={FadeIn.duration(220)} style={styles.thumbImg}>
@@ -197,6 +215,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   row: { paddingHorizontal: 6, gap: 6 },
+  // Panel (control area): header + 3-per-row grid that scrolls vertically.
+  panel: { flex: 1, backgroundColor: COLORS.card, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: COLORS.line, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 4 },
+  panelHead: { flexDirection: "row", alignItems: "center", gap: 8, paddingBottom: 6, paddingHorizontal: 2 },
+  panelTitle: { color: COLORS.text, fontSize: 13, fontWeight: "700", flex: 1 },
+  panelHint: { color: COLORS.muted, fontSize: 10 },
+  panelScroll: { flex: 1 },
+  grid: { flexDirection: "row", flexWrap: "wrap", gap: 6, paddingBottom: 4 },
+  tileGrid: { width: "31.8%" },
+  thumbGrid: { height: 44 },
   empty: {
     color: COLORS.muted,
     fontSize: 12,

@@ -15,7 +15,7 @@
  * BAR: scroll strip (scrollbar.js; natural direction by default, ⚙ toggle). The camera is shared across PAD/TYPE/WIN.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Image, Keyboard, Pressable, ScrollView, StyleSheet, Vibration, View } from "react-native";
+import { Alert, Image, Keyboard, Pressable, StyleSheet, Vibration, View } from "react-native";
 import Text from "./AppText";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -33,6 +33,7 @@ import Reanimated, {
   LayoutAnimationConfig,
 } from "react-native-reanimated";
 import { useFocusEffect } from "expo-router";
+import * as SecureStore from "expo-secure-store";
 import { StatusBar } from "expo-status-bar";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { COLORS, MonitorChips, ScreenView, getLastFullFrame } from "./components";
@@ -40,7 +41,7 @@ import { applyOrientation } from "./orientation";
 import { MotionView, PressScale } from "./motion";
 import VideoLayer from "./videoview";
 import { VideoToggle, isVideoActive } from "./video";
-import { ConnDot, LagBanner, StreamControls, StreamStats, getSel, setSel, useMonitorSource, useSel } from "./controls";
+import { ConnDot, LagBanner, StreamControls, StreamHealth, StreamStats, getSel, setSel, useMonitorSource, useSel } from "./controls";
 import { trackFrameBytes } from "./cursor";
 import { BAR_W, BarScroll, ScrollSettings, sendSwipeScroll } from "./scrollbar";
 import { msg } from "./protocol";
@@ -51,6 +52,9 @@ import { WindowBar, useWindowStream } from "./windowstream";
 import WindowThumbBar from "./winbar";
 import { CONTROL_H, CONTROL_GAP, CONTROL_PAD, TOOLBAR_H } from "./tablayout";
 import { useSlot } from "./viewerslot";
+import { useClipSync } from "./clipsync";
+import { pickAndSend } from "./filexfer";
+import TransferPanel from "./transferpanel";
 import {
   MAX_ZOOM,
   camFor,
@@ -66,13 +70,15 @@ import {
   regionFor,
   resolveCrop,
   rubber,
-  typingCam,
   viewToMonitor,
   visibleRect,
   zoomAt,
 } from "./camera";
+import { caretTarget, followCam, shouldRezoom, textPxFromZoom, zoomForText } from "./caretmath";
+import { setCaretTextPx, useCaretPref } from "./caretpref";
 
 const RING = 22;
+const PAD_BTN_H = 48; // PAD Kiri / tengah / Kanan row (tablayout.test: rowHeight(1, [48]))
 const ZOOM_MS = 220;
 // While moving we ask for a roomy region so small pans need no new crop;
 // once the camera rests we ask for a tight one so the view is sharp.
@@ -89,6 +95,14 @@ const FOCAL_JUMP = 36;
 // Zoom slider: log scale so 1x->2x, 2x->4x and 4x->8x get equal travel.
 const LOG_MAX = Math.log2(MAX_ZOOM);
 const ZOOM_TICKS = [1, 2, 4, 8].filter((z) => z <= MAX_ZOOM);
+// Zoom ruler (camera style, under the viewer centre): one 2x step = RULER_UNIT
+// px split into RULER_PER_UNIT ticks.
+const RULER_W = 280;
+const RULER_UNIT = 72;
+const RULER_PER_UNIT = 9;
+const RULER_STEP = RULER_UNIT / RULER_PER_UNIT;
+const RULER_SPACE = 84; // value bubble + ruler + margins, reserved at the viewer bottom
+const RULER_TICKS =Array.from({ length: Math.round(LOG_MAX * RULER_PER_UNIT) + 1 }, (_, i) => i);
 // One-finger drag waits this long before starting a PC drag, so a second
 // finger landing (a pinch) cancels it instead of dragging on the PC.
 const DRAG_ARM_MS = 70;
@@ -151,57 +165,92 @@ export function Block({ children, ...props }) {
   );
 }
 
-// Toolbar under the viewer (Sill style): icon + small label buttons, scrolls
-// sideways when they don't fit; Lipat (fold) stays pinned at the right.
-// One toolbar scroll position for every tab (Pad, Type, Win, ...): scrolling
-// it in one tab leaves the others at the same spot.
-let toolbarX = 0;
-
-function Toolbar({ items, fold, onFold }) {
-  const ref = useRef(null);
-  const restore = useCallback(() => {
-    ref.current?.scrollTo({ x: toolbarX, animated: false });
-  }, []);
-  useFocusEffect(restore);
+// Toolbar under the viewer (v2): a few equal-width icon + label buttons,
+// no sideways scroll. Rarely used tools (Mode, Bar, Bidik, Lipat) live in
+// the "Lainnya" popover (MoreMenu) so every label can be a plain word.
+function Toolbar({ items }) {
   return (
     <Reanimated.View entering={FadeInDown.duration(180)} exiting={FadeOut.duration(120)} style={styles.toolbar}>
-      <ScrollView
-        ref={ref}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.tbScroll}
-        contentContainerStyle={styles.tbContent}
-        scrollEventThrottle={32}
-        onScroll={(e) => {
-          toolbarX = e.nativeEvent.contentOffset.x;
-        }}
-        onContentSizeChange={restore}
-      >
-        {items.filter(Boolean).map((it) => (
-          <PressScale
-            key={it.id}
-            onPress={it.onPress}
-            hitSlop={2}
-            accessibilityLabel={it.label}
-            style={({ pressed }) => [styles.tbBtn, it.on && styles.tbBtnOn, pressed && styles.tbBtnPressed]}
-          >
-            <MaterialCommunityIcons name={it.icon} size={19} color={it.on ? "#ffffff" : COLORS.text} />
-            <Text style={[styles.tbLabel, it.on && styles.tbLabelOn]}>{it.label}</Text>
-          </PressScale>
-        ))}
-      </ScrollView>
-      <PressScale
-        onPress={onFold}
-        hitSlop={2}
-        accessibilityLabel={fold ? "Buka kontrol" : "Lipat kontrol"}
-        style={({ pressed }) => [styles.tbBtn, pressed && styles.tbBtnPressed]}
-      >
-        <MaterialCommunityIcons name={fold ? "chevron-up" : "chevron-down"} size={22} color={COLORS.text} />
-        <Text style={styles.tbLabel}>{fold ? "Buka" : "Lipat"}</Text>
-      </PressScale>
+      {items.filter(Boolean).map((it) => (
+        <PressScale
+          key={it.id}
+          onPress={it.onPress}
+          onLongPress={it.onMenu}
+          delayLongPress={350}
+          hitSlop={2}
+          accessibilityLabel={it.label}
+          style={({ pressed }) => [styles.tbBtn, it.on && styles.tbBtnOn, pressed && styles.tbBtnPressed]}
+        >
+          <View style={styles.tbIconRow}>
+            <MaterialCommunityIcons name={it.icon} size={18} color={it.on ? COLORS.accent : COLORS.text} />
+            {!!it.onMenu && (
+              // Small ▾ = its own menu (e.g. Klik: L / R / M).
+              <Pressable onPress={it.onMenu} hitSlop={10} accessibilityLabel={`${it.label}: pilihan`}>
+                <MaterialCommunityIcons name="menu-down" size={16} color={COLORS.muted} />
+              </Pressable>
+            )}
+          </View>
+          <Text style={[styles.tbLabel, it.on && styles.tbLabelOn]} numberOfLines={1}>{it.label}</Text>
+        </PressScale>
+      ))}
     </Reanimated.View>
   );
 }
+
+// "Lainnya" popover: one row per tool, icon + label + on/off state.
+function MoreMenu({ items, onClose }) {
+  return (
+    <View style={styles.moreBox}>
+      {items.filter(Boolean).map((it) => (
+        <Pressable
+          key={it.id}
+          onPress={() => {
+            it.onPress();
+            onClose();
+          }}
+          style={({ pressed }) => [styles.moreItem, it.on && styles.moreItemOn, pressed && styles.tbBtnPressed]}
+          accessibilityLabel={it.label}
+        >
+          <MaterialCommunityIcons name={it.icon} size={18} color={it.on ? COLORS.accent : COLORS.text} />
+          <Text style={[styles.moreText, it.on && styles.tbLabelOn]}>{it.label}</Text>
+          {!!it.note && <Text style={styles.moreNote}>{it.note}</Text>}
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+// Gesture hints are for learning: each one shows a few times, then never
+// again (count kept on the phone).
+const STORE_HINTS = "pcremote.hints";
+const HINT_SHOWS = 3;
+const hintCount = { n: 0, loaded: false };
+SecureStore.getItemAsync(STORE_HINTS)
+  .then((v) => {
+    hintCount.n = Number(v) || 0;
+    hintCount.loaded = true;
+  })
+  .catch(() => {
+    hintCount.loaded = true;
+  });
+function takeHint() {
+  if (!hintCount.loaded || hintCount.n >= HINT_SHOWS) return false;
+  hintCount.n += 1;
+  SecureStore.setItemAsync(STORE_HINTS, String(hintCount.n)).catch(() => {});
+  return true;
+}
+
+function monitorLabel(current) {
+  if (String(current) === "all") return "Semua";
+  if (String(current) === "cam") return "Kamera";
+  const n = Number(current);
+  return Number.isFinite(n) ? `Layar ${n + 1}` : "Layar";
+}
+
+// Everything the viewer renders from the shared selection. Not crop (read on
+// demand through cropRef) nor source (useMonitorSource): a crop update while
+// panning must not re-render this whole tree.
+const VIEWER_SEL_KEYS = ["mode", "bar", "clickBtn", "fold", "win", "typing", "thumbs"];
 
 export default function ViewerPanel({ active = "" }) {
   // One viewer for PAD / TYPE / WIN (lives in the tabs layout): the active
@@ -211,7 +260,7 @@ export default function ViewerPanel({ active = "" }) {
   // Layout C: header row + viewer (flex: 1) + fixed CONTROL_H area. The
   // control area is identical on PAD / TYPE / WIN, so the viewer is too.
   // Shared across PAD/TYPE/WIN tabs: mode, source, click button and crop.
-  const shared = useSel();
+  const shared = useSel(VIEWER_SEL_KEYS);
   const snd = useAudio();
   const bar = shared.bar;
   // Lipat: hide the tab's control area so the stream gets that height too.
@@ -225,6 +274,18 @@ export default function ViewerPanel({ active = "" }) {
   // monitor point. Live typing zooms the short view onto it.
   const typePtRef = useRef(null);
   const typeSavedCam = useRef(null);
+  // "Zoom ikut teks": while typing the camera follows the PC caret
+  // ({t:"caret"}, caretmath.js). A pan hands control to the user (manual)
+  // until the next click from this phone or the next typing session.
+  const caretPref = useCaretPref();
+  const caretPrefRef = useRef(caretPref);
+  caretPrefRef.current = caretPref;
+  const caretFollowRef = useRef(true);
+  const caretLastRef = useRef(null); // last usable caret (caretTarget) or null
+  const caretHRef = useRef(null); // caret height the zoom was computed for
+  const caretZoomRef = useRef(null);
+  const caretActiveRef = useRef(false); // keyboard settled, camera saved
+  const [caretLabel, setCaretLabel] = useState("manual");
   // Edge-to-edge Android does not resize the window for the soft keyboard: it
   // draws over the lower part of the stream, and the camera cannot pan past
   // the monitor edge, so a field just above the PC taskbar stayed hidden.
@@ -234,14 +295,13 @@ export default function ViewerPanel({ active = "" }) {
   const mode = shared.mode === "Click" ? "Click" : "Look";
   const looking = mode === "Look";
   const clickBtn = shared.clickBtn;
-  const crop = shared.crop;
   // Single-window stream: the picked app window (camera framed on it) or null.
   const win = shared.win || null;
   // Window bar (thumbnails of open windows) toggled from the toolbar / WIN tab.
   const thumbs = !!shared.thumbs;
   const { monitors, current, camError, pick } = useMonitorSource();
-  const cropRef = useRef(crop);
-  cropRef.current = crop;
+  // Live view of the shared crop (the viewer does not subscribe to it).
+  const cropRef = useMemo(() => ({ get current() { return getSel().crop; } }), []);
   const clickBtnRef = useRef(clickBtn);
   clickBtnRef.current = clickBtn;
   // Optional WIN-only hook: release held Alt-Tab when the viewer is tapped.
@@ -269,15 +329,30 @@ export default function ViewerPanel({ active = "" }) {
   // Last completed tap (for double/triple-tap word/line select).
   const tapRef = useRef({ t: 0, x: 0, y: 0 });
   // Zoom slider (Look, right edge): absolute 1x..MAX_ZOOM, centre-anchored.
-  const [trackH, setTrackH] = useState(0);
-  const trackHV = useSharedValue(120);
-  const trackHRef = useRef(0);
   const sliderDrag = useRef(null);
   const [sliderHot, setSliderHot] = useState(false);
   const sliderHotTimer = useRef(null);
   // Reticle: precise aim mode. Fullscreen: viewer only, landscape.
   const [reticle, setReticle] = useState(false);
   const [full, setFull] = useState(false);
+  // v2 chrome: monitor picker / Lainnya popovers, zoom slider shown on demand
+  // (Zoom button or while zoomed), PAD Drag toggle (latched mouse button).
+  const [monOpen, setMonOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [zoomOpen, setZoomOpen] = useState(false);
+  const [dragOn, setDragOn] = useState(false);
+  const [clickOpen, setClickOpen] = useState(false); // Klik ▾: L / R / M menu
+  // Ruler opened from the Zoom button hides again after 3 s untouched
+  // (it stays while zoomed in, so the zoom level is always readable).
+  useEffect(() => {
+    if (!zoomOpen || sliderHot) return undefined;
+    const t = setTimeout(() => setZoomOpen(false), 3000);
+    return () => clearTimeout(t);
+  }, [zoomOpen, sliderHot]);
+  // Touchpad tap detection: max fingers, travel and start time of a touch.
+  const padTap = useRef(null);
+  // A touch that began on the Drag button: no pointer move, no tap-click.
+  const padSkip = useRef(false);
   // Newest frame matches the region asked for (sharp) or not yet (loading).
   const [sharp, setSharp] = useState(true);
   const sharpRef = useRef(true);
@@ -324,6 +399,7 @@ export default function ViewerPanel({ active = "" }) {
   useEffect(() => {
     return addListener((event) => {
       if (event.t === "cur" && typeof event.cx === "number") feedCursor(event.cx, event.cy);
+      else if (event.t === "caret") onCaretRef.current?.(event);
       else if (event.t === "ptr") setPtr({ shape: String(event.shape || "arrow"), local: Boolean(event.local) });
       else if (event.t === "hello" || event.t === "close") setPtr(null);
     });
@@ -360,14 +436,26 @@ export default function ViewerPanel({ active = "" }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [looking]);
-  // Live typing: once the keyboard has settled, zoom onto the typing point;
+  // Live typing: once the keyboard has settled, follow the caret;
   // when it closes, go back to the camera from before.
   useEffect(() => {
-    const id = setTimeout(() => (typing ? focusTyping() : unfocusTyping()), typing ? 350 : 300);
+    if (typing) saveTypingCam();
+    else endCaretTyping();
+    const id = setTimeout(() => (typing ? startCaretTyping() : unfocusTyping()), typing ? 350 : 300);
     return () => clearTimeout(id);
-    // focusTyping/unfocusTyping only touch refs and shared values.
+    // startCaretTyping/unfocusTyping only touch refs and shared values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typing]);
+  // Sakelar "Zoom ikut teks" flipped while typing: on = follow from now.
+  useEffect(() => {
+    if (typingRef.current && caretPref.follow) {
+      caretFollowRef.current = true;
+      caretHRef.current = null;
+      applyCaret(true);
+    }
+    // applyCaret only reads refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caretPref.follow]);
   useEffect(() => {
     const setPad = (v) => {
       kbPadRef.current = v;
@@ -619,6 +707,12 @@ export default function ViewerPanel({ active = "" }) {
   const restRef = useRef(null);
   const jsMove = useRef((s, tx, ty) => moveRef.current?.(s, tx, ty)).current;
   const jsRest = useRef((s, tx, ty) => restRef.current?.(s, tx, ty)).current;
+  const manualRef = useRef(null);
+  const pinchEndRef = useRef(null);
+  const jsManual = useRef(() => manualRef.current?.()).current;
+  const jsPinchEnd = useRef((s0, s1) => pinchEndRef.current?.(s0, s1)).current;
+  manualRef.current = goManual;
+  pinchEndRef.current = onPinchEnd;
   moveRef.current = onCamMove;
   restRef.current = onCamRest;
 
@@ -691,9 +785,10 @@ export default function ViewerPanel({ active = "" }) {
 
   function resetCropSilent() {
     applyCamInstant({ s: 1, tx: 0, ty: 0 });
+    // Old crop, read BEFORE the store is reset below.
+    const c = cropRef.current;
     setSel({ cam: { z: 1, cx: 0.5, cy: 0.5 } });
     setCrop({ x: 0, y: 0, w: 1, h: 1 });
-    const c = cropRef.current;
     if (c.w < 0.995 || c.h < 0.995) sendCropIfChanged({ x: 0, y: 0, w: 1, h: 1 });
   }
 
@@ -717,6 +812,7 @@ export default function ViewerPanel({ active = "" }) {
   const decayLeft = useSharedValue(0);
   const pinching = useSharedValue(false);
   const lastF = useSharedValue({ x: 0, y: 0 });
+  const pinch0S = useSharedValue(1);
   const pinchEndAt = useSharedValue(0);
   const panS = useSharedValue({ tx: 0, ty: 0, ox: 0, oy: 0, lx: 0, ly: 0, held: false, mixed: false });
   // Reticle offset from the view centre (px). In reticle mode the finger
@@ -784,6 +880,7 @@ export default function ViewerPanel({ active = "" }) {
         cancelAnimation(camX);
         cancelAnimation(camY);
         pinching.value = true;
+        pinch0S.value = camS.value;
         lastF.value = { x: e.focalX, y: e.focalY };
         startS.value = { s: camS.value, tx: camX.value, ty: camY.value, fx: e.focalX, fy: e.focalY, k0: e.scale, n: e.numberOfPointers };
       })
@@ -816,6 +913,7 @@ export default function ViewerPanel({ active = "" }) {
         }
       })
       .onEnd(() => {
+        runOnJS(jsPinchEnd)(pinch0S.value, camS.value);
         settle(0, 0);
       })
       .onFinalize(() => {
@@ -834,6 +932,7 @@ export default function ViewerPanel({ active = "" }) {
         cancelAnimation(camX);
         cancelAnimation(camY);
         panS.value = { tx: camX.value, ty: camY.value, ox: e.translationX, oy: e.translationY, lx: e.translationX, ly: e.translationY, held: pinching.value, mixed: pinching.value };
+        if (!retOn.value && !pinching.value) runOnJS(jsManual)();
       })
       .onUpdate((e) => {
         if (pinching.value || e.numberOfPointers !== 1) {
@@ -1005,17 +1104,97 @@ export default function ViewerPanel({ active = "" }) {
 
   function noteTypePoint(x, y) {
     typePtRef.current = { x, y };
-    if (typingRef.current) focusTyping();
+    // A click from this phone while typing: follow the caret again.
+    if (!typingRef.current) return;
+    if (!caretFollowRef.current) {
+      caretFollowRef.current = true;
+      caretHRef.current = null;
+      applyCaret(true);
+    } else applyCaret(false); // catch up after a drag held the camera still
   }
 
-  // Keyboard up: zoom so the field being typed into stays readable above it.
-  // Falls back to the PC cursor when nothing was clicked yet.
-  function focusTyping() {
+  // Pixel height of what is being viewed (caret heights are relative to it).
+  // "all": the tallest monitor, right for the usual side-by-side layout.
+  function viewPxH() {
+    const ms = monitors || [];
+    if (current === "all") return Math.max(0, ...ms.map((m) => m.h || 0));
+    return ms.find((m) => String(m.id) === String(current))?.h || 0;
+  }
+
+  function syncCaretLabel() {
+    const next = caretFollowRef.current && caretLastRef.current ? "ikut caret" : "manual";
+    setCaretLabel((l) => (l === next ? l : next));
+  }
+
+  const onCaretRef = useRef(null);
+  onCaretRef.current = (m) => {
+    caretLastRef.current = caretTarget(m, viewPxH());
+    if (typingRef.current) applyCaret(false);
+  };
+
+  // Aim at the caret. No caret -> the camera stays where it is.
+  function applyCaret(force) {
+    syncCaretLabel();
+    if (!caretActiveRef.current || !typingRef.current || !caretPrefRef.current.follow || !caretFollowRef.current || current === "cam") return;
+    if (vTouch.current?.dragging || pinching.value) return;
+    const t = caretLastRef.current;
     const g = geom();
-    const p = typePtRef.current || curRef.current;
-    if (!g || !p || current === "cam") return;
-    if (!typeSavedCam.current) typeSavedCam.current = camToNorm(camRef.current, g.fit, g.vw, g.vh);
-    animateCamTo(typingCam(camRef.current, p.x, p.y, g.fit, g.vw, g.vh));
+    if (!t || !g) return;
+    if (t.validH && (force || shouldRezoom(caretHRef.current, t.h))) {
+      caretHRef.current = t.h;
+      caretZoomRef.current = zoomForText(caretPrefRef.current.textPx, t.h, g.fit);
+    }
+    const c = followCam(camRef.current, t, caretZoomRef.current ?? camRef.current.s, g.fit, g.vw, g.vh);
+    if (c) animateCamTo(c);
+  }
+
+  // Typing starts: remember the camera at once, before any caret move.
+  function saveTypingCam() {
+    const g = geom();
+    if (g && current !== "cam" && !typeSavedCam.current) typeSavedCam.current = camToNorm(camRef.current, g.fit, g.vw, g.vh);
+  }
+
+  function endCaretTyping() {
+    caretActiveRef.current = false;
+    caretLastRef.current = null;
+    caretHRef.current = null;
+    caretZoomRef.current = null;
+  }
+
+  // Keyboard settled: follow the caret from now on.
+  function startCaretTyping() {
+    saveTypingCam();
+    caretActiveRef.current = true;
+    caretFollowRef.current = true;
+    caretHRef.current = null;
+    caretZoomRef.current = null;
+    applyCaret(true);
+  }
+
+  function goManual() {
+    if (!typingRef.current || !caretFollowRef.current) return;
+    caretFollowRef.current = false;
+    syncCaretLabel();
+  }
+
+  // Pinch while typing sets how big text looks on the phone (kept, and the
+  // camera keeps following). A two-finger move without zoom is a pan.
+  function onPinchEnd(s0, s1) {
+    if (!typingRef.current) return;
+    if (Math.abs(s1 - s0) / Math.max(0.01, s0) < 0.05) {
+      goManual();
+      return;
+    }
+    if (!caretPrefRef.current.follow) return;
+    caretFollowRef.current = true;
+    caretZoomRef.current = s1;
+    const t = caretLastRef.current;
+    const g = geom();
+    if (t?.validH && g) {
+      setCaretTextPx(textPxFromZoom(s1, t.h, g.fit));
+      caretHRef.current = t.h;
+    }
+    syncCaretLabel();
   }
 
   function unfocusTyping() {
@@ -1129,7 +1308,10 @@ export default function ViewerPanel({ active = "" }) {
       const ex = st.px ?? st.x;
       const ey = st.py ?? st.y;
       const m = mapToMonitor(ex, ey);
-      if (m) send(msg.drag("end", m.x, m.y, clickBtnRef.current));
+      if (m) {
+        send(msg.drag("end", m.x, m.y, clickBtnRef.current));
+        noteTypePoint(m.x, m.y);
+      }
       try {
         onTapRef.current?.();
       } catch {
@@ -1158,13 +1340,23 @@ export default function ViewerPanel({ active = "" }) {
   }
 
   function onTouchStart(e) {
-    const t = e.nativeEvent.touches[0];
+    const touches = e.nativeEvent.touches;
+    const t = touches[0];
+    if (padSkip.current) {
+      padTap.current = null;
+      lastRef.current = null;
+      return;
+    }
     lastRef.current = { x: t.pageX, y: t.pageY };
+    const p = padTap.current;
+    if (!p || touches.length === 1) padTap.current = { at: Date.now(), fingers: touches.length, travel: 0 };
+    else p.fingers = Math.max(p.fingers, touches.length);
   }
 
   function onTouchMove(e) {
     const touches = e.nativeEvent.touches;
     const t = touches[0];
+    if (padSkip.current || !t) return;
     const last = lastRef.current;
     if (!last) {
       lastRef.current = { x: t.pageX, y: t.pageY };
@@ -1173,6 +1365,10 @@ export default function ViewerPanel({ active = "" }) {
     const dx = (t.pageX - last.x) * 1.5;
     const dy = (t.pageY - last.y) * 1.5;
     lastRef.current = { x: t.pageX, y: t.pageY };
+    if (padTap.current) {
+      padTap.current.fingers = Math.max(padTap.current.fingers, touches.length);
+      padTap.current.travel += Math.abs(dx) + Math.abs(dy);
+    }
     if (touches.length === 2) {
       // Direction/speed follow the ⚙ scroll setting (natural by default).
       sendSwipeScroll(dx, dy);
@@ -1181,8 +1377,38 @@ export default function ViewerPanel({ active = "" }) {
     send(msg.move(dx, dy));
   }
 
-  function onTouchEnd() {
+  function onTouchEnd(e) {
     lastRef.current = null;
+    // Touchpad taps (laptop style): short touch that barely moved.
+    // 1 finger = click, 2 fingers = right click. Waits for the last finger.
+    if ((e?.nativeEvent?.touches?.length || 0) > 0) return;
+    if (padSkip.current) {
+      padSkip.current = false;
+      padTap.current = null;
+      return;
+    }
+    const p = padTap.current;
+    padTap.current = null;
+    if (!p || Date.now() - p.at > 250 || p.travel > 12) return;
+    if (dragRef.current) return; // Drag latched: taps must not click through
+    if (p.fingers === 2) send(msg.click("right", true, true));
+    else if (p.fingers === 1) send(msg.click("left", true, true));
+  }
+
+  function onPadCancel() {
+    lastRef.current = null;
+    padTap.current = null;
+    padSkip.current = false;
+  }
+
+  function toggleDrag() {
+    if (dragRef.current) {
+      releaseLeft();
+      setDragOn(false);
+    } else {
+      holdLeft();
+      setDragOn(true);
+    }
   }
 
   function holdLeft() {
@@ -1204,6 +1430,7 @@ export default function ViewerPanel({ active = "" }) {
     // Best-effort UP so the PC never thinks a button is stuck DOWN after
     // tab blur / unmount / reconnect / click-button switch.
     const btn = dragRef.current;
+    setDragOn(false);
     if (btn) {
       dragRef.current = false;
       try {
@@ -1231,13 +1458,24 @@ export default function ViewerPanel({ active = "" }) {
     else sliderHotTimer.current = setTimeout(() => setSliderHot(false), 2500);
   }
 
+  // Ruler (A2): the scale slides under a fixed centre needle. Dragging the
+  // finger left brings bigger zoom to the needle (RULER_UNIT px per 2x).
+  // A short tap without sliding jumps to the 1x/2x/4x/8x mark nearest to
+  // where it landed.
   function onSliderStart(e) {
     const t = e.nativeEvent.touches?.[0];
     const g = geom();
     if (!t || !g) return;
     heatSlider(true);
     const l0 = Math.log2(Math.max(1, camRef.current.s || 1));
-    sliderDrag.current = { y0: t.pageY, l0, lastTick: Math.round(l0 * 1000), n: camToNorm(camRef.current, g.fit, g.vw, g.vh) };
+    sliderDrag.current = {
+      x0: t.pageX,
+      lx: e.nativeEvent.locationX,
+      at: Date.now(),
+      moved: false,
+      l0,
+      n: camToNorm(camRef.current, g.fit, g.vw, g.vh),
+    };
   }
 
   function onSliderMove(e) {
@@ -1245,8 +1483,9 @@ export default function ViewerPanel({ active = "" }) {
     const st = sliderDrag.current;
     const g = geom();
     if (!t || !st || !g) return;
-    const h = trackHRef.current || 120;
-    const l = Math.max(0, Math.min(LOG_MAX, st.l0 + ((st.y0 - t.pageY) / h) * LOG_MAX));
+    if (!st.moved && Math.abs(t.pageX - st.x0) < 6) return; // still a tap
+    st.moved = true;
+    const l = Math.max(0, Math.min(LOG_MAX, st.l0 + (st.x0 - t.pageX) / RULER_UNIT));
     // Buzz when crossing an integer power of two (a tick).
     const prev = st.lastL ?? st.l0;
     if (Math.floor(prev + 1e-6) !== Math.floor(l + 1e-6) || (l === 0 && prev > 0) || (l === LOG_MAX && prev < LOG_MAX)) {
@@ -1265,6 +1504,17 @@ export default function ViewerPanel({ active = "" }) {
     sliderDrag.current = null;
     heatSlider(false);
     const g = geom();
+    if (st && g && !st.moved && Date.now() - st.at < 350 && typeof st.lx === "number") {
+      // Tap: jump to the nearest power-of-two mark under the finger.
+      const target = Math.max(0, Math.min(Math.floor(LOG_MAX), Math.round(st.l0 + (st.lx - RULER_W / 2) / RULER_UNIT)));
+      try {
+        Vibration.vibrate(8);
+      } catch {
+        // haptics optional
+      }
+      animateCamTo(camFor(Math.pow(2, target), st.n.cx, st.n.cy, g.fit, g.vw, g.vh));
+      return;
+    }
     if (st && g && typeof st.lastL === "number") {
       const near = Math.round(st.lastL);
       if (Math.abs(st.lastL - near) < 0.12) {
@@ -1368,6 +1618,14 @@ export default function ViewerPanel({ active = "" }) {
     if (!on) requestRegion(false);
   }
 
+  // Stable identities for the memoized stream layers; each call reaches the
+  // newest closure (fresh monitors/current/stalled) through the ref.
+  const streamCbs = useRef(null);
+  streamCbs.current = { onFrame, onVideoPacket, onVideoActive };
+  const stableOnFrame = useCallback((f) => streamCbs.current.onFrame(f), []);
+  const stableOnPacket = useCallback((p) => streamCbs.current.onVideoPacket(p), []);
+  const stableOnActive = useCallback((on) => streamCbs.current.onVideoActive(on), []);
+
   // Stream settings popover (preset / Q / fps): opened from the gear or the
   // fps pill, closes on outside tap or after a few idle seconds.
   const [streamOpen, setStreamOpen] = useState(false);
@@ -1390,8 +1648,11 @@ export default function ViewerPanel({ active = "" }) {
     : looking
       ? "Look: geser = lihat · 2 jari = zoom · tap 2x = zoom · Click untuk klik"
       : "Click: 1 jari = " + btnName + " / drag · 2 jari = geser / zoom";
-  const [hintOn, setHintOn] = useState(true);
+  const [hintOn, setHintOn] = useState(false);
+  // Brief chip when the clipboard just synced (clipsync.js).
+  const clipNotice = useClipSync().notice;
   useEffect(() => {
+    if (!takeHint()) return undefined;
     setHintOn(true);
     const t = setTimeout(() => setHintOn(false), 3500);
     return () => clearTimeout(t);
@@ -1400,15 +1661,18 @@ export default function ViewerPanel({ active = "" }) {
   const g0 = geom();
   const vis = g0 ? visibleRect(camRef.current, g0.fit, g0.vw, g0.vh) : { x: 0, y: 0, w: 1, h: 1 };
   const effZoom = camRef.current.s || 1;
-  // Knob follows the live zoom on the UI thread (no React render per move);
-  // only its label waits for the next (throttled) render.
-  const knobStyle = useAnimatedStyle(() => {
+  // Ruler tape follows the live zoom on the UI thread (pinch included, no
+  // React render per move); only the value bubble waits for the next render.
+  const tapeStyle = useAnimatedStyle(() => {
     const z = camS.value > 1 ? camS.value : 1;
-    const f = Math.min(1, Math.log2(z) / LOG_MAX);
-    return { top: (1 - f) * (trackHV.value > 0 ? trackHV.value : 120) - 13 };
+    const l = Math.min(LOG_MAX, Math.log2(z));
+    return { transform: [{ translateX: RULER_W / 2 - l * RULER_UNIT }] };
   });
   const zoomed = effZoom > 1.02;
   const camTools = current !== "cam";
+  const rulerOn = camTools && (zoomOpen || zoomed || sliderHot);
+  // Jendela opens in the control area under the viewer, not over the stream.
+  const thumbsOn = thumbs && current !== "cam";
   const winStream = useWindowStream({
     win,
     current,
@@ -1427,6 +1691,8 @@ export default function ViewerPanel({ active = "" }) {
   const miniAspect = monitorAspect() || 16 / 9;
   const MINI_W = full ? 120 : 104;
   const miniH = Math.round(Math.max(36, Math.min(90, MINI_W / miniAspect)));
+  // Top-left banners (window bar, slow link) start right of the minimap.
+  const topLeft = (bar ? BAR_W + 4 : 8) + (camTools && zoomed ? MINI_W + 6 : 0);
   const thumb = zoomed ? getLastFullFrame(current) : null;
 
   return (
@@ -1439,9 +1705,21 @@ export default function ViewerPanel({ active = "" }) {
       <Reanimated.View entering={FadeInUp.duration(180)} exiting={FadeOut.duration(120)} style={styles.topRow}>
         {!!title && <Text style={styles.title}>{title}</Text>}
         <ConnDot />
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.topScroll} contentContainerStyle={styles.topScrollContent}>
-        <MonitorChips monitors={monitors} current={current} onPick={pickMonitorChip} row />
-        </ScrollView>
+        <View style={styles.topScroll}>
+          <Pressable
+            onPress={() => {
+              setMoreOpen(false);
+              setMonOpen((v) => !v);
+            }}
+            hitSlop={6}
+            style={[styles.monPick, monOpen && styles.subTabActive]}
+            accessibilityLabel="Pilih layar"
+          >
+            <MaterialCommunityIcons name={String(current) === "cam" ? "camera-outline" : "monitor"} size={15} color={COLORS.text} />
+            <Text style={styles.monPickText} numberOfLines={1}>{monitorLabel(current)}</Text>
+            <MaterialCommunityIcons name={monOpen ? "chevron-up" : "chevron-down"} size={16} color={COLORS.muted} />
+          </Pressable>
+        </View>
         <Pressable
           onPress={() => setStreamOpen((v) => !v)}
           style={[styles.gear, streamOpen && styles.subTabActive]}
@@ -1468,9 +1746,9 @@ export default function ViewerPanel({ active = "" }) {
             // Keep the same monitor point centred when the view resizes
             // (soft keyboard, rotation), clamped to the new edges.
             const a = monitorAspect();
-            if (typingRef.current && (typePtRef.current || curRef.current) && prev.w && (prev.w !== width || prev.h !== height)) {
-              // Keyboard just resized the view: re-aim at the typing point.
-              focusTyping();
+            if (typingRef.current && caretActiveRef.current && caretFollowRef.current && caretLastRef.current && prev.w && (prev.w !== width || prev.h !== height)) {
+              // Keyboard just resized the view: re-aim at the caret.
+              applyCaret(true);
             } else if (a && prev.w && prev.h && (prev.w !== width || prev.h !== height)) {
               const n = camToNorm(camRef.current, fitCanvas(prev.w, prev.h, a), prev.w, prev.h);
               applyCamInstant(normToCam(n, fitCanvas(width, height, a), width, height));
@@ -1485,8 +1763,8 @@ export default function ViewerPanel({ active = "" }) {
         >
           {/* Camera canvas: whole monitor, frames placed at their own crop. */}
           <Reanimated.View style={canvasStyle} pointerEvents="none">
-            <ScreenView style={styles.canvasFill} onFrame={onFrame} monKey={current} placed resolveCrop={snapCrop} />
-            <VideoLayer enabled={current !== "cam"} onPacket={onVideoPacket} onActive={onVideoActive} />
+            <ScreenView style={styles.canvasFill} onFrame={stableOnFrame} monKey={current} placed resolveCrop={snapCrop} />
+            <VideoLayer enabled={current !== "cam"} onPacket={stableOnPacket} onActive={stableOnActive} />
           </Reanimated.View>
           {!!cur && (
             <Reanimated.View
@@ -1502,45 +1780,39 @@ export default function ViewerPanel({ active = "" }) {
         </GestureDetector>
         {/* Look controls sit beside (not inside) the gesture view so a drag on
             the slider or a tap on a button never pans the camera. */}
-          {camTools && (
-            <View style={[styles.zoomSlider, { opacity: zoomed || sliderHot ? 1 : 0.45 }]} pointerEvents="box-none">
+          {rulerOn && (
+            <View style={[styles.rulerWrap, bar && styles.shiftForBar]} pointerEvents="box-none">
+              <View style={styles.rulerValue} pointerEvents="none">
+                <Text style={styles.rulerValueText}>{effZoom.toFixed(1)}x</Text>
+              </View>
               <Block
-                style={styles.zTouch}
-                onLayout={(e) => {
-                  const h = Math.round(e.nativeEvent.layout.height);
-                  if (h && h !== trackHRef.current) {
-                    trackHRef.current = h;
-                    trackHV.value = h;
-                    setTrackH(h);
-                  }
-                }}
+                style={styles.ruler}
                 onTouchStart={onSliderStart}
                 onTouchMove={onSliderMove}
                 onTouchEnd={onSliderEnd}
                 onTouchCancel={onSliderEnd}
+                accessibilityLabel={`Zoom ${effZoom.toFixed(1)}x, geser untuk mengubah`}
               >
-                <View style={styles.zTrack} pointerEvents="none" />
-                {ZOOM_TICKS.map((z) => (
-                  <View
-                    key={z}
-                    pointerEvents="none"
-                    style={[styles.zTick, { top: (1 - Math.log2(z) / LOG_MAX) * Math.max(0, trackH || 120) - 7 }]}
-                  >
-                    <Text style={styles.zTickText}>{z}x</Text>
-                  </View>
-                ))}
-                <Reanimated.View pointerEvents="none" style={[styles.zKnob, knobStyle]}>
-                  <Text style={styles.zKnobText}>{effZoom.toFixed(1)}x</Text>
+                <Reanimated.View pointerEvents="none" style={[styles.tape, tapeStyle]}>
+                  {RULER_TICKS.map((i) => (
+                    <View key={i} style={[styles.rTick, i % RULER_PER_UNIT === 0 && styles.rTickBig, { left: i * RULER_STEP }]} />
+                  ))}
+                  {ZOOM_TICKS.map((z) => (
+                    <Text key={z} style={[styles.rLabel, { left: Math.log2(z) * RULER_UNIT - 12 }]}>
+                      {z}x
+                    </Text>
+                  ))}
                 </Reanimated.View>
+                <View pointerEvents="none" style={styles.needle} />
               </Block>
             </View>
           )}
-          <View style={[styles.lookBar, bar && styles.shiftForBar]} pointerEvents="box-none">
-            {camTools && (zoomed || !looking || reticle) && (
-              <View style={styles.lookBottom} pointerEvents="box-none">
-                {zoomed && (
+          {/* Clean viewer (B): only the zoom ruler sits at the bottom; the
+              minimap is a small corner card while zoomed; L/R/M lives in
+              the toolbar's Klik ▾ menu; Jendela opens in the control area. */}
+          {camTools && zoomed && (
                   <Block
-                    style={[styles.minimap, { width: MINI_W, height: miniH }]}
+                    style={[styles.minimap, styles.miniCorner, bar && styles.shiftForBar, { width: MINI_W, height: miniH }]}
                     onLayout={(e) => {
                       miniRef.current = { w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height };
                     }}
@@ -1564,31 +1836,16 @@ export default function ViewerPanel({ active = "" }) {
                       ]}
                     />
                   </Block>
-                )}
-                {(!looking || reticle) && (
-                  <Block style={styles.clickSegInline}>
-                    {CLICK_BTNS.map((b) => (
-                      <Pressable
-                        key={b.id}
-                        onPress={() => setSel({ clickBtn: b.id })}
-                        hitSlop={4}
-                        style={[styles.clickSegBtn, clickBtn === b.id && styles.clickBtnActive]}
-                      >
-                        <Text style={[styles.clickText, clickBtn === b.id && styles.clickTextActive]}>{b.label}</Text>
-                      </Pressable>
-                    ))}
-                  </Block>
-                )}
-                {reticle && (
-                  <Block>
-                    <Pressable onPress={() => clickAtReticle()} style={styles.aimBtn} hitSlop={4}>
-                      <Text style={styles.aimText}>Klik</Text>
-                    </Pressable>
-                  </Block>
-                )}
-              </View>
-            )}
-          </View>
+          )}
+          {camTools && reticle && (
+            <View style={[styles.lookBar, bar && styles.shiftForBar, { bottom: rulerOn ? RULER_SPACE : 0 }]} pointerEvents="box-none">
+              <Block style={styles.aimWrap}>
+                <Pressable onPress={() => clickAtReticle()} style={styles.aimBtn} hitSlop={4}>
+                  <Text style={styles.aimText}>Klik</Text>
+                </Pressable>
+              </Block>
+            </View>
+          )}
           {camTools && reticle && (
             <Reanimated.View pointerEvents="none" style={[styles.reticle, retStyle]}>
               <View style={[styles.retLine, { width: 2, height: 18, top: 0, left: 19 }]} />
@@ -1599,7 +1856,7 @@ export default function ViewerPanel({ active = "" }) {
             </Reanimated.View>
           )}
           {(full || (camTools && zoomed)) && (
-            <Block style={[styles.toolRow, bar && styles.shiftForBar]}>
+            <Block style={[styles.toolRow, bar && styles.shiftForBar, camTools && zoomed && { top: 12 + miniH }]}>
               {full && (
                 <Pressable onPress={toggleFull} style={[styles.toolBtn, styles.toolBtnOn]} hitSlop={4} accessibilityLabel="Keluar layar penuh">
                   <Text style={[styles.toolText, styles.toolTextOn]}>✕</Text>
@@ -1619,10 +1876,21 @@ export default function ViewerPanel({ active = "" }) {
               <Text style={styles.hint}>{hintText}</Text>
             </Reanimated.View>
           )}
+          {!!clipNotice && (
+            <Reanimated.View entering={FadeInDown.duration(160)} exiting={FadeOut.duration(200)} style={styles.clipChip}>
+              <MaterialCommunityIcons name="clipboard-text-outline" size={13} color="#ffffff" />
+              <Text style={styles.clipChipText}>{clipNotice.dir === "in" ? "Clipboard PC → HP" : "Clipboard HP → PC"}</Text>
+            </Reanimated.View>
+          )}
           {stalled && (
             <Reanimated.View entering={FadeInDown.duration(200)} exiting={FadeOut.duration(150)} style={styles.stalled}>
               <Text style={styles.stalledText}>Stream terhenti — mencoba lagi otomatis…</Text>
             </Reanimated.View>
+          )}
+          {typing && caretPref.follow && current !== "cam" && (
+            <View style={styles.caretBadge} pointerEvents="none">
+              <Text style={styles.caretBadgeText}>{caretLabel}</Text>
+            </View>
           )}
           {tapBlocked && !stalled && (
             <View style={styles.blocked}>
@@ -1642,7 +1910,7 @@ export default function ViewerPanel({ active = "" }) {
           </View>
         )}
         {!!win && current !== "cam" && (
-          <Block style={[styles.winWrap, bar && styles.shiftForBar]}>
+          <Block style={[styles.winWrap, { left: topLeft }]}>
             <WindowBar
               win={win}
               onRefit={() => {
@@ -1654,31 +1922,15 @@ export default function ViewerPanel({ active = "" }) {
             />
           </Block>
         )}
-        {thumbs && current !== "cam" && (
-          <Block style={[styles.thumbWrap, bar && styles.shiftForBar]}>
-            <WindowThumbBar
-              activeId={win?.id ?? null}
-              onFocus={(w) => {
-                // In single-window mode the camera follows the new window too.
-                if (win) winStream.pickWindow(w);
-                else send(msg.winAct(w.id, "focus"));
-              }}
-              onStream={(w) => {
-                winStream.pickWindow(w);
-                setSel({ thumbs: false });
-              }}
-            />
-          </Block>
-        )}
         {!streamOpen && !full && current !== "cam" && (
-          <Block style={[styles.lagWrap, !!win && styles.lagBelowWin, bar && styles.shiftForBar]} pointerEvents="box-none">
+          <Block style={[styles.lagWrap, !!win && styles.lagBelowWin, { left: topLeft }]} pointerEvents="box-none">
             <LagBanner />
           </Block>
         )}
         {!streamOpen && (
           <Block style={styles.fpsPill}>
-            <Pressable onPress={() => setStreamOpen(true)} hitSlop={4} style={styles.fpsStats} accessibilityLabel="Buka pengaturan stream">
-              <StreamStats />
+            <Pressable onPress={() => setStreamOpen(true)} hitSlop={6} style={styles.fpsStats} accessibilityLabel="Status stream, buka detail">
+              <StreamHealth />
             </Pressable>
             {/* PC sound (was "Suara" in the toolbar): only with an APK that has
                 the native player and an agent that streams it. Off = the PC
@@ -1702,6 +1954,9 @@ export default function ViewerPanel({ active = "" }) {
         {streamOpen && <Pressable style={StyleSheet.absoluteFill} onPress={() => setStreamOpen(false)} accessibilityLabel="Tutup pengaturan stream" />}
         <MotionView visible={streamOpen} kind="pop" origin="top right" style={styles.streamPop}>
           <Block onTouchStart={armStreamTimer}>
+            <View style={styles.popStats}>
+              <StreamStats />
+            </View>
             <StreamControls compact />
             <ScrollSettings />
             <VideoToggle />
@@ -1713,59 +1968,186 @@ export default function ViewerPanel({ active = "" }) {
           </Block>
         )}
         {overlay}
+        {!full && <TransferPanel style={styles.transferWrap} />}
+        {(monOpen || moreOpen || clickOpen) && (
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => {
+              setMonOpen(false);
+              setMoreOpen(false);
+              setClickOpen(false);
+            }}
+            accessibilityLabel="Tutup menu"
+          />
+        )}
+        <MotionView visible={monOpen && !typing} kind="pop" origin="top left" style={styles.monPop}>
+          <Block style={styles.monBox}>
+            <MonitorChips
+              monitors={monitors}
+              current={current}
+              onPick={(id) => {
+                pickMonitorChip(id);
+                setMonOpen(false);
+              }}
+            />
+          </Block>
+        </MotionView>
+        {/* Klik ▾: which mouse button a tap on the screen clicks. */}
+        <MotionView visible={clickOpen && !typing} kind="pop" origin="bottom left" style={styles.clickPop}>
+          <Block>
+            <MoreMenu
+              onClose={() => setClickOpen(false)}
+              items={[
+                { id: "left", icon: "mouse", label: "Kiri (L)", note: "klik biasa" },
+                { id: "right", icon: "mouse", label: "Kanan (R)", note: "menu konteks" },
+                { id: "middle", icon: "mouse", label: "Tengah (M)", note: "buka di tab baru" },
+              ].map((b) => ({
+                ...b,
+                on: !looking && clickBtn === b.id,
+                // Picking a button also switches to Klik mode.
+                onPress: () => setSel({ clickBtn: b.id, mode: "Click" }),
+              }))}
+            />
+          </Block>
+        </MotionView>
+        <MotionView visible={moreOpen && !typing} kind="pop" origin="bottom right" style={styles.morePop}>
+          <Block>
+            <MoreMenu
+              onClose={() => setMoreOpen(false)}
+              items={[
+                {
+                  id: "file",
+                  icon: "file-upload-outline",
+                  label: "Kirim file ke PC",
+                  note: "ke Downloads",
+                  onPress: () => {
+                    pickAndSend().catch((err) => Alert.alert("Kirim file", String(err?.message || err)));
+                  },
+                },
+                { id: "bar", icon: "gesture-swipe-vertical", label: "Bar scroll", on: bar, onPress: () => setSel({ bar: !bar }) },
+                camTools && { id: "aim", icon: "crosshairs", label: "Bidik presisi", on: reticle, onPress: () => setReticle((v) => !v) },
+                { id: "fold", icon: fold ? "chevron-up" : "chevron-down", label: fold ? "Tampilkan kontrol" : "Lipat kontrol", on: fold, onPress: () => setSel({ fold: !fold }) },
+              ]}
+            />
+          </Block>
+        </MotionView>
       </View>
       {!full && !typing && (
         <Toolbar
           items={[
-            // One mode button: tap switches Click <-> Look; icon + label show the active mode.
+            // Mode stays on the toolbar (used all the time): one tap switches
+            // Klik <-> Lihat; icon + label show the active mode.
             {
               id: "mode",
               icon: looking ? "eye-outline" : "cursor-default-click-outline",
-              label: mode,
+              label: looking ? "Lihat" : `Klik · ${CLICK_BTNS.find((b) => b.id === clickBtn)?.label || "L"}`,
               onPress: () => setSel({ mode: looking ? "Click" : "Look" }),
+              onMenu: () => {
+                setMoreOpen(false);
+                setMonOpen(false);
+                setClickOpen((v) => !v);
+              },
             },
-            { id: "bar", icon: "gesture-swipe-vertical", label: "Bar", on: bar, onPress: () => setSel({ bar: !bar }) },
+            // One Zoom / Pas layar toggle: at Fit it opens/closes the zoom
+            // slider; once zoomed (or in single-window mode) it fits back.
+            camTools &&
+              (zoomed || win
+                ? {
+                    id: "zoom",
+                    icon: "fit-to-screen-outline",
+                    label: "Pas layar",
+                    on: true,
+                    onPress: () => {
+                      setZoomOpen(false);
+                      if (win) winStream.exit();
+                      else resetCrop();
+                    },
+                  }
+                : {
+                    id: "zoom",
+                    icon: "magnify-plus-outline",
+                    label: "Zoom",
+                    on: zoomOpen,
+                    onPress: () => setZoomOpen((v) => !v),
+                  }),
             camTools && { id: "win", icon: "application-outline", label: "Jendela", on: thumbs || !!win, onPress: () => setSel({ thumbs: !thumbs }) },
-            camTools && { id: "fit", icon: "fit-to-screen-outline", label: "Fit", onPress: win ? winStream.exit : resetCrop },
-            camTools && { id: "aim", icon: "crosshairs", label: "Bidik", on: reticle, onPress: () => setReticle((v) => !v) },
             camTools && { id: "full", icon: "fullscreen", label: "Penuh", onPress: toggleFull },
+            {
+              id: "more",
+              icon: "dots-horizontal",
+              label: "Lainnya",
+              // Lit while a tool from the menu is active, so it is never "lost".
+              on: moreOpen || bar || reticle || fold,
+              onPress: () => {
+                setMonOpen(false);
+                setClickOpen(false);
+                setMoreOpen((v) => !v);
+              },
+            },
           ]}
-          fold={fold}
-          onFold={() => setSel({ fold: !fold })}
         />
       )}
-      {!full && !fold && !typing && (
+      {!full && !typing && (!fold || thumbsOn) && (
       <View style={styles.controls}>
+      {thumbsOn ? (
+        // Jendela (B): the window list takes the control area, the stream stays clear.
+        <WindowThumbBar
+          panel
+          activeId={win?.id ?? null}
+          onClose={() => setSel({ thumbs: false })}
+          onFocus={(w) => {
+            // In single-window mode the camera follows the new window too.
+            if (win) winStream.pickWindow(w);
+            else send(msg.winAct(w.id, "focus"));
+          }}
+          onStream={(w) => {
+            winStream.pickWindow(w);
+            setSel({ thumbs: false });
+          }}
+        />
+      ) : (
+      <>
       {actions && (
         <View style={styles.btnRow}>
-          <Pressable onPress={() => send(msg.click("left", true, true))} style={styles.btn}>
-            <Text style={styles.btnText}>Left</Text>
-          </Pressable>
-          <Pressable onPressIn={holdLeft} onPressOut={releaseLeft} style={styles.btn}>
-            <Text style={styles.btnText}>
-              {clickBtn === "right" ? "Hold R" : clickBtn === "middle" ? "Hold M" : "Hold"}
-            </Text>
-          </Pressable>
-          <Pressable onPress={() => send(msg.click("middle", true, true))} style={styles.btn}>
-            <Text style={styles.btnText}>Mid</Text>
-          </Pressable>
-          <Pressable onPress={() => send(msg.click("right", true, true))} style={styles.btn}>
-            <Text style={styles.btnText}>Right</Text>
-          </Pressable>
+          <PressScale onPress={() => send(msg.click("left", true, true))} style={styles.btn} accessibilityLabel="Klik kiri">
+            <Text style={styles.btnText}>Kiri</Text>
+          </PressScale>
+          <PressScale onPress={() => send(msg.click("middle", true, true))} style={[styles.btn, styles.btnMid]} accessibilityLabel="Klik tengah">
+            <MaterialCommunityIcons name="mouse" size={20} color={COLORS.muted} />
+          </PressScale>
+          <PressScale onPress={() => send(msg.click("right", true, true))} style={styles.btn} accessibilityLabel="Klik kanan">
+            <Text style={styles.btnText}>Kanan</Text>
+          </PressScale>
         </View>
       )}
       {touchpad && (
-        <View style={styles.pad} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}>
-          <Text style={styles.padText}>
-            {clickBtn === "right"
-              ? "slide = move · 2 fingers = scroll · hold R to drag"
-              : clickBtn === "middle"
-                ? "slide = move · 2 fingers = scroll · hold M to drag"
-                : "slide = move · 2 fingers = scroll · hold Left to drag"}
-          </Text>
+        <View style={styles.padCard}>
+          <View style={styles.pad} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onTouchCancel={onPadCancel}>
+            <Pressable
+              onPress={toggleDrag}
+              onTouchStart={() => {
+                padSkip.current = true;
+              }}
+              hitSlop={6}
+              style={[styles.dragBtn, dragOn && styles.dragBtnOn]}
+              accessibilityLabel={dragOn ? "Lepas drag" : "Mulai drag"}
+            >
+              <MaterialCommunityIcons name="hand-back-right-outline" size={15} color={dragOn ? "#ffffff" : COLORS.text} />
+              <Text style={[styles.dragText, dragOn && styles.dragTextOn]}>
+                {dragOn ? "Lepas" : clickBtn === "right" ? "Drag R" : clickBtn === "middle" ? "Drag M" : "Drag"}
+              </Text>
+            </Pressable>
+            <Text style={styles.padText} numberOfLines={2}>
+              {dragOn
+                ? "Drag aktif: geser untuk menyeret, tap Lepas untuk selesai"
+                : "Geser = gerak · 2 jari = scroll · Tap = klik · Tap 2 jari = klik kanan"}
+            </Text>
+          </View>
         </View>
       )}
       {children}
+      </>
+      )}
       </View>
       )}
     </View>
@@ -1781,7 +2163,7 @@ const styles = StyleSheet.create({
   topScrollContent: { flexDirection: "row", alignItems: "center", gap: 4 },
   gear: { backgroundColor: COLORS.chip, borderRadius: 999, width: 30, height: 28, alignItems: "center", justifyContent: "center" },
   gearText: { color: COLORS.muted, fontSize: 15, fontWeight: "800" },
-  fpsPill: { position: "absolute", top: 6, right: 6, maxWidth: "75%", backgroundColor: "rgba(22,22,24,0.8)", borderRadius: 999, paddingVertical: 3, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 6 },
+  fpsPill: { position: "absolute", top: 6, right: 6, maxWidth: "75%", backgroundColor: "rgba(18,18,20,0.8)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6 },
   fpsStats: { flexShrink: 1 },
   fpsSound: { paddingLeft: 6, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: "rgba(255,255,255,0.25)" },
   streamPop: { position: "absolute", top: 4, left: 0, right: 0 },
@@ -1789,13 +2171,26 @@ const styles = StyleSheet.create({
   clickSegBtn: { width: 34, height: 26, borderRadius: 999, backgroundColor: "rgba(44,44,48,0.9)", alignItems: "center", justifyContent: "center" },
   shiftForBar: { left: BAR_W + 4 },
   toolbar: { flexDirection: "row", alignItems: "center", gap: 6, height: TOOLBAR_H, paddingHorizontal: 8, marginBottom: 6 },
-  tbScroll: { flex: 1 },
-  tbContent: { flexDirection: "row", alignItems: "center", gap: 6 },
-  tbBtn: { minWidth: 48, height: TOOLBAR_H, paddingHorizontal: 6, borderRadius: 12, backgroundColor: COLORS.chip, alignItems: "center", justifyContent: "center", gap: 1 },
-  tbBtnOn: { backgroundColor: COLORS.fill },
+  tbBtn: { flex: 1, minWidth: 0, height: TOOLBAR_H, paddingHorizontal: 2, borderRadius: 10, backgroundColor: COLORS.card, alignItems: "center", justifyContent: "center", gap: 2 },
+  tbBtnOn: { backgroundColor: "rgba(94,92,230,0.22)" },
   tbBtnPressed: { opacity: 0.7 },
-  tbLabel: { color: COLORS.text, fontSize: 10, fontWeight: "500" },
-  tbLabelOn: { color: "#ffffff", fontWeight: "700" },
+  tbLabel: { color: COLORS.muted, fontSize: 10, fontWeight: "600" },
+  tbLabelOn: { color: COLORS.accent, fontWeight: "700" },
+  morePop: { position: "absolute", right: 0, bottom: 6, width: 220 },
+  clickPop: { position: "absolute", left: 0, bottom: 6, width: 230 },
+  tbIconRow: { flexDirection: "row", alignItems: "center", gap: 0 },
+  miniCorner: { position: "absolute", left: 6, top: 6 },
+  aimWrap: { alignSelf: "flex-start" },
+  moreBox: { backgroundColor: "rgba(28,28,31,0.97)", borderRadius: 14, borderWidth: 1, borderColor: "#3a3a3e", padding: 6, gap: 2 },
+  moreItem: { flexDirection: "row", alignItems: "center", gap: 10, height: 44, paddingHorizontal: 10, borderRadius: 10 },
+  moreItemOn: { backgroundColor: "rgba(94,92,230,0.22)" },
+  moreText: { color: COLORS.text, fontSize: 13, fontWeight: "600", flex: 1 },
+  moreNote: { color: COLORS.muted, fontSize: 10 },
+  monPick: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 4, height: 28, paddingLeft: 10, paddingRight: 6, borderRadius: 14, backgroundColor: COLORS.chip, maxWidth: 130 },
+  monPickText: { color: COLORS.text, fontSize: 12, fontWeight: "700", flexShrink: 1 },
+  monPop: { position: "absolute", left: 0, top: 4 },
+  monBox: { backgroundColor: "rgba(28,28,31,0.97)", borderRadius: 14, borderWidth: 1, borderColor: "#3a3a3e", padding: 8, maxWidth: 300 },
+  popStats: { backgroundColor: COLORS.card, borderRadius: 12, marginHorizontal: 8, marginBottom: 4, paddingVertical: 6, paddingHorizontal: 8 },
   controls: { height: CONTROL_H, paddingHorizontal: 8, paddingBottom: CONTROL_PAD, gap: CONTROL_GAP, overflow: "hidden" },
   modes: { flexDirection: "row", alignItems: "center", gap: 4 },
   subTab: { backgroundColor: COLORS.chip, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 10 },
@@ -1803,6 +2198,9 @@ const styles = StyleSheet.create({
   subText: { color: COLORS.muted, fontWeight: "700" },
   subTextActive: { color: COLORS.text },
   hint: { color: "#e5e5ea", fontSize: 11, fontWeight: "700" },
+  transferWrap: { position: "absolute", left: 8, right: 8, top: 36 },
+  clipChip: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(94,92,230,0.92)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
+  clipChipText: { color: "#ffffff", fontSize: 11, fontWeight: "700" },
   hintPill: { alignSelf: "flex-start", backgroundColor: "rgba(22,22,24,0.8)", borderRadius: 999, paddingVertical: 4, paddingHorizontal: 10 },
   overlayTop: { position: "absolute", left: 6, right: 6, top: 32, gap: 4 },
   stalled: { backgroundColor: "rgba(127,29,29,0.9)", borderRadius: 8, padding: 8 },
@@ -1835,13 +2233,15 @@ const styles = StyleSheet.create({
   localChip: { position: "absolute", left: 8, bottom: 8, flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(28,28,31,0.92)", borderRadius: 999, borderWidth: 1, borderColor: "rgba(255,159,10,0.6)", paddingVertical: 4, paddingHorizontal: 9 },
   localChipText: { color: "#ff9f0a", fontSize: 11, fontWeight: "600" },
   lookBar: { position: "absolute", left: 0, right: 0, bottom: 0, padding: 6, gap: 6 },
-  zoomSlider: { position: "absolute", right: 2, top: 40, bottom: 56, width: 56, alignItems: "center" },
-  zTouch: { flex: 1, width: 56, alignItems: "center" },
-  zTrack: { position: "absolute", top: 0, bottom: 0, right: 14, width: 8, borderRadius: 4, backgroundColor: "rgba(44,44,48,0.75)" },
-  zTick: { position: "absolute", left: 0, height: 14, paddingHorizontal: 4, borderRadius: 7, backgroundColor: "rgba(10,10,12,0.7)", justifyContent: "center" },
-  zTickText: { color: "#d1d1d6", fontSize: 8, fontWeight: "800" },
-  zKnob: { position: "absolute", right: 0, width: 40, height: 26, borderRadius: 13, backgroundColor: "rgba(250,204,21,0.95)", alignItems: "center", justifyContent: "center" },
-  zKnobText: { color: "#1c1400", fontSize: 10, fontWeight: "900" },
+  rulerWrap: { position: "absolute", left: 0, right: 0, bottom: 8, alignItems: "center", gap: 6 },
+  rulerValue: { height: 26, paddingHorizontal: 10, borderRadius: 13, backgroundColor: "#facc15", alignItems: "center", justifyContent: "center" },
+  rulerValueText: { color: "#1c1400", fontSize: 13, fontWeight: "800" },
+  ruler: { width: RULER_W, height: 48, borderRadius: 24, backgroundColor: "rgba(18,18,20,0.9)", borderWidth: 1, borderColor: "rgba(255,255,255,0.13)", overflow: "hidden" },
+  tape: { position: "absolute", left: 0, top: 0, bottom: 0, width: RULER_UNIT * LOG_MAX + 2 },
+  rTick: { position: "absolute", top: 17, width: 2, height: 9, marginLeft: -1, borderRadius: 1, backgroundColor: "rgba(255,255,255,0.35)" },
+  rTickBig: { top: 9, height: 17, backgroundColor: "rgba(255,255,255,0.85)" },
+  rLabel: { position: "absolute", top: 29, width: 24, textAlign: "center", color: "rgba(255,255,255,0.7)", fontSize: 10, fontWeight: "700" },
+  needle: { position: "absolute", left: RULER_W / 2 - 1.5, top: 4, bottom: 4, width: 3, borderRadius: 2, backgroundColor: "#facc15" },
   toolRow: { position: "absolute", left: 6, top: 6, flexDirection: "row", alignItems: "center", gap: 4 },
   toolBtn: { width: 30, height: 26, borderRadius: 999, backgroundColor: "rgba(22,22,24,0.8)", alignItems: "center", justifyContent: "center" },
   toolBtnOn: { backgroundColor: "#5e5ce6", borderWidth: 1, borderColor: "#7c7aff" },
@@ -1857,8 +2257,10 @@ const styles = StyleSheet.create({
   retLine: { position: "absolute", backgroundColor: "#fff", borderRadius: 1, shadowColor: "#000", shadowOpacity: 0.8, shadowRadius: 2, elevation: 2 },
   retDot: { position: "absolute", left: 17, top: 17, width: 6, height: 6, borderRadius: 3, backgroundColor: "#ef4444" },
   viewerBoxFull: { marginHorizontal: 0, marginBottom: 0 },
-  lookBottom: { flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "flex-end", paddingRight: 56 },
+  lookBottom: { flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "flex-end" },
   zoomRowScroll: { flexGrow: 1, alignItems: "center" },
+  caretBadge: { position: "absolute", top: 6, right: 6, backgroundColor: "rgba(15,23,42,0.75)", borderRadius: 8, paddingVertical: 2, paddingHorizontal: 8 },
+  caretBadgeText: { color: "#e2e8f0", fontSize: 11, fontWeight: "700" },
   zoomBadge: { backgroundColor: "rgba(124,45,18,0.9)", borderRadius: 8, paddingVertical: 4, paddingHorizontal: 12 },
   zoomBadgeText: { color: "#fed7aa", fontWeight: "800", fontSize: 12 },
   minimap: { backgroundColor: "rgba(22,22,24,0.85)", borderRadius: 6, borderWidth: 1, borderColor: "#3a3a3e", overflow: "hidden" },
@@ -1866,11 +2268,17 @@ const styles = StyleSheet.create({
   bar: { position: "absolute", left: 0, top: 0, bottom: 0, width: BAR_W },
   thumbWrap: { position: "absolute", left: 6, right: 6, bottom: 6 },
   error: { color: COLORS.danger, paddingHorizontal: 8, textAlign: "center", fontSize: 12 },
-  btnRow: { flexDirection: "row", gap: 6, height: 34 },
+  btnRow: { flexDirection: "row", gap: 6, height: PAD_BTN_H },
   btn: { flex: 1, backgroundColor: COLORS.chip, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  btnText: { color: COLORS.text, fontWeight: "700" },
-  pad: { flex: 1, borderRadius: 14, backgroundColor: COLORS.card, overflow: "hidden", alignItems: "center", justifyContent: "center" },
-  padText: { color: COLORS.muted, textAlign: "center", fontSize: 12 },
+  btnMid: { flex: 0, width: 52 },
+  btnText: { color: COLORS.text, fontWeight: "700", fontSize: 14 },
+  padCard: { flex: 1, flexDirection: "row", gap: 6, padding: 6, borderRadius: 14, backgroundColor: COLORS.card, borderWidth: StyleSheet.hairlineWidth, borderColor: "#3a3a3e" },
+  pad: { flex: 1, overflow: "hidden", justifyContent: "space-between", padding: 2 },
+  padText: { color: COLORS.muted, fontSize: 11, paddingLeft: 4 },
+  dragBtn: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, height: 30, paddingHorizontal: 12, borderRadius: 15, backgroundColor: COLORS.chip },
+  dragBtnOn: { backgroundColor: COLORS.fill, borderWidth: 1, borderColor: COLORS.accent },
+  dragText: { color: COLORS.text, fontSize: 12, fontWeight: "700" },
+  dragTextOn: { color: "#ffffff" },
   lagWrap: { position: "absolute", left: 8, right: 64, top: 36 },
   lagBelowWin: { top: 74 },
   winWrap: { position: "absolute", left: 8, right: 64, top: 34 },

@@ -8,6 +8,7 @@ import { PanResponder, Pressable, ScrollView, StyleSheet, View } from "react-nat
 import Text from "../AppText";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { PressScale, popIn } from "../motion";
 import { CONTROL_DEFS, CONTROL_IDS, LIMITS, chromeBox, controlOpacity } from "./layout";
 
@@ -211,8 +212,17 @@ export function SettingsSheet({ layout, onChange, onClose, onReset, streamContro
   };
   const toggleVisible = (id) =>
     onChange({ ...layout, controls: { ...layout.controls, [id]: { ...layout.controls[id], visible: !layout.controls[id].visible } } });
+  // Landscape edge-to-edge: keep the sheet clear of the nav bar and the
+  // camera cutout, or its last rows (Stream, Reset) end up behind them.
+  const insets = useSafeAreaInsets();
+  const pad = {
+    paddingTop: insets.top + 8,
+    paddingBottom: insets.bottom + 8,
+    paddingLeft: insets.left + 8,
+    paddingRight: insets.right + 8,
+  };
   return (
-    <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(150)} style={styles.sheetWrap} pointerEvents="box-none">
+    <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(150)} style={[styles.sheetWrap, pad]} pointerEvents="box-none">
       <Animated.View entering={popIn} style={styles.sheet}>
         <View style={styles.sheetHead}>
           <Text style={styles.sheetTitle}>Pengaturan gamepad</Text>
@@ -220,7 +230,7 @@ export function SettingsSheet({ layout, onChange, onClose, onReset, streamContro
             <MaterialCommunityIcons name="close" size={20} color={TEXT} />
           </Pressable>
         </View>
-        <ScrollView contentContainerStyle={styles.sheetBody}>
+        <ScrollView style={styles.sheetScroll} contentContainerStyle={styles.sheetBody} showsVerticalScrollIndicator>
           <Text style={styles.section}>Tampilan</Text>
           <View style={styles.group}>
             <Stepper label="Transparansi semua" value={layout.opacity} onMinus={() => step("opacity", -0.05)} onPlus={() => step("opacity", 0.05)} />
@@ -325,10 +335,12 @@ const styles = StyleSheet.create({
   editBox: { maxWidth: "62%", backgroundColor: PANEL, borderRadius: 16, borderWidth: 1, borderColor: BORDER, paddingHorizontal: 12, paddingVertical: 8 },
   editTitle: { color: TEXT, fontSize: 13, fontWeight: "700", textAlign: "center", paddingTop: 2 },
   sheetWrap: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.45)" },
-  sheet: { width: 420, maxWidth: "70%", maxHeight: "88%", backgroundColor: PANEL, borderRadius: 18, borderWidth: 1, borderColor: BORDER },
+  // maxHeight 100% of the inset-padded wrap = never under the system bars.
+  sheet: { width: 420, maxWidth: "70%", maxHeight: "100%", backgroundColor: PANEL, borderRadius: 18, borderWidth: 1, borderColor: BORDER, overflow: "hidden" },
+  sheetScroll: { flexGrow: 0, flexShrink: 1 },
   sheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4 },
   sheetTitle: { color: TEXT, fontSize: 16, fontWeight: "700" },
-  sheetBody: { paddingHorizontal: 14, paddingBottom: 16 },
+  sheetBody: { paddingHorizontal: 14, paddingBottom: 24 },
   // iOS-style grouped settings: muted section label, then a rounded card.
   section: { color: MUTED, fontSize: 11, fontWeight: "500", letterSpacing: 0.6, textTransform: "uppercase", marginTop: 14, marginBottom: 6, marginLeft: 4 },
   group: { backgroundColor: GROUP, borderRadius: 12, paddingHorizontal: 12 },

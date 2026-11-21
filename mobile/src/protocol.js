@@ -159,6 +159,8 @@ export const msg = {
   // disconnect this phone. Old agents ignore the extra field.
   auth: (token, device) => (device ? { t: "auth", token, device } : { t: "auth", token }),
   screen: (on) => ({ t: "screen", on: Boolean(on) }),
+  // Live typing: ask the PC for caret positions ({t:"caret"}) while on.
+  caretWatch: (on) => ({ t: "caretWatch", on: Boolean(on) }),
   move: (dx, dy) => ({ t: "move", dx, dy }),
   click: (btn, down = true, up = true) => ({ t: "click", btn, down, up }),
   scroll: (dx, dy) => ({ t: "scroll", dx, dy }),
@@ -191,7 +193,8 @@ export const msg = {
   quality: (q) => ({ t: "quality", ...q }),
   crop: (x, y, w, h) => ({ t: "crop", x, y, w, h }),
   cam: (on) => ({ t: "cam", on: Boolean(on) }),
-  ping: () => ({ t: "ping" }),
+  // c = phone send time, echoed in the pong for the latency pill.
+  ping: (c) => (c ? { t: "ping", c } : { t: "ping" }),
   clipboard: (s) => (s != null ? { t: "clipboard", s } : { t: "clipboard" }),
   gamepad: (state) => ({ t: "gamepad", state }),
   gamepadEnd: () => ({ t: "gamepadEnd" }),

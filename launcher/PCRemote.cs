@@ -51,9 +51,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("PC Remote")]
 [assembly: AssemblyCompany("PCRemote")]
 [assembly: AssemblyCopyright("github.com/rfibyzan/PCRemote")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
-[assembly: AssemblyInformationalVersion("1.2.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyInformationalVersion("1.5.0")]
 
 namespace PCRemote
 {
@@ -82,6 +82,9 @@ namespace PCRemote
         [STAThread]
         private static int Main(string[] args)
         {
+            // Own app identity for notifications (name + icon come from the
+            // Start Menu shortcut carrying the same id, see AppIdentity).
+            AppIdentity.Claim();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             selfPid = Process.GetCurrentProcess().Id;
@@ -96,6 +99,8 @@ namespace PCRemote
                 MessageBox.Show("Keep PCRemote.exe in the same folder as the runtime folder.", Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 2;
             }
+            AppIdentity.EnsureStartMenuShortcut(Application.ExecutablePath, Path.Combine(agentDir, "icon.ico"));
+            DashboardWindow.Install(agentDir);
 
             Mutex mutex = new Mutex(false, MutexName);
             bool owned = TryTake(mutex, 0);
@@ -142,7 +147,12 @@ namespace PCRemote
             try
             {
                 string ico = Path.Combine(agentDir, "icon.ico");
-                if (File.Exists(ico)) icon = new Icon(ico);
+                if (File.Exists(ico))
+                {
+                    icon = new Icon(ico);
+                    // Big logo for notifications (the .ico carries 16..256 px).
+                    balloonIcon = new Icon(ico, 64, 64);
+                }
             }
             catch { }
 
@@ -158,6 +168,8 @@ namespace PCRemote
             {
                 if (e.Button == MouseButtons.Left) OpenDashboard();
             };
+            // Clicking the notification opens the dashboard too.
+            tray.BalloonTipClicked += delegate { OpenDashboard(); };
             tray.Visible = true;
             trayIcon = tray;
 
@@ -177,7 +189,7 @@ namespace PCRemote
             loop.IsBackground = true;
             loop.Start();
 
-            tray.ShowBalloonTip(5000, Title, "Running. Click this icon for the pairing code.", ToolTipIcon.Info);
+            Notify(tray, 5000, "Running. Click here to open the dashboard (pairing code).");
             Application.Run();
 
             timer.Stop();
@@ -226,7 +238,153 @@ namespace PCRemote
         {
             NotifyIcon tray = trayIcon;
             if (tray == null) return;
-            try { tray.ShowBalloonTip(3000, Title, text, ToolTipIcon.Info); } catch { }
+            Notify(tray, 3000, text);
+        }
+
+        // ------------------------------------------------- logo notifications
+        // NotifyIcon.ShowBalloonTip can only show Windows' own Info/Warning/
+        // Error icons. Shell_NotifyIcon with NIIF_USER | NIIF_LARGE_ICON shows
+        // our logo instead; it needs the NotifyIcon's hidden window + id
+        // (private fields of the .NET Framework NotifyIcon). Any failure falls
+        // back to a plain balloon without the blue "i".
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct NOTIFYICONDATA
+        {
+            public int cbSize;
+            public IntPtr hWnd;
+            public int uID;
+            public int uFlags;
+            public int uCallbackMessage;
+            public IntPtr hIcon;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+            public int dwState;
+            public int dwStateMask;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+            public int uTimeoutOrVersion;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+            public int dwInfoFlags;
+            public Guid guidItem;
+            public IntPtr hBalloonIcon;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern bool Shell_NotifyIcon(int message, ref NOTIFYICONDATA data);
+
+        private const int NIM_MODIFY = 0x1;
+        private const int NIF_INFO = 0x10;
+        private const int NIIF_USER = 0x4;
+        private const int NIIF_LARGE_ICON = 0x20;
+        private static Icon balloonIcon;
+
+        private static void Notify(NotifyIcon tray, int ms, string text)
+        {
+            if (ShowLogoBalloon(tray, ms, Title, text)) return;
+            try { tray.ShowBalloonTip(ms, Title, text, ToolTipIcon.None); } catch { }
+        }
+
+        private static bool ShowLogoBalloon(NotifyIcon tray, int ms, string title, string text)
+        {
+            try
+            {
+                if (balloonIcon == null) return false;
+                FieldInfo fw = typeof(NotifyIcon).GetField("window", BindingFlags.NonPublic | BindingFlags.Instance);
+                FieldInfo fi = typeof(NotifyIcon).GetField("id", BindingFlags.NonPublic | BindingFlags.Instance);
+                if (fw == null || fi == null) return false;
+                NativeWindow w = fw.GetValue(tray) as NativeWindow;
+                if (w == null || w.Handle == IntPtr.Zero) return false;
+                NOTIFYICONDATA d = new NOTIFYICONDATA();
+                d.cbSize = Marshal.SizeOf(typeof(NOTIFYICONDATA));
+                d.hWnd = w.Handle;
+                d.uID = (int)fi.GetValue(tray);
+                d.uFlags = NIF_INFO;
+                d.szInfo = text;
+                d.szInfoTitle = title;
+                d.uTimeoutOrVersion = ms;
+                d.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;
+                d.hBalloonIcon = balloonIcon.Handle;
+                return Shell_NotifyIcon(NIM_MODIFY, ref d);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // A Chromium browser that supports --app (own window, no tabs):
+        // Edge first (on Windows by default), then whatever is registered
+        // under App Paths (Chrome, Chromium forks like Helium, Brave), then
+        // the usual install folders. Null = none (plain browser tab then).
+        private static string FindAppBrowser()
+        {
+            string[] roots = { "ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA" };
+            string[] rel = { @"Microsoft\Edge\Application\msedge.exe", @"Google\Chrome\Application\chrome.exe", @"BraveSoftware\Brave-Browser\Application\brave.exe" };
+            foreach (string r in rel)
+            {
+                if (r.StartsWith("Microsoft")) { string e = InstallPath(roots, r); if (e != null) return e; }
+            }
+            foreach (string exe in new[] { "msedge.exe", "chrome.exe", "brave.exe" })
+            {
+                foreach (Microsoft.Win32.RegistryKey hive in new[] { Microsoft.Win32.Registry.CurrentUser, Microsoft.Win32.Registry.LocalMachine })
+                {
+                    try
+                    {
+                        using (Microsoft.Win32.RegistryKey k = hive.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\" + exe))
+                        {
+                            string p = k == null ? null : k.GetValue("") as string;
+                            if (!string.IsNullOrEmpty(p)) { p = p.Trim('"'); if (File.Exists(p)) return p; }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            foreach (string r in rel) { string p = InstallPath(roots, r); if (p != null) return p; }
+            return null;
+        }
+
+        private static string InstallPath(string[] roots, string rel)
+        {
+            foreach (string env in roots)
+            {
+                string b = Environment.GetEnvironmentVariable(env);
+                if (string.IsNullOrEmpty(b)) continue;
+                string p = Path.Combine(b, rel);
+                if (File.Exists(p)) return p;
+            }
+            return null;
+        }
+
+        // %LOCALAPPDATA%\PCRemote\PC Remote Dashboard.lnk -> msedge --app=url,
+        // with our icon. Rewritten on every open (the port can change).
+        // Null when Edge or the shortcut is not available (plain browser then).
+        private static string DashboardShortcut(string url)
+        {
+            try
+            {
+                string edge = FindAppBrowser();
+                if (edge == null) return null;
+                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PCRemote");
+                Directory.CreateDirectory(dir);
+                string lnk = Path.Combine(dir, "PC Remote Dashboard.lnk");
+                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null) return null;
+                object shell = Activator.CreateInstance(shellType);
+                object sc = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
+                Type t = sc.GetType();
+                t.InvokeMember("TargetPath", BindingFlags.SetProperty, null, sc, new object[] { edge });
+                t.InvokeMember("Arguments", BindingFlags.SetProperty, null, sc, new object[] { "--app=" + url + " --window-size=1100,820" });
+                string ico = Path.Combine(agentDir ?? "", "icon.ico");
+                if (File.Exists(ico)) t.InvokeMember("IconLocation", BindingFlags.SetProperty, null, sc, new object[] { ico });
+                t.InvokeMember("Description", BindingFlags.SetProperty, null, sc, new object[] { "PC Remote dashboard" });
+                t.InvokeMember("Save", BindingFlags.InvokeMethod, null, sc, null);
+                Marshal.FinalReleaseComObject(sc);
+                Marshal.FinalReleaseComObject(shell);
+                return File.Exists(lnk) ? lnk : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static void OpenDashboard()
@@ -235,13 +393,30 @@ namespace PCRemote
             if (port == 0) port = DiscoverPort();
             if (port == 0) port = Netstat.FirstPort;
             string url = "http://127.0.0.1:" + port + "/";
+            // Own window (WebView2, DashboardWindow.cs). A browser only when
+            // the WebView2 runtime is missing or refuses to start.
+            bool shown = false;
+            try
+            {
+                NotifyIcon tray = trayIcon;
+                shown = DashboardWindow.Show(url, tray != null ? tray.Icon : null, delegate { OpenInBrowser(url); });
+            }
+            catch { }
+            if (!shown) OpenInBrowser(url);
+        }
+
+        private static void OpenInBrowser(string url)
+        {
             // Through explorer.exe so the browser runs as the signed-in user
-            // (not elevated like us) and is not our child process.
+            // (not elevated like us) and is not our child process. A Chromium
+            // browser opens it as an app window (no tabs / address bar) via a
+            // shortcut explorer can launch.
             try
             {
                 string windir = Environment.GetEnvironmentVariable("WINDIR");
                 string explorer = string.IsNullOrEmpty(windir) ? "explorer.exe" : Path.Combine(windir, "explorer.exe");
-                ProcessStartInfo psi = new ProcessStartInfo(explorer, "\"" + url + "\"");
+                string target = DashboardShortcut(url) ?? url;
+                ProcessStartInfo psi = new ProcessStartInfo(explorer, "\"" + target + "\"");
                 psi.UseShellExecute = false;
                 Process.Start(psi);
             }

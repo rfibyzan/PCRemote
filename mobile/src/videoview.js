@@ -23,7 +23,7 @@ let nextStreamId = 1;
  *            watchdog and byte meters in the viewer
  *  onActive  (bool) H.264 visible / JPEG back
  */
-export default function VideoLayer({ enabled = true, onPacket, onActive }) {
+function VideoLayer({ enabled = true, onPacket, onActive }) {
   const v = useVideo();
   const idRef = useRef(0);
   if (!idRef.current) idRef.current = nextStreamId++;
@@ -100,3 +100,8 @@ export default function VideoLayer({ enabled = true, onPacket, onActive }) {
     />
   );
 }
+
+// Memo: the viewer re-renders ~10x/s while panning; with stable callbacks
+// (it passes ref-backed ones) the surface is not re-diffed each time.
+// Callbacks are read through refs, so a memo hit never keeps a stale one.
+export default React.memo(VideoLayer);

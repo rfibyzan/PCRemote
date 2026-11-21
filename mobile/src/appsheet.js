@@ -5,12 +5,14 @@
  *   apps opened from this phone), then all apps A-Z.
  *   tap        -> open the app on the PC
  *   long press -> Buka / Jalankan sebagai admin / Sematkan (Lepas sematan)
- * Recent + pinned ids are saved on the phone. The list itself is cached on the
- * agent (~10 min); the refresh button rescans.
+ * Recent + pinned ids are saved on the phone. The list is cached on the agent
+ * (on disk, refreshed in the background) and in a file here, so it shows at
+ * once; the refresh button rescans.
  */
 import React, { useEffect, useMemo, useState } from "react";
 import { Alert, FlatList, Image, Pressable, StyleSheet, TextInput, View, useWindowDimensions } from "react-native";
 import * as SecureStore from "expo-secure-store";
+import { File, Paths } from "expo-file-system";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Text from "./AppText";
 import Animated, { FadeInDown } from "react-native-reanimated";
@@ -29,6 +31,34 @@ const OLD_AGENT_MS = 25000;
 
 let cachedList = null; // survives closing the sheet
 let prefs = { recent: [], pinned: [] };
+
+// The last list (with icons, ~800 KB) is also kept in a file, per PC, so the
+// sheet shows it at once even right after the app starts; the agent's answer
+// replaces it a moment later.
+const DISK_NAME = "apps-cache.json";
+let diskWritten = "";
+function readDiskList(pc) {
+  try {
+    const f = new File(Paths.document, DISK_NAME);
+    if (!f.exists) return null;
+    const v = JSON.parse(f.textSync());
+    return v && v.pc === pc && Array.isArray(v.list) ? v.list : null;
+  } catch {
+    return null;
+  }
+}
+function writeDiskList(pc, list) {
+  try {
+    const text = JSON.stringify({ pc, list });
+    if (text === diskWritten) return;
+    const f = new File(Paths.document, DISK_NAME);
+    if (!f.exists) f.create();
+    f.write(text);
+    diskWritten = text;
+  } catch {
+    // cache only
+  }
+}
 let prefsLoaded = false;
 
 const prefListeners = new Set();
@@ -63,7 +93,10 @@ function AppIcon({ app, size = ICON }) {
 
 export default function AppSheet({ visible, onClose, onOpened }) {
   const { width } = useWindowDimensions();
-  const [list, setList] = useState(cachedList);
+  const [list, setList] = useState(() => {
+    if (cachedList == null) cachedList = readDiskList(getStatus().pcName || "");
+    return cachedList;
+  });
   const [state, setState] = useState({
     recent: prefs.recent,
     pinned: prefs.pinned,
@@ -107,6 +140,7 @@ export default function AppSheet({ visible, onClose, onOpened }) {
       if (e.t === "apps" && Array.isArray(e.list)) {
         cachedList = e.list;
         setList(e.list);
+        if (e.list.length) writeDiskList(getStatus().pcName || "", e.list);
         setLoading(false);
         setStale(false);
         setError(typeof e.error === "string" ? e.error : e.error ? "Pemindaian gagal" : "");
@@ -210,7 +244,7 @@ export default function AppSheet({ visible, onClose, onOpened }) {
         data={found}
         keyExtractor={(a) => a.id}
         keyboardShouldPersistTaps="handled"
-        ListEmptyComponent={<Text style={styles.empty}>Tidak ada aplikasi "{q.trim()}".</Text>}
+        ListEmptyComponent={<Text style={styles.empty}>{`Tidak ada aplikasi "${q.trim()}".`}</Text>}
         renderItem={({ item }) => (
           <Pressable
             onPress={() => open(item)}

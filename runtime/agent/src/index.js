@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { WebSocketServer } from "ws";
 import { lanAddresses } from "./lan.js";
@@ -8,6 +9,7 @@ import { DEFAULT_PORT, displayCode, findExistingAgent, listenOnFreePort, loadLoc
 import {
   beginDragOnMonitor,
   click,
+  clipboardSeq,
   endDragOnMonitor,
   getClipboard,
   keyCombo,
@@ -38,7 +40,7 @@ import { superviseTunnel } from "./tunnel.js";
 import { listWindows, windowAction } from "./windows.js";
 import { WINDOW_ACTIONS } from "./windowmath.js";
 import { windowThumbs } from "./thumbs.js";
-import { listApps, openApp } from "./apps.js";
+import { listApps, openApp, warmApps } from "./apps.js";
 import { createSettingsStore } from "./settings.js";
 import { probeTunnel, wokeFromSleep } from "./keepalive.js";
 import { ensureWebcam, latestCamFrame, stopWebcam, webcamStatus } from "./webcam.js";
@@ -49,6 +51,11 @@ import { createDeviceStore, isLocalRequest, linkOf, sanitizeDevice } from "./dev
 import { QUIT_PATH, RESTART_CODE, RESTART_PATH, quitAllowed, restartSupported, scheduleQuit } from "./quit.js";
 import { creditByline, PROJECT_URL } from "./credits.js";
 import { createAutostartCache, helperBuildable, setAutostart } from "./autostart.js";
+import { createClipSync } from "./clipsync.js";
+import { createFileTransfer } from "./filexfer.js";
+import { createCaretWatch } from "./caret.js";
+import { createUiaReader, readWin32Caret } from "./caretread.js";
+import { installSendTo } from "./sendto.js";
 
 // Optional QR on the dashboard (`npm install` pulls "qrcode"). Without it the
 // page still works and simply shows the code.
@@ -199,12 +206,12 @@ function updateBanner() {
   return `<div class="update"><span class="msg">Versi baru ${escapeHtml(u.tag)} tersedia<small id="updateSub">Unduh dan pasang otomatis${mb}. Pengaturan dan pairing tetap.</small></span><span class="acts">${notes}<button type="button" id="doUpdate" data-tag="${escapeHtml(u.tag)}">Perbarui sekarang</button></span></div>`;
 }
 
-function readJson(req) {
+function readJson(req, max = 4096) {
   return new Promise((resolve) => {
     let body = "";
     req.on("data", (c) => {
       body += c;
-      if (body.length > 4096) req.destroy();
+      if (body.length > max) req.destroy();
     });
     req.on("end", () => {
       try {
@@ -293,6 +300,23 @@ function clientTune(ws) {
 function send(ws, obj) {
   if (ws.readyState === 1) ws.send(JSON.stringify(obj));
 }
+
+// Automatic clipboard sync with the phones that turned it on (clipsync.js).
+const clipSync = createClipSync({
+  clients: () => [...state.clients].filter((c) => c.authed),
+  send,
+  readSeq: clipboardSeq,
+  readText: getClipboard,
+  writeText: setClipboard,
+  log: (s) => console.log(s),
+});
+
+// Files both ways (filexfer.js): phone -> Downloads\PC Remote, Explorer
+// "Send to > PC Remote (HP)" -> phone.
+const files = createFileTransfer({ send, log: (s) => console.log(s) });
+
+// Typing zoom: caret position to phones in live typing (caret.js).
+const caret = createCaretWatch({ send, monitorFor, readWin32: readWin32Caret, uia: createUiaReader() });
 
 // Opt-in H.264 stream (beta, src/video.js). JPEG stays the default; while a
 // phone's video is active, screenLoop skips JPEG for it (cursor only).
@@ -491,7 +515,9 @@ async function handleCommand(ws, msg) {
       break;
     case "apps":
       // App launcher: Start-menu apps with icons (cached ~10 min, refresh=1 rescans).
-      listApps(!!msg.refresh)
+      // Answers from the (disk) cache at once; a background rescan pushes a
+      // changed list later.
+      listApps(!!msg.refresh, (fresh) => send(ws, { t: "apps", list: fresh }))
         .then((list) => send(ws, { t: "apps", list }))
         .catch((e) => send(ws, { t: "apps", list: [], error: String(e?.message || e).slice(0, 300) }));
       break;
@@ -568,7 +594,8 @@ async function handleCommand(ws, msg) {
       }
       break;
     case "ping":
-      send(ws, { t: "pong", ts: Date.now() });
+      // c = the phone's send time, echoed so it can measure the round trip.
+      send(ws, Number.isFinite(msg.c) ? { t: "pong", ts: Date.now(), c: msg.c } : { t: "pong", ts: Date.now() });
       break;
     case "video":
       video.request(ws, msg);
@@ -595,7 +622,28 @@ async function handleCommand(ws, msg) {
       }
       break;
     }
+    case "caretWatch":
+      if (ws.authed) caret.set(ws, msg.on === true);
+      break;
+    case "clipSync":
+      clipSync.setWanted(ws, msg.on);
+      break;
+    case "fileStart":
+    case "fileChunk":
+    case "fileEnd":
+    case "fileCancel":
+    case "fileReady":
+    case "fileAck":
+    case "fileDone":
+    case "fileError":
+      files.onMessage(ws, msg);
+      break;
     case "clipboard":
+      if (msg.auto) {
+        // Phone copied something: PC clipboard + other syncing phones.
+        if (typeof msg.s === "string") await clipSync.fromPhone(ws, msg.s);
+        break;
+      }
       if (msg.s != null) await setClipboard(msg.s);
       send(ws, { t: "clipboard", s: await getClipboard() });
       break;
@@ -618,7 +666,7 @@ function dashboard(qrSvg = "") {
   const initial = JSON.stringify(apiState()).replace(/</g, "\\u003c");
   const n = state.clients.size;
   return `<!doctype html>
-<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PC Remote</title>
+<html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PC Remote</title><link rel="icon" href="/favicon.ico">
 <style>
   :root { --bg:#0e0e10; --card:#1c1c1e; --row:#262629; --line:#36363a; --txt:#f2f2f5; --mut:#8e8e93; --acc:#6e68f5; --accbg:#242246; --acctx:#c4c0ff; --grn:#34c759; --red:#ff453a; --redbg:#3a1e1e; }
   * { box-sizing: border-box; }
@@ -1233,6 +1281,18 @@ async function main() {
   }
 
   const server = http.createServer((req, res) => {
+    // Dashboard tab icon = the app logo (runtime/agent/icon.ico).
+    if (req.url === "/favicon.ico") {
+      try {
+        const ico = readFileSync(new URL("../icon.ico", import.meta.url));
+        res.writeHead(200, { "Content-Type": "image/x-icon", "Cache-Control": "max-age=86400" });
+        res.end(ico);
+      } catch {
+        res.writeHead(404);
+        res.end();
+      }
+      return;
+    }
     if (req.url === "/health") {      res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
@@ -1336,6 +1396,20 @@ async function main() {
       void publishAnnounce(true);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end("{\"ok\":true}");
+      return;
+    }
+    // Explorer "Send to > PC Remote (HP)" (sendto.ps1): push files to the
+    // connected phones. Answers at once; the transfer runs in the background.
+    if (admin && url === "/api/send-files") {
+      void readJson(req, 64 * 1024).then((body) => {
+        const paths = Array.isArray(body.paths) ? body.paths.filter((p) => typeof p === "string").slice(0, 50) : [];
+        const phones = [...state.clients].filter((c) => c.authed && c.readyState === 1);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        if (!paths.length) return res.end(JSON.stringify({ ok: false, error: "tidak ada file" }));
+        if (!phones.length) return res.end(JSON.stringify({ ok: false, error: "tidak ada HP yang tersambung" }));
+        res.end(JSON.stringify({ ok: true, phones: phones.length, files: paths.length }));
+        void files.sendPaths(paths, phones).then((r) => console.log(`Send to: ${r.ok} kiriman ke HP selesai`));
+      });
       return;
     }
     if (admin && url.startsWith("/api/device/")) {
@@ -1475,6 +1549,9 @@ async function main() {
         devices.log(`${ws.device.name} ${why}`, ws.kickedByPc ? "warn" : "info");
       }
       state.clients.delete(ws);
+      clipSync.drop(ws);
+      files.drop(ws);
+      caret.drop(ws);
       video.stop(ws);
       audio.stop(ws);
       if (ws.gameSession) endGamepad(ws).catch(() => {});
@@ -1484,6 +1561,8 @@ async function main() {
 
   try {
     state.port = await listenOnFreePort(server, DEFAULT_PORT);
+    installSendTo(state.port, (s) => console.log(s));
+    warmApps(); // app list ready before the phone asks for it
     // Release builds check GitHub at start and then every 6 hours.
     if (agentVersion()) {
       void runUpdateCheck();
