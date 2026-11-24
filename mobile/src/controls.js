@@ -11,7 +11,8 @@ import { COLORS } from "./components";
 import Animated, { FadeIn, FadeInDown, FadeOut } from "react-native-reanimated";
 import { MotionModal, MotionPanel, PressScale, Pulse, SlideTabs } from "./motion";
 import { STORE_QUALITY, msg } from "./protocol";
-import { addListener, getStatus, send } from "./connection";
+import { addListener, getRtt, getStatus, send } from "./connection";
+import { latencyLevel } from "./latency";
 import { registerSetting, settingChanged } from "./settingsync";
 import { useStreamStats } from "./cursor";
 import { diagnoseStream, lagStep, lighterQuality } from "./streamdiag";
@@ -267,12 +268,14 @@ function fmtRate(bps) {
 /** "Q26 · 19 fps · tampil 6 · PC 18 · 386 KB/s · layar statis"
  * target = budget the PC aims for (agent ack when available), tampil =
  * frames actually displayed, PC = frames the PC sent. */
-export function StreamStats() {
+const CROP_KEYS = ["crop"];
+
+function useStreamSummary() {
   const { rate, fps, recv, pc } = useStreamStats();
   const { q, qStep, fpsStep } = useQuality();
   const video = useVideoCodec();
   const ack = useQualityAck();
-  const selCrop = useSel().crop;
+  const selCrop = useSel(CROP_KEYS).crop;
   const [link, setLink] = React.useState(getStatus().link || "");
   React.useEffect(() => {
     return addListener((e) => {
@@ -290,13 +293,68 @@ export function StreamStats() {
       ? Number(effFromAgent)
       : effectiveFpsValue(q, fpsStep, { remote, cropped });
   const why = diagnoseStream({ target: eff, shown: fps, recv, pc });
+  return { eff, fps, rate, pc, why };
+}
+
+export function StreamStats() {
+  const { eff, fps, rate, pc, why } = useStreamSummary();
+  const rtt = useRtt();
   const pcPart = pc ? ` · PC ${Math.round(pc.sent)}` : "";
   return (
     <Text style={styles.stats} numberOfLines={1}>
+      {rtt != null ? `${rtt} ms · ` : ""}
       {eff} fps · tampil {fps}
       {pcPart} · {fmtRate(rate)}
       {why ? <Text style={styles.statsWarn}> · {why}</Text> : null}
     </Text>
+  );
+}
+
+/** One-word stream health for the viewer corner (replaces the fps line;
+ * tap opens the stream popover with the full StreamStats).
+ *   ok   = connected and frames keep up (a static screen counts as fine)
+ *   slow = connected but frames fall behind (diagnoseStream gave a reason)
+ *   off  = not connected / reconnecting */
+export function streamHealthLevel(connected, why, rtt = null) {
+  if (!connected) return "off";
+  if (why && why !== "layar statis") return "slow";
+  if (latencyLevel(rtt) === "slow") return "slow";
+  return "ok";
+}
+
+/** Live round-trip latency in ms (null until measured / while offline). */
+export function useRtt() {
+  const [ms, setMs] = useState(() => getRtt());
+  useEffect(() => {
+    return addListener((e) => {
+      if (e.t === "rtt") setMs(e.ms);
+      else if (e.t === "close") setMs(null);
+    });
+  }, []);
+  return ms;
+}
+const HEALTH = {
+  ok: { label: "Lancar", color: "#34c759" },
+  slow: { label: "Lambat", color: "#facc15" },
+  off: { label: "Putus", color: "#f87171" },
+};
+
+export function StreamHealth() {
+  const { why } = useStreamSummary();
+  const [connected, setConnected] = useState(() => !!getStatus().connected);
+  useEffect(() => {
+    return addListener((e) => {
+      if (e.t === "status" || e.t === "hello" || e.t === "close") setConnected(!!getStatus().connected);
+    });
+  }, []);
+  const rtt = useRtt();
+  const h = HEALTH[streamHealthLevel(connected, why, rtt)];
+  return (
+    <View style={styles.health}>
+      <View style={[styles.healthDot, { backgroundColor: h.color }]} />
+      <Text style={styles.healthText}>{h.label}</Text>
+      {connected && rtt != null && <Text style={styles.healthMs}>· {rtt} ms</Text>}
+    </View>
   );
 }
 
@@ -452,29 +510,53 @@ export function setSel(patch) {
   emitSel();
 }
 
-export function useSel() {
-  const [s, setS] = useState({
-    source: sel.source,
-    mode: sel.mode,
-    bar: sel.bar,
-    clickBtn: sel.clickBtn,
-    fold: sel.fold,
-    win: sel.win || null,
-    typing: sel.typing,
-    thumbs: sel.thumbs,
-    full: sel.full,
-    crop: { ...sel.crop },
-  });
+const SEL_KEYS = ["source", "mode", "bar", "clickBtn", "fold", "win", "typing", "thumbs", "full", "crop"];
+
+function pickSel(src, keys) {
+  const out = {};
+  for (const k of keys) {
+    if (k === "crop") out.crop = { ...src.crop };
+    else if (k === "win") out.win = src.win || null;
+    else out[k] = src[k];
+  }
+  return out;
+}
+
+function sameSel(a, b, keys) {
+  for (const k of keys) {
+    if (k === "crop") {
+      const p = a.crop;
+      const q = b.crop;
+      if (p.x !== q.x || p.y !== q.y || p.w !== q.w || p.h !== q.h) return false;
+    } else if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
+/**
+ * Subscribe to the shared selection. `keys` = only the fields this component
+ * reads: a setSel that leaves them unchanged (e.g. a crop update while
+ * panning) does not re-render it. Every emit used to re-render the tabs
+ * layout, the viewer and its whole tree.
+ */
+export function useSel(keys = SEL_KEYS) {
+  const keysRef = useRef(keys);
+  const [s, setS] = useState(() => pickSel(sel, keysRef.current));
   useEffect(() => {
-    const fn = (n) => setS({ ...n, crop: { ...n.crop } });
+    const ks = keysRef.current;
+    const fn = (n) => setS((prev) => (sameSel(prev, n, ks) ? prev : pickSel(n, ks)));
     selListeners.add(fn);
+    // Catch a setSel that landed between the first render and this effect.
+    fn(sel);
     return () => selListeners.delete(fn);
   }, []);
   return s;
 }
 
+const SOURCE_KEYS = ["source"];
+
 export function useMonitorSource() {
-  const s = useSel();
+  const s = useSel(SOURCE_KEYS);
   const [monitors, setMonitors] = useState(() => getStatus().hello?.monitors || []);
   const [camError, setCamError] = useState("");
   const current = s.source !== undefined ? s.source : (() => {
@@ -563,6 +645,10 @@ const styles = StyleSheet.create({
   stepValue: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
   stats: { color: COLORS.muted, fontSize: 11, fontWeight: "700", textAlign: "center" },
   statsWarn: { color: "#fbbf24" },
+  health: { flexDirection: "row", alignItems: "center", gap: 6 },
+  healthDot: { width: 8, height: 8, borderRadius: 4 },
+  healthText: { color: COLORS.text, fontSize: 11, fontWeight: "600" },
+  healthMs: { color: "rgba(255,255,255,0.7)", fontSize: 11, fontWeight: "500", fontVariant: ["tabular-nums"] },
   modalShade: { flex: 1, alignItems: "center", justifyContent: "center" },
   modalBox: { backgroundColor: COLORS.card, borderRadius: 14, padding: 8, gap: 4, minWidth: 200 },
   modalItem: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16, alignItems: "center" },

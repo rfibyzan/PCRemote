@@ -1,0 +1,1 @@
+Microsoft.Web.WebView2 1.0.2903.40 (NuGet), lib/net462 + runtimes/*/native/WebView2Loader.dll. Used by PCRemote.exe for the dashboard window (launcher/DashboardWindow.cs).

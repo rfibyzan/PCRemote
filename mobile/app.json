@@ -2,7 +2,7 @@
   "expo": {
     "name": "PC Remote",
     "slug": "pc-remote",
-    "version": "1.4.0",
+    "version": "1.6.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "scheme": "pcremote",
@@ -18,10 +18,12 @@
     },
     "android": {
       "package": "com.hyte70.pcremote",
-      "versionCode": 22,
+      "versionCode": 23,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#0b1220"
+        "backgroundImage": "./assets/adaptive-bg.png",
+        "monochromeImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#4f4dd6"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -68,7 +70,10 @@
             "buildArchs": [
               "arm64-v8a"
             ],
-            "usesCleartextTraffic": true
+            "usesCleartextTraffic": true,
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "extraProguardRules": "-keep class expo.modules.pcremotevideo.** { *; }"
           }
         }
       ],

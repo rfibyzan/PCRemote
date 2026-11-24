@@ -20,6 +20,7 @@ import ViewerPanel from "../../viewer";
  */
 const TAB_BAR_H = 56;
 const VIEWER_TABS = new Set(["Pad", "Type", "Win"]);
+const FULL_KEYS = ["full"];
 
 function PadIcon({ color }) {
   return <MaterialIcons name="touch-app" size={22} color={color} />;
@@ -38,7 +39,7 @@ export default function TabsLayout() {
   const connected = useIsConnected();
   const segments = useSegments();
   const insets = useSafeAreaInsets();
-  const sel = useSel();
+  const sel = useSel(FULL_KEYS);
   if (!connected) return <Redirect href="/connect" />;
   const last = segments[segments.length - 1];
   const active = VIEWER_TABS.has(last) ? last : last === "Game" ? "Game" : "Pad";

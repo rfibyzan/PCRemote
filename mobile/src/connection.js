@@ -17,6 +17,7 @@ import { newestAnnounce, parseRecent, removeRecent, upsertRecent } from "./recen
 import { AUTH_TIMEOUT_MS, LAN_WATCH_MS, backoffDelay, lanCandidates, openTimeoutFor, shouldRediscover } from "./reconnectmath";
 import { parseVideoPacket } from "./videoproto";
 import { isAudioPacket, parseAudioPacket } from "./audioproto";
+import { RTT_PROBE_MS, rttFromPong, smoothRtt } from "./latency";
 import {
   DEFAULT_PORT,
   NTFY_HOSTS,
@@ -84,6 +85,10 @@ const state = {
   _connectGen: 0,
   _lastPongAt: 0,
   _pongMiss: 0,
+  // Latency (latency.js): send times of unanswered pings + smoothed ms.
+  _pingQueue: [],
+  _rttTimer: null,
+  rtt: null,
 };
 
 async function loadStore() {
@@ -279,8 +284,15 @@ function handleTextMessage(raw) {
     return;
   }
   if (m.t === "pong") {
-    state._lastPongAt = Date.now();
+    const now = Date.now();
+    state._lastPongAt = now;
     state._pongMiss = 0;
+    const sample = rttFromPong(state._pingQueue, m, now);
+    const rtt = smoothRtt(state.rtt, sample);
+    if (rtt !== state.rtt) {
+      state.rtt = rtt;
+      emit({ t: "rtt", ms: rtt });
+    }
     emit({ t: "pong", ts: m.ts });
     return;
   }
@@ -639,13 +651,31 @@ function adoptSocket(ws, url, hello) {
   handleTextMessage(JSON.stringify(hello));
 }
 
+/** Ping carrying its send time; remembered so the pong gives a round trip. */
+function sendPing() {
+  const now = Date.now();
+  if (!send(msg.ping(now))) return;
+  state._pingQueue.push(now);
+  if (state._pingQueue.length > 20) state._pingQueue.shift(); // never grows
+}
+
+/** Latest smoothed latency in ms (null = not measured yet / offline). */
+export function getRtt() {
+  return state.rtt;
+}
+
 function startPing() {
   stopPing();
   state._lastPongAt = Date.now();
   state._pongMiss = 0;
+  state._pingQueue = [];
+  // Small, frequent latency probe (a few bytes every 2 s) for the pill.
+  state._rttTimer = setInterval(() => {
+    if (state.ws && state.connected) sendPing();
+  }, RTT_PROBE_MS);
   state._pingTimer = setInterval(() => {
     if (state.ws && state.connected) {
-      send(msg.ping());
+      sendPing();
       // Stale check 5s after ping: no pong = half-dead socket (tunnel putus).
       // Threshold 20s (was 30s): with 10s ping cadence the viewer stall
       // watchdog (4s resubscribe) covers visuals while this covers the socket.
@@ -680,6 +710,15 @@ function stopPing() {
   if (state._pongTimer) {
     clearTimeout(state._pongTimer);
     state._pongTimer = null;
+  }
+  if (state._rttTimer) {
+    clearInterval(state._rttTimer);
+    state._rttTimer = null;
+  }
+  state._pingQueue = [];
+  if (state.rtt != null) {
+    state.rtt = null;
+    emit({ t: "rtt", ms: null });
   }
 }
 

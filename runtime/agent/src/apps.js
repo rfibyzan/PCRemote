@@ -5,11 +5,41 @@
  * PNG); it is cached for CACHE_MS and only ids from that list can be started.
  */
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { appsForPhone, cleanApps } from "./appsmath.js";
 
+// A full scan takes ~6 s (230 apps: ~1.5 s listing, ~3.5 s icons), so the
+// phone never waits for one: the last list is kept on disk (survives agent
+// restarts), answered at once, and refreshed in the background when older
+// than CACHE_MS; a changed list is pushed to the phone afterwards.
 const CACHE_MS = 10 * 60 * 1000;
 let cache = null; // { at, list }
 let running = null;
+
+function diskFile() {
+  const base = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || ".", "AppData", "Local");
+  return path.join(base, "PCRemote", "apps-cache.json");
+}
+
+function loadDisk() {
+  try {
+    const v = JSON.parse(fs.readFileSync(diskFile(), "utf8"));
+    if (v && Number.isFinite(v.at) && Array.isArray(v.list)) cache = { at: v.at, list: v.list };
+  } catch {
+    // no cache yet
+  }
+}
+
+function saveDisk() {
+  try {
+    fs.mkdirSync(path.dirname(diskFile()), { recursive: true });
+    fs.writeFileSync(diskFile(), JSON.stringify(cache));
+  } catch {
+    // cache is only an optimisation
+  }
+}
+loadDisk();
 
 const SCRIPT = String.raw`
 $ErrorActionPreference = 'SilentlyContinue'
@@ -73,19 +103,48 @@ async function scan() {
   return cleanApps(rows);
 }
 
-export async function listApps(refresh = false) {
-  if (!refresh && cache && Date.now() - cache.at < CACHE_MS) return appsForPhone(cache.list);
+function rescan() {
   if (!running) {
     running = scan()
       .then((list) => {
         cache = { at: Date.now(), list };
+        saveDisk();
         return list;
       })
       .finally(() => {
         running = null;
       });
   }
-  return appsForPhone(await running);
+  return running;
+}
+
+/**
+ * The app list for a phone. refresh=true (the ↻ button) waits for a new
+ * scan. Otherwise any cached list is answered at once; when it is old a
+ * scan runs in the background and onFresh(list) gets the new list, only if
+ * it differs from what was just sent.
+ */
+export async function listApps(refresh = false, onFresh = null) {
+  if (refresh || !cache) return appsForPhone(await rescan());
+  const sent = appsForPhone(cache.list);
+  if (Date.now() - cache.at >= CACHE_MS) {
+    const before = JSON.stringify(sent);
+    rescan()
+      .then((list) => {
+        const next = appsForPhone(list);
+        if (onFresh && JSON.stringify(next) !== before) onFresh(next);
+      })
+      .catch(() => {});
+  }
+  return sent;
+}
+
+/** Agent start: build the cache in the background so the first open is instant. */
+export function warmApps(delayMs = 20000) {
+  const t = setTimeout(() => {
+    if (!cache || Date.now() - cache.at >= CACHE_MS) rescan().catch(() => {});
+  }, delayMs);
+  t.unref?.();
 }
 
 // Only apps from the last scan can be started. admin=true asks Windows for

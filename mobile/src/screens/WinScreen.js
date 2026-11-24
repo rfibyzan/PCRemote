@@ -1,8 +1,10 @@
-/** WIN (layout C): shared viewer + fixed control area: section tabs
- * (Sistem | Edit | Media | Fn | Pintasan | Lainnya) over two rows of buttons. Every
- * section fits in those two rows except Lainnya, which scrolls inside the
- * area (the area itself never grows, so the viewer stays the same size). */
-import React, { useEffect, useRef, useState } from "react";
+/** WIN (layout C, v2): shared viewer + fixed control area: section tabs
+ * (Sering | Sistem | Edit | Media | Fn | Pintasan | Lainnya) over two rows of
+ * icon + label cards. "Sering" fills itself with the buttons used most on
+ * this phone (defaults until there is history). Lock needs a long press.
+ * The area itself never grows, so the viewer stays the same size. */
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import * as SecureStore from "expo-secure-store";
 import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
 import Text from "../AppText";
 import { MaterialIcons } from "@expo/vector-icons";
@@ -13,7 +15,8 @@ import { msg } from "../protocol";
 import { addListener, send } from "../connection";
 import Animated, { FadeIn, FadeOut, LayoutAnimationConfig, LinearTransition } from "react-native-reanimated";
 import ShortcutEditor from "../shortcuteditor";
-import { PressScale, SlideTabs, popIn } from "../motion";
+import { setClipSync, useClipSync } from "../clipsync";
+import { MotionModal, MotionPanel, PressScale, SlideTabs, popIn, useLatched } from "../motion";
 import { useShortcuts, saveShortcuts } from "../shortcuts";
 import { comboKeys, comboLabel, moveShortcut, removeShortcut, upsertShortcut, MAX_SHORTCUTS } from "../shortcutmath";
 
@@ -30,20 +33,52 @@ const APPS = [
   { id: "calc", label: "Calc", icon: "calculate" },
 ];
 const MEDIA = [
-  { a: "pause", icon: "pause" },
-  { a: "stop", icon: "stop" },
-  { a: "prev", icon: "skip-previous" },
-  { a: "next", icon: "skip-next" },
-  { a: "mute", icon: "volume-mute" },
-  { a: "voldown", icon: "volume-down" },
-  { a: "volup", icon: "volume-up" },
+  { a: "pause", icon: "play-arrow", label: "Play/Pause" },
+  { a: "stop", icon: "stop", label: "Stop" },
+  { a: "prev", icon: "skip-previous", label: "Prev" },
+  { a: "next", icon: "skip-next", label: "Next" },
+  { a: "mute", icon: "volume-off", label: "Mute" },
+  { a: "voldown", icon: "volume-down", label: "Vol −" },
+  { a: "volup", icon: "volume-up", label: "Vol +" },
 ];
 const FKEYS = ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12"];
-const SECTIONS = ["Sistem", "Edit", "Media", "Fn", "Pintasan", "Lainnya"];
+const SECTIONS = ["Sering", "Sistem", "Edit", "Media", "Fn", "Pintasan", "Lainnya"];
+const SISTEM = ["start", "apps", "taskview", "desktop", "close", "esc", "files", "browser", "lock"];
+const EDIT = ["copy", "paste", "cut", "selectall", "undo", "redo", "save", "find"];
+const SERING_N = 8;
+const SERING_DEFAULT = ["start", "taskview", "desktop", "files", "browser", "copy", "paste", "lock"];
 // Last section survives tab switches (WIN stays mounted, but keep it explicit).
-let lastSection = "Sistem";
-const TABS_H = 28;
+let lastSection = "Sering";
+const TABS_H = 32;
 const CELL_H = rowHeight(2, [TABS_H]);
+const INPUT_H = 44;
+
+// Usage counts for "Sering" (per phone, survives restarts).
+const STORE_USE = "pcremote.winuse";
+const use = { counts: {}, timer: null };
+SecureStore.getItemAsync(STORE_USE)
+  .then((raw) => {
+    const v = raw ? JSON.parse(raw) : null;
+    if (v && typeof v === "object") use.counts = { ...v, ...use.counts };
+  })
+  .catch(() => {});
+function countUse(id) {
+  use.counts[id] = (use.counts[id] || 0) + 1;
+  if (use.timer) clearTimeout(use.timer);
+  use.timer = setTimeout(() => {
+    use.timer = null;
+    SecureStore.setItemAsync(STORE_USE, JSON.stringify(use.counts)).catch(() => {});
+  }, 1500);
+}
+/** Most used first; the defaults fill the rest (never more than n). */
+export function seringIds(counts, known, n = SERING_N, defaults = SERING_DEFAULT) {
+  const used = Object.keys(counts || {})
+    .filter((id) => known.includes(id) && counts[id] > 0)
+    .sort((a, b) => counts[b] - counts[a] || known.indexOf(a) - known.indexOf(b));
+  const out = used.slice(0, n);
+  for (const id of defaults) if (out.length < n && !out.includes(id)) out.push(id);
+  return out;
+}
 // Bigger touch target without bigger visuals (Win buttons are Type-small).
 // Horizontal slop stays <= gap (3px) so adjacent buttons never overlap and
 // RN can't pick the wrong one; vertical gets a bit more (rows are taller).
@@ -65,7 +100,17 @@ export default function WinScreen() {
   const fetchClipAt = useRef(0);
   // Custom shortcuts: tap = send combo, hold = Edit / Geser / Hapus.
   const shortcuts = useShortcuts();
+  const clipAuto = useClipSync().on;
   const [editing, setEditing] = useState(null); // null | {} (new) | shortcut
+  // Lock is a long press; a plain tap just says so for a moment.
+  const [lockHint, setLockHint] = useState(false);
+  const lockTimer = useRef(null);
+  useEffect(() => () => lockTimer.current && clearTimeout(lockTimer.current), []);
+  function tapLock() {
+    setLockHint(true);
+    if (lockTimer.current) clearTimeout(lockTimer.current);
+    lockTimer.current = setTimeout(() => setLockHint(false), 1600);
+  }
 
   function saveEdit(draft) {
     saveShortcuts(upsertShortcut(shortcuts, draft));
@@ -77,14 +122,23 @@ export default function WinScreen() {
       { text: "Hapus", style: "destructive", onPress: () => { saveShortcuts(removeShortcut(shortcuts, sc.id)); setEditing(null); } },
     ]);
   }
-  function shortcutMenu(sc) {
-    Alert.alert(sc.name, comboLabel(sc), [
-      { text: "Edit", onPress: () => setEditing(sc) },
-      { text: "Geser kiri", onPress: () => saveShortcuts(moveShortcut(shortcuts, sc.id, -1)) },
-      { text: "Geser kanan", onPress: () => saveShortcuts(moveShortcut(shortcuts, sc.id, 1)) },
-      { text: "Hapus", style: "destructive", onPress: () => deleteShortcut(sc) },
-      { text: "Batal", style: "cancel" },
-    ]);
+  // Long-press menu of a shortcut tile: one aligned row per action (the
+  // native Android alert only lays out 3 buttons, so 5 looked scattered).
+  const [scMenu, setScMenu] = useState(null);
+  const [scMenuFrom, setScMenuFrom] = useState(null); // grows out of the held tile
+  const scShown = useLatched(scMenu);
+  function shortcutMenu(sc, e) {
+    setScMenuFrom(e?.nativeEvent ? { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY } : null);
+    setScMenu(sc);
+  }
+  function scAction(a) {
+    const sc = scMenu;
+    setScMenu(null);
+    if (!sc) return;
+    if (a === "edit") setEditing(sc);
+    else if (a === "left") saveShortcuts(moveShortcut(shortcuts, sc.id, -1));
+    else if (a === "right") saveShortcuts(moveShortcut(shortcuts, sc.id, 1));
+    else if (a === "delete") deleteShortcut(sc);
   }
 
   function releaseApps() {
@@ -125,17 +179,75 @@ export default function WinScreen() {
     };
   }, []);
 
-  function Btn({ label, icon, onPress, active, danger, wide, fn, small, a11y }) {
+  function Btn({ label, icon, onPress, onLongPress, active, danger, wide, fn, small, four, a11y, sub }) {
     return (
       <PressScale
         onPress={onPress}
+        onLongPress={onLongPress}
+        delayLongPress={450}
         hitSlop={HIT}
         accessibilityLabel={a11y || label}
-        style={({ pressed }) => [styles.cell, fn && styles.cellFn, small && styles.cellSmall, wide && styles.cellWide, active && styles.cellActive, danger && styles.dangerCell, pressed && styles.cellPressed]}
+        style={({ pressed }) => [styles.cell, fn && styles.cellFn, small && styles.cellSmall, four && styles.cellFour, wide && styles.cellWide, active && styles.cellActive, danger && styles.dangerCell, pressed && styles.cellPressed]}
       >
-        {icon ? <MaterialIcons name={icon} size={16} color={COLORS.text} /> : null}
-        {label ? <Text style={[styles.cellText, active && styles.cellTextActive]} numberOfLines={1}>{label}</Text> : null}
+        {icon ? <MaterialIcons name={icon} size={small ? 18 : 20} color={danger ? "#ff6b6b" : active ? "#ffffff" : COLORS.text} /> : null}
+        {label ? <Text style={[styles.cellText, active && styles.cellTextActive, danger && styles.dangerText]} numberOfLines={1}>{label}</Text> : null}
+        {sub ? <Text style={styles.cellSub} numberOfLines={1}>{sub}</Text> : null}
       </PressScale>
+    );
+  }
+
+  // Every button that can show up in "Sering", by id.
+  const ACT = {
+    start: { icon: "apps", label: "Start", run: () => send(msg.key("win")) },
+    apps: { icon: "swap-horiz", label: "Apps", run: tapApps, active: appsHeld },
+    taskview: { icon: "view-carousel", label: "Task View", run: () => send(msg.combo(["win", "tab"])) },
+    desktop: { icon: "desktop-windows", label: "Desktop", run: () => send(msg.combo(["win", "d"])) },
+    close: { icon: "close", label: "Close", run: () => send(msg.combo(["alt", "f4"])) },
+    esc: { icon: "keyboard-return", label: "Esc", run: () => send(msg.key("esc")) },
+    files: { icon: "folder", label: "Files", run: () => send(msg.open("explorer")) },
+    browser: { icon: "public", label: "Browser", run: () => send(msg.open("browser")) },
+    lock: { icon: "lock", label: lockHint ? "Tahan…" : "Kunci", sub: "tahan", danger: true, a11y: "Kunci PC (tahan)", run: tapLock, long: () => send(msg.lock()) },
+    copy: { icon: "content-copy", label: "Copy", run: () => send(msg.combo(["ctrl", "c"])) },
+    paste: { icon: "content-paste", label: "Paste", run: () => send(msg.combo(["ctrl", "v"])) },
+    cut: { icon: "content-cut", label: "Cut", run: () => send(msg.combo(["ctrl", "x"])) },
+    selectall: { icon: "select-all", label: "Select all", run: () => send(msg.combo(["ctrl", "a"])) },
+    undo: { icon: "undo", label: "Undo", run: () => send(msg.combo(["ctrl", "z"])) },
+    redo: { icon: "redo", label: "Redo", run: () => send(msg.combo(["ctrl", "y"])) },
+    save: { icon: "save", label: "Save", run: () => send(msg.combo(["ctrl", "s"])) },
+    find: { icon: "search", label: "Find", run: () => send(msg.combo(["ctrl", "f"])) },
+  };
+  for (const m of MEDIA) ACT["media_" + m.a] = { icon: m.icon, label: m.label, a11y: m.a, run: () => send(msg.media(m.a)) };
+  const KNOWN = Object.keys(ACT);
+  // Ranked when the section opens, so buttons never jump under the finger.
+  const sering = useMemo(() => seringIds(use.counts, KNOWN), [section]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function renderAct(id, four) {
+    const a = ACT[id];
+    if (!a) return null;
+    return (
+      <Btn
+        key={id}
+        icon={a.icon}
+        label={a.label}
+        sub={a.sub}
+        a11y={a.a11y}
+        active={a.active}
+        danger={a.danger}
+        four={four}
+        onPress={() => {
+          if (!a.long) countUse(id);
+          a.run();
+        }}
+        onLongPress={
+          a.long
+            ? () => {
+                countUse(id);
+                setLockHint(false);
+                a.long();
+              }
+            : undefined
+        }
+      />
     );
   }
 
@@ -146,43 +258,19 @@ export default function WinScreen() {
         value={section}
         onChange={setSection}
         style={styles.tabs}
-        tabStyle={styles.tab}
+        tabStyle={(sec) => [styles.tab, (sec === "Sering" || sec === "Pintasan" || sec === "Lainnya") && styles.tabWide]}
         activeColor={styles.tabActive.backgroundColor}
-        renderLabel={(sec, on) => <Text style={[styles.tabText, on && styles.tabTextActive]}>{sec}</Text>}
+        renderLabel={(sec, on) => (
+          <Text style={[styles.tabText, on && styles.tabTextActive]} numberOfLines={1}>
+            {sec === "Sering" ? "★ Sering" : sec}
+          </Text>
+        )}
       />
       <Animated.View key={section} entering={FadeIn.duration(150)} style={styles.ctl}>
-        {section === "Sistem" && (
-          <View style={styles.grid}>
-            <Btn icon="apps" label="Start" onPress={() => send(msg.key("win"))} />
-            <Btn icon="swap-horiz" label="Apps" active={appsHeld} onPress={tapApps} />
-            <Btn icon="view-carousel" label="Task View" onPress={() => send(msg.combo(["win", "tab"]))} />
-            <Btn icon="desktop-windows" label="Desktop" onPress={() => send(msg.combo(["win", "d"]))} />
-            <Btn icon="close" label="Close" onPress={() => send(msg.combo(["alt", "f4"]))} />
-            <Btn icon="keyboard-return" label="Esc" onPress={() => send(msg.key("esc"))} />
-            <Btn icon="folder" label="Files" onPress={() => send(msg.open("explorer"))} />
-            <Btn icon="public" label="Browser" onPress={() => send(msg.open("browser"))} />
-            <Btn icon="lock" label="Lock" danger a11y="Lock PC" onPress={() => send(msg.lock())} />
-          </View>
-        )}
-        {section === "Edit" && (
-          <View style={styles.grid}>
-            <Btn icon="content-copy" label="Copy" onPress={() => send(msg.combo(["ctrl", "c"]))} />
-            <Btn icon="content-paste" label="Paste" onPress={() => send(msg.combo(["ctrl", "v"]))} />
-            <Btn icon="content-cut" label="Cut" onPress={() => send(msg.combo(["ctrl", "x"]))} />
-            <Btn icon="select-all" label="Select all" onPress={() => send(msg.combo(["ctrl", "a"]))} />
-            <Btn icon="undo" label="Undo" onPress={() => send(msg.combo(["ctrl", "z"]))} />
-            <Btn icon="redo" label="Redo" onPress={() => send(msg.combo(["ctrl", "y"]))} />
-            <Btn icon="save" label="Save" onPress={() => send(msg.combo(["ctrl", "s"]))} />
-            <Btn icon="search" label="Find" onPress={() => send(msg.combo(["ctrl", "f"]))} />
-          </View>
-        )}
-        {section === "Media" && (
-          <View style={styles.grid}>
-            {MEDIA.map((m) => (
-              <Btn key={m.a} icon={m.icon} a11y={m.a} onPress={() => send(msg.media(m.a))} />
-            ))}
-          </View>
-        )}
+        {section === "Sering" && <View style={styles.grid}>{sering.map((id) => renderAct(id, true))}</View>}
+        {section === "Sistem" && <View style={styles.grid}>{SISTEM.map((id) => renderAct(id, false))}</View>}
+        {section === "Edit" && <View style={styles.grid}>{EDIT.map((id) => renderAct(id, true))}</View>}
+        {section === "Media" && <View style={styles.grid}>{MEDIA.map((m) => renderAct("media_" + m.a, true))}</View>}
         {section === "Fn" && (
           <View style={styles.grid}>
             {FKEYS.map((k) => (
@@ -196,7 +284,7 @@ export default function WinScreen() {
               <Animated.View key={sc.id} entering={popIn} exiting={FadeOut.duration(150)} layout={SC_LAYOUT} style={styles.scWrap}>
               <PressScale
                 onPress={() => send(msg.combo(comboKeys(sc)))}
-                onLongPress={() => shortcutMenu(sc)}
+                onLongPress={(e) => shortcutMenu(sc, e)}
                 delayLongPress={380}
                 hitSlop={HIT}
                 accessibilityLabel={`${sc.name}, ${comboLabel(sc)}`}
@@ -225,7 +313,7 @@ export default function WinScreen() {
               ))}
             </View>
             {/* One input row for both: URL to open, or the PC clipboard. */}
-            <View style={[styles.row, { height: CELL_H }]}>
+            <View style={[styles.row, { height: INPUT_H }]}>
               <Pressable onPress={() => setField(field === "url" ? "clip" : "url")} hitSlop={HIT} style={[styles.go, styles.goAlt]}>
                 <Text style={styles.goText}>{field === "url" ? "URL" : "Clip"} ⇄</Text>
               </Pressable>
@@ -240,12 +328,24 @@ export default function WinScreen() {
                 </Pressable>
               ) : (
                 <>
+                  {/* Auto = clipboard follows both ways (clipsync.js). */}
+                  <Pressable
+                    onPress={() => setClipSync(!clipAuto)}
+                    hitSlop={HIT}
+                    style={[styles.go, clipAuto ? styles.goOn : styles.goAlt]}
+                    accessibilityLabel={clipAuto ? "Matikan sinkron clipboard otomatis" : "Nyalakan sinkron clipboard otomatis"}
+                  >
+                    <MaterialIcons name={clipAuto ? "sync" : "sync-disabled"} size={16} color={COLORS.text} />
+                    <Text style={styles.goSmall}>Auto</Text>
+                  </Pressable>
                   <Pressable onPress={() => send(msg.clipboard(clip))} hitSlop={HIT} style={styles.go}>
                     <Text style={styles.goText}>Set</Text>
                   </Pressable>
-                  <Pressable onPress={() => send(msg.clipboard())} hitSlop={HIT} style={[styles.go, styles.goIcon]} accessibilityLabel="Ambil clipboard PC">
-                    <MaterialIcons name="refresh" size={16} color={COLORS.text} />
-                  </Pressable>
+                  {!clipAuto && (
+                    <Pressable onPress={() => send(msg.clipboard())} hitSlop={HIT} style={[styles.go, styles.goIcon]} accessibilityLabel="Ambil clipboard PC">
+                      <MaterialIcons name="refresh" size={16} color={COLORS.text} />
+                    </Pressable>
+                  )}
                 </>
               )}
             </View>
@@ -265,6 +365,48 @@ export default function WinScreen() {
         onDelete={editing?.id ? () => deleteShortcut(editing) : null}
         onClose={() => setEditing(null)}
       />
+      <MotionModal visible={!!scMenu} onRequestClose={() => setScMenu(null)}>
+        <Pressable style={styles.menuShade} onPress={() => setScMenu(null)}>
+          {!!scShown && (
+            <MotionPanel from={scMenuFrom}>
+              <Pressable style={styles.menuSheet} onPress={() => {}}>
+                <View style={styles.menuHead}>
+                  <View style={styles.menuIcon}>
+                    <MaterialIcons name="keyboard" size={20} color={COLORS.accent} />
+                  </View>
+                  <View style={styles.menuHeadText}>
+                    <Text style={styles.menuTitle} numberOfLines={1}>{scShown.name}</Text>
+                    <Text style={styles.menuSub} numberOfLines={1}>{comboLabel(scShown)}</Text>
+                  </View>
+                </View>
+                {(() => {
+                  const i = shortcuts.findIndex((x) => x.id === scShown.id);
+                  return [
+                    ["edit", "Edit", "edit", false],
+                    ["left", "Geser kiri", "arrow-back", i <= 0],
+                    ["right", "Geser kanan", "arrow-forward", i < 0 || i >= shortcuts.length - 1],
+                    ["delete", "Hapus", "delete-outline", false],
+                  ].map(([a, label, icon, off]) => (
+                    <Pressable
+                      key={a}
+                      disabled={off}
+                      onPress={() => scAction(a)}
+                      style={({ pressed }) => [styles.menuItem, pressed && styles.menuItemPressed, off && styles.menuItemOff]}
+                    >
+                      <MaterialIcons name={icon} size={20} color={a === "delete" ? "#ff6b6b" : COLORS.text} />
+                      <Text style={[styles.menuText, a === "delete" && styles.menuDanger]}>{label}</Text>
+                    </Pressable>
+                  ));
+                })()}
+                <View style={styles.menuSep} />
+                <Pressable onPress={() => setScMenu(null)} style={({ pressed }) => [styles.menuItem, styles.menuCancel, pressed && styles.menuItemPressed]}>
+                  <Text style={styles.menuCancelText}>Batal</Text>
+                </Pressable>
+              </Pressable>
+            </MotionPanel>
+          )}
+        </Pressable>
+      </MotionModal>
     </>
   );
 }
@@ -272,22 +414,26 @@ export default function WinScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLORS.bg },
   ctl: { flex: 1, overflow: "hidden" },
-  tabs: { flexDirection: "row", gap: 3, height: TABS_H, backgroundColor: COLORS.card, borderRadius: 9, padding: 2 },
-  tab: { flex: 1, borderRadius: 7, alignItems: "center", justifyContent: "center" },
+  tabs: { flexDirection: "row", gap: 2, height: TABS_H, backgroundColor: COLORS.card, borderRadius: 10, padding: 2 },
+  tab: { flex: 1, minWidth: 0, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  tabWide: { flex: 1.45 },
   tabActive: { backgroundColor: "#5e5ce6" },
-  tabText: { color: COLORS.muted, fontWeight: "800", fontSize: 11 },
+  tabText: { color: COLORS.muted, fontWeight: "700", fontSize: 11 },
   tabTextActive: { color: COLORS.text },
   more: { gap: 6 },
   // 5 per row -> every section (max 9-10 buttons) fits in two rows.
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  cell: { width: "18.4%", flexGrow: 1, height: CELL_H, backgroundColor: COLORS.chip, borderRadius: 9, alignItems: "center", justifyContent: "center", gap: 1, paddingHorizontal: 2 },
+  cell: { width: "18.4%", flexGrow: 1, height: CELL_H, backgroundColor: COLORS.card, borderWidth: StyleSheet.hairlineWidth, borderColor: "#3a3a3e", borderRadius: 12, alignItems: "center", justifyContent: "center", gap: 3, paddingHorizontal: 2 },
   cellFn: { width: "15%" },
+  cellFour: { width: "23%" },
   cellSmall: { width: "12.5%" },
   cellWide: { width: "48%" },
   cellActive: { backgroundColor: "#5e5ce6", borderWidth: 1, borderColor: COLORS.accent },
   cellPressed: { opacity: 0.6 },
-  dangerCell: { backgroundColor: "#7f1d1d" },
-  cellText: { color: COLORS.text, fontWeight: "700", textTransform: "capitalize", fontSize: 10 },
+  dangerCell: { backgroundColor: "#3a1517", borderColor: "#7f1d1d" },
+  dangerText: { color: "#ff9b9b" },
+  cellText: { color: COLORS.text, fontWeight: "600", fontSize: 11 },
+  cellSub: { color: "rgba(255,155,155,0.6)", fontSize: 9, fontWeight: "500" },
   cellTextActive: { color: COLORS.accent },
   scCell: { width: "31.5%", alignItems: "flex-start", paddingHorizontal: 8 },
   scWrap: { width: "31.5%", flexGrow: 1 },
@@ -297,9 +443,27 @@ const styles = StyleSheet.create({
   scAdd: { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.accent, borderStyle: "dashed", alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 4 },
   scAddText: { color: COLORS.accent, fontWeight: "800", fontSize: 11 },
   row: { flexDirection: "row", gap: 6 },
-  input: { flex: 1, height: CELL_H, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 0 },
+  input: { flex: 1, height: INPUT_H, backgroundColor: COLORS.card, color: COLORS.text, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 0 },
   goIcon: { minWidth: 40 },
-  go: { backgroundColor: "#5e5ce6", borderRadius: 10, minWidth: 48, paddingHorizontal: 8, height: CELL_H, alignItems: "center", justifyContent: "center" },
+  go: { backgroundColor: "#5e5ce6", borderRadius: 10, minWidth: 48, paddingHorizontal: 8, height: INPUT_H, alignItems: "center", justifyContent: "center" },
   goAlt: { backgroundColor: COLORS.chip },
+  // Shortcut long-press menu (same look as the Jendela menu in winbar.js).
+  menuShade: { flex: 1, justifyContent: "center", padding: 28 },
+  menuSheet: { backgroundColor: "#1c1c1f", borderRadius: 16, borderWidth: 1, borderColor: COLORS.line, overflow: "hidden", paddingBottom: 4 },
+  menuHead: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderBottomWidth: 1, borderBottomColor: COLORS.line },
+  menuIcon: { width: 40, height: 40, borderRadius: 10, backgroundColor: "rgba(94,92,230,0.18)", alignItems: "center", justifyContent: "center" },
+  menuHeadText: { flex: 1, minWidth: 0 },
+  menuTitle: { color: COLORS.text, fontSize: 16, fontWeight: "700" },
+  menuSub: { color: COLORS.accent, fontSize: 12, fontWeight: "600", marginTop: 2 },
+  menuItem: { flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 18, height: 48 },
+  menuItemPressed: { backgroundColor: "rgba(255,255,255,0.06)" },
+  menuItemOff: { opacity: 0.35 },
+  menuText: { color: COLORS.text, fontSize: 14, fontWeight: "500" },
+  menuDanger: { color: "#ff6b6b" },
+  menuSep: { height: StyleSheet.hairlineWidth, backgroundColor: COLORS.line, marginTop: 4 },
+  menuCancel: { justifyContent: "center" },
+  menuCancelText: { color: COLORS.muted, fontSize: 14, fontWeight: "600" },
+  goOn: { backgroundColor: "rgba(94,92,230,0.35)", borderWidth: 1, borderColor: COLORS.accent },
+  goSmall: { color: COLORS.text, fontWeight: "700", fontSize: 9 },
   goText: { color: COLORS.text, fontWeight: "800", fontSize: 12 },
 });

@@ -673,6 +673,16 @@ export function getClipboard() {
   });
 }
 
+// Bumps on every clipboard change; polled by clipsync.js (cheap, no PowerShell).
+const GetClipboardSequenceNumber = user32.func("uint32 __stdcall GetClipboardSequenceNumber()");
+export function clipboardSeq() {
+  try {
+    return GetClipboardSequenceNumber();
+  } catch {
+    return 0;
+  }
+}
+
 export function setClipboard(text) {
   return new Promise((resolve) => {
     const child = execFile(

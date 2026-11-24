@@ -8,8 +8,10 @@ name: Release
 #   cloudflared.exe is downloaded by the agent on first start. The committed
 #   PCRemote.apk (latest local release build) is attached on its own as
 #   PCRemote-<tag>.apk (not inside the PC zip).
-# If the repo secret EXPO_TOKEN exists, the preview APK is built on EAS and
-# replaces that attachment. Note: SF Pro is gitignored, so a CI-built APK uses Roboto.
+# If the repo secret ANDROID_KEYSTORE_B64 exists (plus ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD), the APK is built here with Gradle
+# (no EAS quota), signed with the EAS keystore, and replaces that attachment.
+# Note: SF Pro is gitignored, so a CI-built APK uses Roboto.
 on:
   push:
     tags: ["v*"]
@@ -99,7 +101,7 @@ jobs:
           $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
           $o = .\NetstatTest.exe 2>&1
           $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
-          $o = & $csc /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs 2>&1
+          $o = & $csc /nologo /noconfig /target:winexe /platform:anycpu /optimize+ /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:..\runtime\agent\webview2\Microsoft.Web.WebView2.Core.dll /r:..\runtime\agent\webview2\Microsoft.Web.WebView2.WinForms.dll /win32icon:..\runtime\agent\icon.ico /win32manifest:app.manifest /out:..\PCRemote.exe PCRemote.cs Netstat.cs AppIdentity.cs DashboardWindow.cs DashForm.cs 2>&1
           $rc = $LASTEXITCODE; Report $o; if ($rc -ne 0) { exit $rc }
           $vi = (Get-Item ..\PCRemote.exe).VersionInfo
           $vi | Format-List FileDescription, ProductName, FileVersion
@@ -144,25 +146,44 @@ jobs:
     runs-on: ubuntu-latest
     needs: windows
     env:
-      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
     defaults:
       run:
         working-directory: mobile
     steps:
       - uses: actions/checkout@v4
-        if: env.EXPO_TOKEN != ''
+        if: env.KS_B64 != ''
       - uses: actions/setup-node@v4
-        if: env.EXPO_TOKEN != ''
+        if: env.KS_B64 != ''
         with:
           node-version: 22
-      - name: Build preview APK on EAS
-        if: env.EXPO_TOKEN != ''
+      - uses: actions/setup-java@v4
+        if: env.KS_B64 != ''
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Build APK with Gradle (no EAS)
+        if: env.KS_B64 != ''
         run: |
           npm ci
-          npx eas-cli@latest build --profile preview --platform android --non-interactive --wait --json > build.json
-          curl -L -o "PCRemote-$TAG.apk" "$(jq -r '.[0].artifacts.buildUrl' build.json)"
+          npx expo prebuild -p android --no-install
+          cd android && ./gradlew assembleRelease --no-daemon
+      - name: Sign with the EAS keystore
+        if: env.KS_B64 != ''
+        env:
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KS_B64" | base64 -d > release.jks
+          BT=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$BT/apksigner" sign --ks release.jks \
+            --ks-pass env:KS_PASS --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASS \
+            --out "PCRemote-$TAG.apk" android/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify "PCRemote-$TAG.apk"
+          rm release.jks
       - uses: softprops/action-gh-release@v2
-        if: env.EXPO_TOKEN != ''
+        if: env.KS_B64 != ''
         with:
           tag_name: ${{ env.TAG }}
           files: mobile/PCRemote-${{ env.TAG }}.apk
